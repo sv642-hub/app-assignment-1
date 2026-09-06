@@ -10,11 +10,17 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
 from app_assignment_1 import __version__
+from app_assignment_1.config import get_settings
+
+# Validate configuration at startup: if the environment is misconfigured this
+# raises immediately and the process refuses to start.
+settings = get_settings()
 
 app = FastAPI(
     title="app-assignment-1",
     version=__version__,
     description="DSAN 6700 App Deployment — Assignment 1 service skeleton.",
+    debug=settings.debug,
 )
 
 
@@ -23,6 +29,7 @@ class HealthResponse(BaseModel):
 
     status: str = "ok"
     version: str = __version__
+    environment: str = settings.environment
 
 
 class PredictRequest(BaseModel):

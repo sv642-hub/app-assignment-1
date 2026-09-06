@@ -9,6 +9,13 @@ wheels/
 # Virtual environments
 .venv
 
+# Real environment files with secrets — never commit these.
+# The *.example templates ARE committed.
+.env
+.env.*
+!.env.example
+!.env.production.example
+
 # Test / coverage artifacts
 .coverage
 .coverage.*
