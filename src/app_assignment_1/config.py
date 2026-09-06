@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     @field_validator("api_key")
     @classmethod
     def _require_api_key_in_production(cls, v: str, info) -> str:
+        """Require a non-empty API key when running in production."""
         env = info.data.get("environment")
         if env == "production" and not v:
             raise ValueError("APP_API_KEY must be set when APP_ENVIRONMENT=production")
@@ -54,6 +55,7 @@ class Settings(BaseSettings):
     @field_validator("debug")
     @classmethod
     def _no_debug_in_production(cls, v: bool, info) -> bool:
+        """Forbid debug mode in production to avoid leaking internals."""
         if v and info.data.get("environment") == "production":
             raise ValueError("APP_DEBUG must be false when APP_ENVIRONMENT=production")
         return v
