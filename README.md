@@ -176,7 +176,6 @@ All variables use the `APP_` prefix and map to `Settings` in
 |--------------------------------|-----------------------------------------------------|
 | `uv sync --extra dev`          | Install runtime + dev deps from the lockfile.       |
 | `uv run uvicorn app_assignment_1.api:app --reload` | Run the service with auto-reload.   |
-| `uv run app-assignment-1`      | Run the console-script entry point.                 |
 | `uv run pytest`                | Run the test suite.                                 |
 | `uv run ruff check`            | Lint.                                               |
 | `uv run mypy src/`             | Type-check.                                         |
@@ -195,11 +194,11 @@ App - Assignment 1/
 ├── CHANGELOG.md · LICENSE · README.md
 ├── src/
 │   └── app_assignment_1/
-│       ├── __init__.py        # package + console entry point
+│       ├── __init__.py        # package marker + version
 │       ├── api.py             # FastAPI app, endpoints, Pydantic models
 │       └── config.py          # typed settings (Pydantic Settings)
 └── tests/
-    └── test_greeting.py
+    └── test_api.py
 ```
 
 ---
