@@ -136,12 +136,6 @@ uv run ruff format
 uv run ruff check --fix
 ```
 
-### Enable the pre-commit hooks (optional)
-
-```bash
-uv run pre-commit install
-```
-
 ---
 
 ## Reference
@@ -187,11 +181,9 @@ App - Assignment 1/
 ├── .github/workflows/ci.yml   # lint, format, type-check, test on push & PR
 ├── pyproject.toml             # single declarative config (deps, build, tools)
 ├── uv.lock                    # machine-generated lockfile — always committed
-├── .python-version            # pinned interpreter for the team (3.13)
 ├── .env.example               # local-dev config template
 ├── .env.production.example    # deployed config template
-├── .pre-commit-config.yaml    # ruff lint/format hooks
-├── CHANGELOG.md · LICENSE · README.md
+├── LICENSE · README.md
 ├── src/
 │   └── app_assignment_1/
 │       ├── __init__.py        # package marker + version
