@@ -93,11 +93,11 @@ Settings are read from `APP_*` environment variables (see
 template and edit it:
 
 ```bash
-cp .env.example .env
+cp env/.env.example .env
 ```
 
 `.env` is git-ignored and never committed. The deployed shape lives in
-`.env.production.example`.
+`env/.env.production.example`.
 
 ### Call the placeholder predict endpoint
 
@@ -181,8 +181,9 @@ App - Assignment 1/
 ├── .github/workflows/ci.yml   # lint, format, type-check, test on push & PR
 ├── pyproject.toml             # single declarative config (deps, build, tools)
 ├── uv.lock                    # machine-generated lockfile — always committed
-├── .env.example               # local-dev config template
-├── .env.production.example    # deployed config template
+├── env/
+│   ├── .env.example           # local-dev config template
+│   └── .env.production.example # deployed config template
 ├── LICENSE · README.md
 ├── src/
 │   └── app_assignment_1/

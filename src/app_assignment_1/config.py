@@ -18,8 +18,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Application settings, populated from the environment.
 
-    Every knob a developer can turn lives here. See `.env.example` (local dev)
-    and `.env.production.example` (deployed shape) for the paired templates.
+    Every knob a developer can turn lives here. See `env/.env.example` (local
+    dev) and `env/.env.production.example` (deployed shape) for the paired
+    templates.
     """
 
     model_config = SettingsConfigDict(
