@@ -48,9 +48,7 @@ class Settings(BaseSettings):
     def _require_api_key_in_production(cls, v: str, info) -> str:
         env = info.data.get("environment")
         if env == "production" and not v:
-            raise ValueError(
-                "APP_API_KEY must be set when APP_ENVIRONMENT=production"
-            )
+            raise ValueError("APP_API_KEY must be set when APP_ENVIRONMENT=production")
         return v
 
     @field_validator("debug")
