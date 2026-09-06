@@ -1,0 +1,43 @@
+# Project identity and runtime dependencies
+[project]
+name = "app-assignment-1"
+version = "0.1.0"
+description = "DSAN 6700 App Deployment — Assignment 1: a src/-layout package scaffold with a shared, reproducible uv environment."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "sv642-hub", email = "sv642@georgetown.edu" }
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+app-assignment-1 = "app_assignment_1:main"
+
+# Build backend
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Hatchling: where to find the package sources (src/ layout)
+[tool.hatch.build.targets.wheel]
+packages = ["src/app_assignment_1"]
+
+# Test runner
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=src --cov-report=term-missing"
+
+# Linter and formatter
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
