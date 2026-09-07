@@ -1,24 +1,21 @@
-# App — Assignment 1
+# Assignment 1
 
 DSAN 6700 (App Deployment) — Assignment 1.
 
-A minimal but *real* FastAPI web service, packaged with the **`src/` layout** and
-a single, shared, reproducible environment managed by
-[`uv`](https://docs.astral.sh/uv/). Everyone on the team installs the exact same
-dependency versions from the committed `uv.lock`.
+The base repo for Machine Learning App Deployment course
+It follows the instructions of using `uv` and the `src/` layout. It contains a
+FastAPI skeleton, that uses Pydantic settings and models
 
-This README is organized along the [Diátaxis](https://diataxis.fr/) framework:
 
-- **[Tutorial](#tutorial-run-it-on-a-clean-machine)** — get it running from zero.
+- **[Installing](#installing)** — get it running from zero.
 - **[How-to guides](#how-to-guides)** — task-focused recipes.
 - **[Reference](#reference)** — endpoints, settings, commands, structure.
-- **[Explanation](#explanation)** — why the project is built this way.
 
 ---
 
-## Tutorial: run it on a clean machine
+## Intalling:
 
-Start-to-finish on a machine with nothing installed but `git`. Copy-paste each block.
+How to install this repo on a new machine
 
 ### 1. Install `uv`
 
@@ -48,11 +45,7 @@ cd "App - Assignment 1"
 uv sync --frozen
 ```
 
-This reads `uv.lock` and installs the **exact** recorded versions into a local
-`.venv/` — no re-resolution. The `dev` dependency group (linters, type checker,
-tests) is installed by default, so this single command gives you a complete,
-gate-ready environment. `uv` provisions a compatible Python (`>=3.11`)
-automatically — you do not need to install Python yourself.
+This reads `uv.lock` and installs every dependency needed (check `uv.lock` for the list of dependencies)
 
 ### 4. Run the service
 
@@ -67,8 +60,6 @@ uv run uvicorn app_assignment_1.api:app --reload
 - `--reload` auto-restarts the server when you edit code — a dev convenience;
   omit it in production.
 
-It prints `Uvicorn running on http://127.0.0.1:8000`. Stop it with `Ctrl+C`.
-
 Leave it running and, in a second terminal, confirm it's up:
 
 ```bash
@@ -81,21 +72,13 @@ You should see:
 {"status":"ok","version":"0.1.0","environment":"local"}
 ```
 
-Open the interactive API docs in a browser at
-<http://127.0.0.1:8000/docs> — you can exercise `/predict` from there with
-**Try it out**.
+> This runs the real service, not the test suite
 
-> This runs the real service, not the test suite. Running the tests
-> (`uv run pytest`) is a separate step — see below.
-
-### 5. Run the checks
+### 5. Run the tests
 
 ```bash
 uv run pytest
 ```
-
-That's the whole loop: install `uv`, clone, `uv sync`, run. You now have the
-same environment as every teammate and as CI.
 
 ---
 
@@ -111,8 +94,7 @@ template and edit it:
 cp env/.env.example .env
 ```
 
-`.env` is git-ignored and never committed. The deployed shape lives in
-`env/.env.production.example`.
+The deployed shape lives in `env/.env.production.example`.
 
 ### Call the placeholder predict endpoint
 
@@ -185,7 +167,7 @@ All variables use the `APP_` prefix and map to `Settings` in
 | `APP_HOST`        | str                                            | `127.0.0.1`   | Use `0.0.0.0` inside a container.                 |
 | `APP_PORT`        | int (1–65535)                                  | `8000`        | Out-of-range values fail at startup.              |
 | `APP_LOG_LEVEL`   | `DEBUG`…`CRITICAL`                             | `INFO`        | Standard logging levels.                          |
-| `APP_API_KEY`     | str                                            | `""`          | **Required** when `APP_ENVIRONMENT=production`.   |
+| `APP_API_KEY`     | str                                            | `""`          | Required when `APP_ENVIRONMENT=production`.   |
 
 ### Common commands
 
@@ -217,31 +199,3 @@ App - Assignment 1/
 └── tests/
     └── test_api.py
 ```
-
----
-
-## Explanation
-
-### Why the `src/` layout
-
-With a flat layout, Python imports the local package before the installed one
-when you run `pytest` at the repo root, so tests can pass locally yet fail in
-CI (the "phantom import"). Placing the package under `src/` makes the local
-source invisible to the import system, so tests always run against the
-*installed* package — your dev environment behaves like a user's.
-
-### Why a committed `uv.lock`
-
-`uv sync` installs the exact dependency tree recorded in `uv.lock` without
-re-resolving. Committing the lockfile means every teammate, every CI run, and
-every deployment gets byte-for-byte identical dependencies — no "works on my
-machine." CI uses `uv sync --frozen` to *fail* if the lockfile and
-`pyproject.toml` ever drift apart.
-
-### Why fail-fast configuration
-
-Configuration is validated by Pydantic Settings at startup. Bad config (a port
-out of range, production without an API key, a typo'd key in `.env`) raises
-immediately and stops the process, instead of letting the service limp along in
-a broken state and fail mysteriously later. Real secrets live in a git-ignored
-`.env` or the deployment platform's secret store — never in the repository.

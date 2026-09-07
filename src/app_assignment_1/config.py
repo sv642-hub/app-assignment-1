@@ -30,18 +30,16 @@ class Settings(BaseSettings):
         extra="forbid",  # a typo'd key in .env is a mistake -> fail fast
     )
 
-    # --- Runtime environment -------------------------------------------------
+    # Runtime environment
     environment: Literal["local", "staging", "production"] = "local"
     debug: bool = False
 
-    # --- HTTP server ---------------------------------------------------------
+    # HTTP server
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=1, le=65535)
 
-    # --- Application ---------------------------------------------------------
+    # Application
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
-    # Example secret-shaped knob: required in deployed environments, never
-    # committed. Empty by default so local dev works without it.
     api_key: str = ""
 
     @field_validator("api_key")
