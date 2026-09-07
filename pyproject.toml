@@ -7,7 +7,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
-    { name = "sv642-hub", email = "sv642@georgetown.edu" }
+    { name = "sv642-hub", email = "sv642@georgetown.edu" },
+    { name = "verness_chin", email = "yc1348@georgetown.edu" },
+    { name = "Pbaffes2", email = "pb1100@georgetown.edu" }
 ]
 dependencies = [
     "fastapi>=0.141.1",
