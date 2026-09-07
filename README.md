@@ -13,7 +13,7 @@ FastAPI skeleton, that uses Pydantic settings and models
 
 ---
 
-## Intalling:
+## Installing
 
 How to install this repo on a new machine
 
