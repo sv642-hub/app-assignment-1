@@ -45,12 +45,14 @@ cd "App - Assignment 1"
 ### 3. Create the environment from the lockfile
 
 ```bash
-uv sync --extra dev
+uv sync --frozen
 ```
 
 This reads `uv.lock` and installs the **exact** recorded versions into a local
-`.venv/`. `uv` downloads the pinned Python (3.13) automatically if you don't have
-it — you do not need to install Python yourself.
+`.venv/` — no re-resolution. The `dev` dependency group (linters, type checker,
+tests) is installed by default, so this single command gives you a complete,
+gate-ready environment. `uv` provisions a compatible Python (`>=3.11`)
+automatically — you do not need to install Python yourself.
 
 ### 4. Run the service
 
@@ -122,7 +124,7 @@ stays in sync.
 These are the exact steps CI runs, in order:
 
 ```bash
-uv sync --extra dev --frozen
+uv sync --frozen
 uv run ruff check
 uv run ruff format --check
 uv run mypy src/
@@ -134,6 +136,14 @@ Auto-fix formatting before committing:
 ```bash
 uv run ruff format
 uv run ruff check --fix
+```
+
+### Enable the pre-commit hooks (optional)
+
+Runs ruff lint/format automatically on every commit:
+
+```bash
+uv run pre-commit install
 ```
 
 ---
@@ -168,7 +178,7 @@ All variables use the `APP_` prefix and map to `Settings` in
 
 | Command                        | What it does                                        |
 |--------------------------------|-----------------------------------------------------|
-| `uv sync --extra dev`          | Install runtime + dev deps from the lockfile.       |
+| `uv sync --frozen`             | Install runtime + dev group from the lockfile.      |
 | `uv run uvicorn app_assignment_1.api:app --reload` | Run the service with auto-reload.   |
 | `uv run pytest`                | Run the test suite.                                 |
 | `uv run ruff check`            | Lint.                                               |
@@ -179,6 +189,7 @@ All variables use the `APP_` prefix and map to `Settings` in
 ```
 App - Assignment 1/
 ├── .github/workflows/ci.yml   # lint, format, type-check, test on push & PR
+├── .pre-commit-config.yaml    # ruff lint/format git hooks
 ├── pyproject.toml             # single declarative config (deps, build, tools)
 ├── uv.lock                    # machine-generated lockfile — always committed
 ├── env/

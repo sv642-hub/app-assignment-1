@@ -15,13 +15,15 @@ dependencies = [
     "uvicorn[standard]>=0.52.4",
 ]
 
-[project.optional-dependencies]
+# Dev dependency group (PEP 735). Installed by default with `uv sync`.
+[dependency-groups]
 dev = [
     "pytest>=8.0",
     "pytest-cov",
     "ruff>=0.4",
     "mypy>=1.10",
     "httpx2>=2.12",
+    "pre-commit>=3.7",
 ]
 
 # Build backend
