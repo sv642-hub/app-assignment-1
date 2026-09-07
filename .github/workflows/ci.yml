@@ -19,7 +19,7 @@ jobs:
           enable-cache: true
 
       - name: Install the environment from the lockfile
-        run: uv sync --frozen
+        run: uv sync --extra dev --frozen
 
       - name: Lint (ruff)
         run: uv run ruff check

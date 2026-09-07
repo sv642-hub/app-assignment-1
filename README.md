@@ -43,10 +43,12 @@ cd "App - Assignment 1"
 ### 3. Create the environment from the lockfile
 
 ```bash
-uv sync --frozen
+uv sync --extra dev --frozen
 ```
 
-This reads `uv.lock` and installs every dependency needed (check `uv.lock` for the list of dependencies)
+This reads `uv.lock` and installs every dependency needed (check `uv.lock` for the list of dependencies).
+The `dev` extra adds the tools the app itself does not need: pytest, ruff, mypy,
+pre-commit. Omit `--extra dev` for a runtime-only install.
 
 ### 4. Run the service
 
@@ -108,8 +110,8 @@ curl -X POST http://127.0.0.1:8000/predict \
 ### Add a dependency
 
 ```bash
-uv add <package>            # runtime dependency
-uv add --dev <package>      # dev-only (tests, linters, types)
+uv add <package>                    # runtime dependency
+uv add --optional dev <package>     # dev-only (tests, linters, types)
 ```
 
 Both commands update `pyproject.toml` **and** `uv.lock`. Commit both so the team
@@ -120,7 +122,7 @@ stays in sync.
 These are the exact steps CI runs, in order:
 
 ```bash
-uv sync --frozen
+uv sync --extra dev --frozen
 uv run ruff check
 uv run ruff format --check
 uv run mypy src/
@@ -174,7 +176,7 @@ All variables use the `APP_` prefix and map to `Settings` in
 
 | Command                        | What it does                                        |
 |--------------------------------|-----------------------------------------------------|
-| `uv sync --frozen`             | Install runtime + dev group from the lockfile.      |
+| `uv sync --extra dev --frozen` | Install runtime + dev extra from the lockfile.      |
 | `uv run uvicorn app_assignment_1.api:app --reload` | Run the service with auto-reload.   |
 | `uv run pytest`                | Run the test suite.                                 |
 | `uv run ruff check`            | Lint.                                               |

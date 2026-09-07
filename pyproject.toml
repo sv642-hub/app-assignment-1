@@ -17,8 +17,8 @@ dependencies = [
     "uvicorn[standard]>=0.52.4",
 ]
 
-# Dev dependency group (PEP 735). Installed by default with `uv sync`.
-[dependency-groups]
+# Dev extra. Install with `uv sync --extra dev`.
+[project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "pytest-cov",
