@@ -16,9 +16,17 @@ wheels/
 !.env.example
 !.env.production.example
 
-# Test / coverage artifacts
+# Test / coverage / type-check artifacts
 .coverage
 .coverage.*
 htmlcov/
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+
+# Rendered docs previews (Quarto / RStudio)
+README.html
+README_files/
+/*_files/
+*.quarto_ipynb
+.quarto/
