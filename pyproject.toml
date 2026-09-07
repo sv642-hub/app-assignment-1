@@ -17,19 +17,7 @@ dependencies = [
     "uvicorn[standard]>=0.52.4",
 ]
 
-# Dev tooling, declared twice on purpose so both install paths work:
-#   uv sync                      -> PEP 735 group below, installed by default
-#   uv sync --extra dev          -> the classic extra below, used by CI
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.0",
-    "pytest-cov",
-    "ruff>=0.4",
-    "mypy>=1.10",
-    "httpx2>=2.12",
-    "pre-commit>=3.7",
-]
-
+# Dev dependency group (PEP 735). Installed by default with `uv sync`.
 [dependency-groups]
 dev = [
     "pytest>=8.0",

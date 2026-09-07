@@ -120,7 +120,7 @@ stays in sync.
 These are the exact steps CI runs, in order:
 
 ```bash
-uv sync --extra dev --frozen
+uv sync --frozen
 uv run ruff check
 uv run ruff format --check
 uv run mypy src/
