@@ -3,6 +3,7 @@
 DSAN 6700 (App Deployment) — Assignment 1.
 
 The base repo for Machine Learning App Deployment course
+
 It follows the instructions of using `uv` and the `src/` layout. It contains a
 FastAPI skeleton, that uses Pydantic settings and models
 
