@@ -56,9 +56,18 @@ automatically — you do not need to install Python yourself.
 
 ### 4. Run the service
 
+Start the live web server with uvicorn:
+
 ```bash
 uv run uvicorn app_assignment_1.api:app --reload
 ```
+
+- `app_assignment_1.api:app` points at the `app` object in
+  [`src/app_assignment_1/api.py`](src/app_assignment_1/api.py).
+- `--reload` auto-restarts the server when you edit code — a dev convenience;
+  omit it in production.
+
+It prints `Uvicorn running on http://127.0.0.1:8000`. Stop it with `Ctrl+C`.
 
 Leave it running and, in a second terminal, confirm it's up:
 
@@ -73,7 +82,11 @@ You should see:
 ```
 
 Open the interactive API docs in a browser at
-<http://127.0.0.1:8000/docs>.
+<http://127.0.0.1:8000/docs> — you can exercise `/predict` from there with
+**Try it out**.
+
+> This runs the real service, not the test suite. Running the tests
+> (`uv run pytest`) is a separate step — see below.
 
 ### 5. Run the checks
 
