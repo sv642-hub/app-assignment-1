@@ -202,3 +202,12 @@ App - Assignment 1/
 └── tests/
     └── test_api.py
 ```
+
+---
+
+## Acknowledgments
+
+The initial project setup — `uv`/`src` scaffolding, the FastAPI skeleton,
+Pydantic Settings configuration, the GitHub Actions CI workflow, and this
+documentation — was done with the help of [Claude Code](https://claude.com/claude-code)
+(Anthropic's Claude, Opus 4.8).
