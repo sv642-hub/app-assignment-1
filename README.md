@@ -205,6 +205,55 @@ App - Assignment 1/
 
 ---
 
+## Troubleshooting
+
+### `ModuleNotFoundError: No module named 'app_assignment_1'`
+
+This means the **project package was not installed** into the environment you're
+running. Because this repo uses a `src/` layout, `app_assignment_1` lives in
+`src/app_assignment_1/` and is only importable once the project is *installed* —
+it is never found just by being in the folder. The usual cause is building the
+virtual environment by hand (e.g. `uv venv` + `uv pip install …`, or a conda env
+with `pip install uvicorn`) instead of letting `uv sync` install the project.
+
+**Fix — always set up with `uv sync`, from the repo root:**
+
+```bash
+cd "App - Assignment 1"
+rm -rf .venv
+uv sync --frozen
+uv run uvicorn app_assignment_1.api:app --reload
+```
+
+The `uv sync` output must include the project itself being installed:
+
+```
++ app-assignment-1==0.1.0 (from file:///.../App - Assignment 1)
+```
+
+**Check which problem you have:**
+
+```bash
+uv run python -c "import app_assignment_1; print(app_assignment_1.__file__)"
+```
+
+Prints a path → installed correctly. Still errors → the `rm -rf .venv && uv sync`
+above fixes it.
+
+**Quick workaround** (runs even without installing the project, by putting `src`
+on the path):
+
+```bash
+uv run uvicorn --app-dir src app_assignment_1.api:app --reload
+```
+
+> The module name `app_assignment_1` comes from the package directory
+> `src/app_assignment_1/`. The uvicorn target `app_assignment_1.api:app` means
+> "import `src/app_assignment_1/api.py` and use its `app` object." Watch the
+> spelling: assign**ment**, not "assignement".
+
+---
+
 ## Acknowledgments
 
 The initial project setup — `uv`/`src` scaffolding, the FastAPI skeleton,
