@@ -2,7 +2,7 @@
 name: Bug report
 about: Report a reproducible problem in Forseti's gateway, model integration, or deployment.
 title: ""
-labels: ""
+labels: bug
 assignees: ""
 ---
 

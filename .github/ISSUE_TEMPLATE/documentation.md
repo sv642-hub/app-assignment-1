@@ -2,7 +2,7 @@
 name: Documentation
 about: Request a correction or addition to Forseti's setup, API, architecture, or assignment documentation.
 title: ""
-labels: ""
+labels: documentation
 assignees: ""
 ---
 
