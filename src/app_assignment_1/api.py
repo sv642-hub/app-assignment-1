@@ -6,19 +6,32 @@ input and output are validated/serialized by Pydantic models.
 
 from __future__ import annotations
 
-from fastapi import FastAPI
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request
 from pydantic import BaseModel, Field
 
 from app_assignment_1 import __version__
 from app_assignment_1.config import get_settings
+from app_assignment_1.model import TextGenerator
 
 # Validate configuration at startup: if the environment is misconfigured this
 # raises immediately and the process refuses to start.
+
 settings = get_settings()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    app.state.generator = TextGenerator()
+    yield
+    del app.state.generator
+
 
 app = FastAPI(
     title="app-assignment-1",
     version=__version__,
+    lifespan=lifespan,
     description="DSAN 6700 App Deployment — Assignment 1 service skeleton.",
     debug=settings.debug,
 )
@@ -35,7 +48,11 @@ class HealthResponse(BaseModel):
 class PredictRequest(BaseModel):
     """Validated input for the placeholder predict endpoint."""
 
-    text: str = Field(..., min_length=1, description="Input text to echo back.")
+    text: str = Field(
+        ..., 
+        min_length=1, 
+        description="Input text for the language model."
+    )
 
 
 class PredictResponse(BaseModel):
@@ -52,9 +69,14 @@ def health() -> HealthResponse:
 
 
 @app.post("/predict", response_model=PredictResponse)
-def predict(request: PredictRequest) -> PredictResponse:
-    """Placeholder predict endpoint (does no real inference yet)."""
+def predict(
+    request: PredictRequest,
+    http_request: Request,
+) -> PredictResponse:
+    generator: TextGenerator = http_request.app.state.generator
+    answer = generator.generate(request.text)
+
     return PredictResponse(
-        prediction=f"echo: {request.text}",
+        prediction=answer,
         input_length=len(request.text),
     )
