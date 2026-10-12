@@ -39,7 +39,8 @@ class TextGenerator:
         )
 
         with torch.inference_mode():
-            outputs = self.model.generate(
+            # Work around Transformers' generate() self-type mismatch.
+            outputs = self.model.generate(  # type: ignore[misc]
                 **inputs,
                 max_new_tokens=self.max_new_tokens,
                 do_sample=False,
@@ -48,6 +49,4 @@ class TextGenerator:
 
         # Decode only the new answer, excluding the original prompt.
         new_tokens = outputs[0, inputs["input_ids"].shape[1] :]
-        return str(
-            self.tokenizer.decode(new_tokens, skip_special_tokens=True)
-        ).strip()
+        return str(self.tokenizer.decode(new_tokens, skip_special_tokens=True)).strip()

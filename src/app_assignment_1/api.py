@@ -21,6 +21,7 @@ from app_assignment_1.model import TextGenerator
 
 settings = get_settings()
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.generator = TextGenerator()
@@ -49,9 +50,7 @@ class PredictRequest(BaseModel):
     """Validated input for the placeholder predict endpoint."""
 
     text: str = Field(
-        ..., 
-        min_length=1, 
-        description="Input text for the language model."
+        ..., min_length=1, description="Input text for the language model."
     )
 
 
