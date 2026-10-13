@@ -26,7 +26,6 @@ dev = [
     "pytest-cov",
     "ruff>=0.4",
     "mypy>=1.10",
-    "httpx2>=2.12",
     "pre-commit>=3.7",
     "httpx>=0.28.1",
 ]
