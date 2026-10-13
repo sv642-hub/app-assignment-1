@@ -30,3 +30,6 @@ README_files/
 /*_files/
 *.quarto_ipynb
 .quarto/
+
+# macOS files
+.DS_Store
