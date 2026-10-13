@@ -5,7 +5,10 @@ DSAN 6700 (App Deployment) — Assignment 1.
 The base repo for Machine Learning App Deployment course
 
 It follows the instructions of using `uv` and the `src/` layout. It contains a
-FastAPI skeleton, that uses Pydantic settings and models
+FastAPI service that uses Pydantic settings and models, with a `/predict`
+endpoint backed by a local language model
+([SmolLM2-135M-Instruct](https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct))
+running on CPU with PyTorch and Transformers.
 
 
 - **[Installing](#installing)** — get it running from zero.
@@ -50,6 +53,10 @@ This reads `uv.lock` and installs every dependency needed (check `uv.lock` for t
 The `dev` extra adds the tools the app itself does not need: pytest, ruff, mypy,
 pre-commit. Omit `--extra dev` for a runtime-only install.
 
+> The runtime dependencies include `torch` and `transformers`. On Linux the
+> default `torch` wheel bundles CUDA libraries, so the first sync can download
+> several GB.
+
 ### 4. Run the service
 
 Start the live web server with uvicorn:
@@ -62,6 +69,14 @@ uv run uvicorn app_assignment_1.api:app --reload
   [`src/app_assignment_1/api.py`](src/app_assignment_1/api.py).
 - `--reload` auto-restarts the server when you edit code — a dev convenience;
   omit it in production.
+
+**First run downloads the model.** At startup the service loads
+SmolLM2-135M-Instruct once and reuses it for every request. The first time, the
+weights (about 270 MB) are downloaded from Hugging Face — no account or token
+needed — and cached under `~/.cache/huggingface` (set `HF_HOME` to move the
+cache). Later starts load from the cache. The server only accepts requests
+once the model has loaded; if the model cannot be loaded, the server logs the
+error and exits.
 
 Leave it running and, in a second terminal, confirm it's up:
 
@@ -99,13 +114,34 @@ cp env/.env.example .env
 
 The deployed shape lives in `env/.env.production.example`.
 
-### Call the placeholder predict endpoint
+### Ask the model a question
+
+With the service running:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/predict \
   -H 'content-type: application/json' \
-  -d '{"text":"hello"}'
+  -d '{"text":"What is a bank? Answer in one short sentence."}'
 ```
+
+Example response (decoding is greedy, so the same input gives the same answer):
+
+```json
+{"prediction":"A bank is a financial institution that provides a wide range of services, including lending, borrowing, and checking accounts.","input_length":45}
+```
+
+A single request took about 0.3 s of generation time on an Apple M4 CPU (see
+[`discussion.md`](discussion.md)); expect different timings on other machines.
+Possible errors:
+
+| Status | Body                                    | Meaning                                                     |
+|--------|-----------------------------------------|-------------------------------------------------------------|
+| `422`  | validation details                      | `text` is missing or empty.                                 |
+| `500`  | `{"detail":"Model generation failed."}` | The model raised an error; the full error is in the server log. |
+| `503`  | `{"detail":"Model not loaded."}`        | The model is not available (for example, during shutdown).  |
+
+To change the model or reply length, see `APP_LLM_MODEL_NAME` and
+`APP_LLM_MAX_NEW_TOKENS` in the [settings reference](#configuration-settings).
 
 ### Add a dependency
 
@@ -153,10 +189,12 @@ uv run pre-commit install
 | Method | Path       | Request body      | Response model    | Purpose                          |
 |--------|------------|-------------------|-------------------|----------------------------------|
 | GET    | `/health`  | —                 | `HealthResponse`  | Liveness check for callers/CI.   |
-| POST   | `/predict` | `PredictRequest`  | `PredictResponse` | Placeholder echo "prediction".   |
+| POST   | `/predict` | `PredictRequest`  | `PredictResponse` | Text generation with SmolLM2.    |
 | GET    | `/docs`    | —                 | HTML              | Auto-generated Swagger UI.       |
 
 `PredictRequest` requires a non-empty `text`; invalid input returns HTTP `422`.
+`/predict` returns `500` if generation fails and `503` if the model is not
+loaded, both with an `ErrorResponse` body (`{"detail": "..."}`).
 
 ### Configuration (settings)
 
@@ -171,6 +209,8 @@ All variables use the `APP_` prefix and map to `Settings` in
 | `APP_PORT`        | int (1–65535)                                  | `8000`        | Out-of-range values fail at startup.              |
 | `APP_LOG_LEVEL`   | `DEBUG`…`CRITICAL`                             | `INFO`        | Standard logging levels.                          |
 | `APP_API_KEY`     | str                                            | `""`          | Required when `APP_ENVIRONMENT=production`.   |
+| `APP_LLM_MODEL_NAME` | str (Hugging Face model ID, non-empty)      | `HuggingFaceTB/SmolLM2-135M-Instruct` | Loaded once at startup.        |
+| `APP_LLM_MAX_NEW_TOKENS` | int (1–512)                             | `64`          | Max tokens per reply; out-of-range values fail at startup. |
 
 ### Common commands
 
@@ -194,18 +234,41 @@ App - Assignment 1/
 │   ├── .env.example           # local-dev config template
 │   └── .env.production.example # deployed config template
 ├── LICENSE · README.md
+├── discussion.md              # blocking-call audit write-up
+├── benchmark_results/         # saved benchmark output (JSON)
+├── scripts/
+│   ├── benchmark_requests.py  # 10 concurrent /predict requests
+│   └── measure_steps.py       # per-stage timing of one request
 ├── src/
 │   └── app_assignment_1/
 │       ├── __init__.py        # package marker + version
-│       ├── api.py             # FastAPI app, endpoints, Pydantic models
-│       └── config.py          # typed settings (Pydantic Settings)
+│       ├── api.py             # FastAPI app, lifespan, endpoints, Pydantic models
+│       ├── config.py          # typed settings (Pydantic Settings)
+│       └── model.py           # SmolLM2 loading and text generation
 └── tests/
-    └── test_api.py
+    └── test_api.py            # API tests with a fake model (no download)
 ```
 
 ---
 
 ## Troubleshooting
+
+### `ModuleNotFoundError: No module named 'torch'` (or `transformers`)
+
+Your `.venv` was created before the model dependencies were added and is out of
+date with `uv.lock`. The tests also need `torch`, even though they use a fake
+model, because `api.py` imports `model.py`. Re-sync from the repo root:
+
+```bash
+uv sync --extra dev --frozen
+```
+
+### The server exits at startup with "Failed to load model"
+
+The model could not be downloaded or loaded. Check your internet connection
+(the first run downloads from Hugging Face), that `APP_LLM_MODEL_NAME` is a
+valid model ID, and that the cache directory (`~/.cache/huggingface` or
+`HF_HOME`) is writable. The full error is printed below the log line.
 
 ### `ModuleNotFoundError: No module named 'app_assignment_1'`
 
