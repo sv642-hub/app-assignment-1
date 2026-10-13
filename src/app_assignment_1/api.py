@@ -24,7 +24,10 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    app.state.generator = TextGenerator()
+    app.state.generator = TextGenerator(
+        model_name="HuggingFaceTB/SmolLM2-135M-Instruct",
+        max_new_tokens=64,
+    )
     yield
     del app.state.generator
 
