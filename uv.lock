@@ -54,7 +54,6 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "httpx" },
-    { name = "httpx2" },
     { name = "mypy" },
     { name = "pre-commit" },
     { name = "pytest" },
@@ -66,7 +65,6 @@ dev = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.141.1" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28.1" },
-    { name = "httpx2", marker = "extra == 'dev'", specifier = ">=2.12" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.7" },
     { name = "pydantic-settings", specifier = ">=2.15.0" },
