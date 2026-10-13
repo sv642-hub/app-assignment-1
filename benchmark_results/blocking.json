@@ -1,0 +1,74 @@
+{
+  "label": "blocking",
+  "timestamp_utc": "2026-10-13T03:12:16.036191+00:00",
+  "url": "http://127.0.0.1:8000/predict",
+  "payload": {
+    "text": "What is a bank? Answer in one short sentence."
+  },
+  "request_count": 10,
+  "warmup_requests": 1,
+  "total_seconds": 3.2488639999646693,
+  "slowest_request_seconds": 3.2475926659535617,
+  "requests": [
+    {
+      "request": 1,
+      "seconds": 0.3056300419848412,
+      "status_code": 200,
+      "prediction": "A bank is a financial institution that provides a wide range of services, including lending, borrowing, and checking accounts."
+    },
+    {
+      "request": 2,
+      "seconds": 0.5998206669464707,
+      "status_code": 200,
+      "prediction": "A bank is a financial institution that provides a wide range of services, including lending, borrowing, and checking accounts."
+    },
+    {
+      "request": 3,
+      "seconds": 0.8926314171403646,
+      "status_code": 200,
+      "prediction": "A bank is a financial institution that provides a wide range of services, including lending, borrowing, and checking accounts."
+    },
+    {
+      "request": 4,
+      "seconds": 1.2211509170010686,
+      "status_code": 200,
+      "prediction": "A bank is a financial institution that provides a wide range of services, including lending, borrowing, and checking accounts."
+    },
+    {
+      "request": 5,
+      "seconds": 1.5508089170325547,
+      "status_code": 200,
+      "prediction": "A bank is a financial institution that provides a wide range of services, including lending, borrowing, and checking accounts."
+    },
+    {
+      "request": 6,
+      "seconds": 1.8735530839767307,
+      "status_code": 200,
+      "prediction": "A bank is a financial institution that provides a wide range of services, including lending, borrowing, and checking accounts."
+    },
+    {
+      "request": 7,
+      "seconds": 2.187810374889523,
+      "status_code": 200,
+      "prediction": "A bank is a financial institution that provides a wide range of services, including lending, borrowing, and checking accounts."
+    },
+    {
+      "request": 8,
+      "seconds": 2.514296832960099,
+      "status_code": 200,
+      "prediction": "A bank is a financial institution that provides a wide range of services, including lending, borrowing, and checking accounts."
+    },
+    {
+      "request": 9,
+      "seconds": 2.8140516250859946,
+      "status_code": 200,
+      "prediction": "A bank is a financial institution that provides a wide range of services, including lending, borrowing, and checking accounts."
+    },
+    {
+      "request": 10,
+      "seconds": 3.2475926659535617,
+      "status_code": 200,
+      "prediction": "A bank is a financial institution that provides a wide range of services, including lending, borrowing, and checking accounts."
+    }
+  ]
+}

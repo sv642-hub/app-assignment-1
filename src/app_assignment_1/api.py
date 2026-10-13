@@ -71,7 +71,7 @@ def health() -> HealthResponse:
 
 
 @app.post("/predict", response_model=PredictResponse)
-def predict(
+async def predict(
     request: PredictRequest,
     http_request: Request,
 ) -> PredictResponse:
