@@ -24,9 +24,11 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    # Read settings when the app starts (not at import) so tests can override them.
+    model_settings = get_settings()
     app.state.generator = TextGenerator(
-        model_name="HuggingFaceTB/SmolLM2-135M-Instruct",
-        max_new_tokens=64,
+        model_name=model_settings.llm_model_name,
+        max_new_tokens=model_settings.llm_max_new_tokens,
     )
     yield
     del app.state.generator
