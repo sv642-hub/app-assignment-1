@@ -129,7 +129,7 @@ curl http://127.0.0.1:8000/health          # from the machine running it
 curl http://<instance-ip>:8000/health    # our Jetstream2 instance, from anywhere
 ```
 
-`<ip_address>` is the instance's public IP, shown on its page in the Jetstream2 dashboard.
+`<instance-ip>` is the instance's public IP, shown on its page in the Jetstream2 dashboard.
 
 Expected response:
 

@@ -5,9 +5,12 @@ services:
       - "8000:8000"
     env_file:
       - env/.env.production.example
+      - path: env/.env
+        required: false
     volumes:
       - hf_vol:/models
     restart: unless-stopped
 
 volumes:
   hf_vol:
+  
