@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     api_key: str = ""
 
+    # Language model (loaded once at startup)
+    llm_model_name: str = Field(
+        default="HuggingFaceTB/SmolLM2-135M-Instruct", min_length=1
+    )
+    llm_max_new_tokens: int = Field(default=64, gt=0, le=512)
+
     @field_validator("api_key")
     @classmethod
     def _require_api_key_in_production(cls, v: str, info) -> str:
