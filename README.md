@@ -53,9 +53,9 @@ This reads `uv.lock` and installs every dependency needed (check `uv.lock` for t
 The `dev` extra adds the tools the app itself does not need: pytest, ruff, mypy,
 pre-commit. Omit `--extra dev` for a runtime-only install.
 
-> The runtime dependencies include `torch` and `transformers`. On Linux the
-> default `torch` wheel bundles CUDA libraries, so the first sync can download
-> several GB.
+> The runtime dependencies include `torch` and `transformers`. On Linux,
+> `pyproject.toml` installs PyTorch's CPU-only build (no CUDA libraries), so the
+> first sync is a few hundred MB rather than several GB.
 
 ### 4. Run the service
 
@@ -129,10 +129,33 @@ curl -X POST http://127.0.0.1:8000/predict \
   -d '{"text":"What is a bank? Answer in one short sentence."}'
 ```
 
+Example response (decoding is greedy, so the same input gives the same answer):
+
+```json
+{"prediction":"A bank is a financial institution that provides a wide range of services, including lending, borrowing, and checking accounts.","input_length":45}
+```
+
+A single request took about 0.3 s of generation time on an Apple M4 CPU (see
+[`discussion.md`](discussion.md)); expect different timings on other machines.
+The separate [smoke check](benchmark_results/smoke_check.json) recorded about
+6.6 s for one `/predict` request. Its hardware, warm-up state, and timing method
+were not recorded, so that result cannot be directly compared with the 0.3 s
+generation measurement. It confirms a working request, not typical latency.
+Possible errors:
+
+| Status | Body                                    | Meaning                                                     |
+|--------|-----------------------------------------|-------------------------------------------------------------|
+| `422`  | validation details                      | `text` is missing or empty.                                 |
+| `500`  | `{"detail":"Model generation failed."}` | The model raised an error; the full error is in the server log. |
+| `503`  | `{"detail":"Model not loaded."}`        | No model is attached to the app. A model load failure normally stops startup. |
+
+To change the model or reply length, see `APP_LLM_MODEL_NAME` and
+`APP_LLM_MAX_NEW_TOKENS` in the [settings reference](#configuration-settings).
+
 ### Run the service with Docker
 
-The service ships as a Docker image and is started with Docker Compose. You need
-Docker with the Compose plugin (`docker compose version` should print a version).
+The service ships as a Docker image and is started with Docker Compose. You need Docker with the Compose plugin, **version 2.24.0 or newer**
+(`docker compose version` to check). Older versions don't support the optional `env/.env` file used in `compose.yml`.
 
 **Start it** from the repository root:
 
@@ -186,39 +209,20 @@ docker compose down        # keeps the downloaded model
 - **Non-root.** The container runs as an unprivileged `appuser`.
 - **Restart policy.** `restart: unless-stopped` brings the service back after a
   crash or a reboot, unless it was stopped on purpose.
-- **Configuration at run time.** Compose reads settings from
-  `env/.env.production.example`; nothing is baked into the image, and
-  `.dockerignore` keeps `.venv`, `.git`, and env files out of it.
-  `APP_API_KEY` is validated but not yet used by any endpoint, so the
-  template's placeholder is acceptable for this demo. A real deployment would
-  supply the secret through a gitignored file instead.
+- **Configuration at run time.** Compose reads `env/.env.production.example`
+  (committed, no secrets) and then, if it exists, `env/.env`, which overrides
+  it. Put private values such as a real `APP_API_KEY` in `env/.env`. It is
+  gitignored, so it is never committed, and `.dockerignore` keeps it out of
+  the image:
+
+```bash
+  echo "APP_API_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')" > env/.env
+  docker compose up -d
+```
 - **CPU-only PyTorch on Linux.** Our Jetstream2 instance (`m3.small`) has no GPU
   and a 20 GB disk. The default Linux PyTorch pulls in ~2 GB of NVIDIA CUDA
   packages, which filled the disk, so `pyproject.toml` installs PyTorch's
   CPU-only build on Linux. macOS is unaffected.
-
-Example response (decoding is greedy, so the same input gives the same answer):
-
-```json
-{"prediction":"A bank is a financial institution that provides a wide range of services, including lending, borrowing, and checking accounts.","input_length":45}
-```
-
-A single request took about 0.3 s of generation time on an Apple M4 CPU (see
-[`discussion.md`](discussion.md)); expect different timings on other machines.
-The separate [smoke check](benchmark_results/smoke_check.json) recorded about
-6.6 s for one `/predict` request. Its hardware, warm-up state, and timing method
-were not recorded, so that result cannot be directly compared with the 0.3 s
-generation measurement. It confirms a working request, not typical latency.
-Possible errors:
-
-| Status | Body                                    | Meaning                                                     |
-|--------|-----------------------------------------|-------------------------------------------------------------|
-| `422`  | validation details                      | `text` is missing or empty.                                 |
-| `500`  | `{"detail":"Model generation failed."}` | The model raised an error; the full error is in the server log. |
-| `503`  | `{"detail":"Model not loaded."}`        | No model is attached to the app. A model load failure normally stops startup. |
-
-To change the model or reply length, see `APP_LLM_MODEL_NAME` and
-`APP_LLM_MAX_NEW_TOKENS` in the [settings reference](#configuration-settings).
 
 ### Add a dependency
 
