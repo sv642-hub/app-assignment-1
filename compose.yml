@@ -1,0 +1,13 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - env/.env.example
+    volumes:
+      - hf_vol:/models
+    restart: unless-stopped
+
+volumes:
+  hf_vol:
