@@ -305,7 +305,7 @@ public IP for Jetstream2:
 
 ```bash
 export HOST=127.0.0.1                      # local
-# export HOST=149.165.147.167              # our Jetstream2 instance (current IP)
+# export HOST=<instance-ip>                # Jetstream2: public IP from the dashboard
 ```
 
 **`GET /health`**: liveness check.
