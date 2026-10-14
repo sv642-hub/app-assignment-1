@@ -215,10 +215,11 @@ docker compose down        # keeps the downloaded model
   gitignored, so it is never committed, and `.dockerignore` keeps it out of
   the image:
 
-```bash
-  echo "APP_API_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')" > env/.env
-  docker compose up -d
-```
+  ```bash
+    echo "APP_API_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')" > env/.env
+    docker compose up -d
+  ```
+
 - **CPU-only PyTorch on Linux.** Our Jetstream2 instance (`m3.small`) has no GPU
   and a 20 GB disk. The default Linux PyTorch pulls in ~2 GB of NVIDIA CUDA
   packages, which filled the disk, so `pyproject.toml` installs PyTorch's
@@ -311,6 +312,10 @@ App - Assignment 1/
 ├── .pre-commit-config.yaml    # ruff lint/format git hooks
 ├── pyproject.toml             # single declarative config (deps, build, tools)
 ├── uv.lock                    # machine-generated lockfile — always committed
+├── .dockerignore              # keeps .venv, .git, env files out of the image
+├── Dockerfile                 # uv install, cached dependency layer, non-root, HEALTHCHECK
+├── compose.yml                # runs the stack on Jetstream2 (named model volume)
+├── problem2-local-run.md      # Problem 2 local run guide
 ├── env/
 │   ├── .env.example           # local-dev config template
 │   └── .env.production.example # deployed config template
@@ -327,7 +332,64 @@ App - Assignment 1/
 │       ├── config.py          # typed settings (Pydantic Settings)
 │       └── model.py           # SmolLM2 loading and text generation
 └── tests/
-    └── test_api.py            # API tests with a fake model (no download)
+    ├── test_api.py            # API tests with a fake model (no download)
+    └── test_config.py         # settings validation tests
+```
+
+### Deployment measurements
+
+Measured on our Jetstream2 instance (`m3.small`: 2 vCPU, 6 GB RAM, 20 GB disk,
+no GPU) on 2026-10-14, building `main` with the stack running via
+`docker compose up -d`.
+
+| Measurement | Result | Command |
+|---|---|---|
+| Image size on disk | **1.5 GB** (316 MB compressed) | `docker images app-assignment-1-app` |
+| Rebuild after a one-line code change, **with** the cached dependency layer | **2.8 s** | `time docker compose build` |
+| Rebuild after a one-line code change, **without** a cached dependency layer | **56 s** | `time docker compose build --no-cache` |
+
+The one-line change was a comment added to `src/app_assignment_1/api.py`. With
+the cache, only the last three steps rerun (copy `src/`, copy the README,
+install the project); the dependency install is reused. Without the cache,
+every step reruns, including installing PyTorch and exporting the image. That
+is why the Dockerfile copies `pyproject.toml` and `uv.lock` and installs the
+dependencies *before* copying the source.
+
+`docker system df` on the instance with the stack up:
+
+```
+TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+Images          4         4         2.77GB    2.77GB (100%)
+Containers      4         3         27.1MB    12.29kB (0%)
+Local Volumes   2         1         272.5MB   357B (0%)
+Build Cache     0         0         0B        0B
+```
+
+- **Images:** our app image (1.5 GB) plus the three images Jetstream2's
+  Exosphere uses for its browser shell (guacamole, guacd, watchtower).
+- **Containers:** our app plus those three; watchtower is the one not running.
+- **Local Volumes:** the 272.5 MB is the downloaded model in `hf_vol`; the other
+  (357 B) is an unused leftover.
+- **Build Cache:** cleared with `docker builder prune` after measuring.
+
+**Why CPU-only PyTorch matters here:** with the default Linux PyTorch, the
+dependency layer also pulled in ~2.2 GB of NVIDIA CUDA wheels, several GB once
+installed, which filled the instance's 20 GB disk even though it has no GPU.
+With PyTorch's CPU-only build, the whole image is 1.5 GB.
+
+To reproduce on the instance (from the repo root, with the stack running):
+
+```bash
+docker images app-assignment-1-app                  # image size
+
+# one-line change Docker has not seen before
+sed -i "1s/^/# rebuild test $(date +%s)\n/" src/app_assignment_1/api.py
+time docker compose build                           # with the cached dependency layer
+time docker compose build --no-cache                # without the cache
+
+git checkout src/                                   # undo the change
+docker compose up -d --build                        # redeploy the clean version
+docker system df                                    # with the stack up
 ```
 
 ---
