@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    # Read settings when the app starts (not at import) so tests can override them.
+    # Reuse the cached settings. Tests can clear the cache before startup.
     model_settings = get_settings()
     try:
         app.state.generator = TextGenerator(
