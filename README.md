@@ -102,6 +102,11 @@ uv run pytest
 
 ## How-to guides
 
+### Run Problem 2 locally
+
+Follow [the Problem 2 local run guide](problem2-local-run.md) to check Pydantic
+Settings, run the real model, and reproduce the blocking and fixed benchmarks.
+
 ### Configure the service
 
 Settings are read from `APP_*` environment variables (see
