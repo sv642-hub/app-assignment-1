@@ -107,6 +107,75 @@ curl -X POST http://127.0.0.1:8000/predict \
   -d '{"text":"hello"}'
 ```
 
+### Run the service with Docker
+
+The service ships as a Docker image and is started with Docker Compose. You need
+Docker with the Compose plugin (`docker compose version` should print a version).
+
+**Start it** from the repository root:
+
+```bash
+docker compose up -d
+```
+
+That is the whole start procedure on a fresh clone. The first start builds the
+image and downloads the model (~270 MB), so give it a minute or two.
+
+**Check it is up:**
+
+```bash
+docker compose ps                          # STATUS shows (healthy) once ready
+curl http://127.0.0.1:8000/health          # from the machine running it
+curl http://<instance-ip>:8000/health    # our Jetstream2 instance, from anywhere
+```
+
+`<ip_address>` is the instance's public IP, shown on its page in the Jetstream2 dashboard.
+
+Expected response:
+
+```json
+{"status":"ok","version":"0.1.0","environment":"production"}
+```
+
+**Deploy a new version** (e.g. on Jetstream2 after a merge):
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+**Stop it:**
+
+```bash
+docker compose down        # keeps the downloaded model
+```
+
+> Do not add `-v` to `down` unless you want to delete the model volume; the
+> next start would download the model again.
+
+#### How the deployment is put together
+
+- **One service, no dependencies.** The stack has no database, vector store, or
+  cache; the model runs inside the app container.
+- **Named volume for the model.** The `hf_vol` volume is mounted at `/models`
+  (`HF_HOME`), so the downloaded model survives restarts and redeploys.
+- **Health check.** The image declares a `HEALTHCHECK` that calls `/health`
+  every 30 s, with a 120 s grace period while the model loads.
+- **Non-root.** The container runs as an unprivileged `appuser`.
+- **Restart policy.** `restart: unless-stopped` brings the service back after a
+  crash or a reboot, unless it was stopped on purpose.
+- **Configuration at run time.** Compose reads settings from
+  `env/.env.production.example`; nothing is baked into the image, and
+  `.dockerignore` keeps `.venv`, `.git`, and env files out of it.
+  `APP_API_KEY` is validated but not yet used by any endpoint, so the
+  template's placeholder is acceptable for this demo. A real deployment would
+  supply the secret through a gitignored file instead.
+- **CPU-only PyTorch on Linux.** Our Jetstream2 instance (`m3.small`) has no GPU
+  and a 20 GB disk. The default Linux PyTorch pulls in ~2 GB of NVIDIA CUDA
+  packages, which filled the disk, so `pyproject.toml` installs PyTorch's
+  CPU-only build on Linux. macOS is unaffected.
+
+
 ### Add a dependency
 
 ```bash
