@@ -356,6 +356,14 @@ browser, or check that it's served:
 curl -s -o /dev/null -w '%{http_code}\n' http://$HOST:8000/docs     # prints 200
 ```
 
+**`GET /redoc`**: an alternative API documentation page. Replace `$HOST` with
+the address selected above when opening `http://$HOST:8000/redoc` in a browser,
+or check that it's served:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://$HOST:8000/redoc    # prints 200
+```
+
 **`GET /openapi.json`**: the machine-readable API schema behind `/docs`.
 
 ```bash
@@ -410,6 +418,7 @@ uv run pre-commit install
 | GET    | `/health`  | —                 | `HealthResponse`  | Liveness check for callers/CI.   |
 | POST   | `/predict` | `PredictRequest`  | `PredictResponse` | Text generation with SmolLM2.    |
 | GET    | `/docs`    | —                 | HTML              | Auto-generated Swagger UI.       |
+| GET    | `/redoc`   | —                 | HTML              | Alternative API documentation with ReDoc. |
 | GET    | `/openapi.json` | —            | JSON              | OpenAPI schema behind `/docs`.   |
 
 Copy-pasteable `curl` commands for each one are in
