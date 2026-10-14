@@ -1,6 +1,6 @@
-# Assignment 1
+# app-assignment-1
 
-DSAN 6700 (App Deployment) — Assignment 1.
+DSAN 6700 (App Deployment) — Assignments 1 and 2.
 
 The base repo for Machine Learning App Deployment course
 
@@ -8,12 +8,17 @@ It follows the instructions of using `uv` and the `src/` layout. It contains a
 FastAPI service that uses Pydantic settings and models, with a `/predict`
 endpoint backed by a local language model
 ([SmolLM2-135M-Instruct](https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct))
-running on CPU with PyTorch and Transformers.
+running on CPU with PyTorch and Transformers. The service is packaged as a
+Docker image and runs on a Jetstream2 instance with Docker Compose.
 
 
 - **[Installing](#installing)** — get it running from zero.
-- **[How-to guides](#how-to-guides)** — task-focused recipes.
-- **[Reference](#reference)** — endpoints, settings, commands, structure.
+- **[How-to guides](#how-to-guides)** — task-focused recipes, including
+  [Docker](#run-the-service-with-docker),
+  [Jetstream2](#deploy-on-a-jetstream2-instance), and
+  [calling every endpoint](#call-every-endpoint).
+- **[Reference](#reference)** — endpoints, settings, commands, structure, and
+  [deployment measurements](#deployment-measurements).
 
 ---
 
@@ -119,6 +124,11 @@ cp env/.env.example .env
 
 The deployed shape lives in `env/.env.production.example`.
 
+> Two different override files: `uv run uvicorn` reads `.env` at the repo root,
+> while Docker Compose reads `env/.env` (see
+> [How the deployment is put together](#how-the-deployment-is-put-together)).
+> Both are gitignored.
+
 ### Ask the model a question
 
 With the service running:
@@ -129,7 +139,8 @@ curl -X POST http://127.0.0.1:8000/predict \
   -d '{"text":"What is a bank? Answer in one short sentence."}'
 ```
 
-Example response (decoding is greedy, so the same input gives the same answer):
+Example response (decoding is greedy, so the same input gives the same answer
+on the same machine; other hardware or PyTorch builds may word it differently):
 
 ```json
 {"prediction":"A bank is a financial institution that provides a wide range of services, including lending, borrowing, and checking accounts.","input_length":45}
@@ -154,8 +165,10 @@ To change the model or reply length, see `APP_LLM_MODEL_NAME` and
 
 ### Run the service with Docker
 
-The service ships as a Docker image and is started with Docker Compose. You need Docker with the Compose plugin, **version 2.24.0 or newer**
-(`docker compose version` to check). Older versions don't support the optional `env/.env` file used in `compose.yml`.
+The service ships as a Docker image and is started with Docker Compose. You need
+Docker with the Compose plugin, **version 2.24.0 or newer** (`docker compose
+version` to check). Older versions don't support the optional `env/.env` file
+used in `compose.yml`.
 
 **Start it** from the repository root:
 
@@ -163,23 +176,40 @@ The service ships as a Docker image and is started with Docker Compose. You need
 docker compose up -d
 ```
 
-That is the whole start procedure on a fresh clone. The first start builds the
-image and downloads the model (~270 MB), so give it a minute or two.
+That is the whole start procedure on a fresh clone: Compose builds the image
+from the [`Dockerfile`](Dockerfile), creates the model volume, and starts the
+container. The first start builds the image and downloads the model (~270 MB),
+so give it a minute or two. Image size, rebuild times, and `docker system df`
+on our instance are in [Deployment measurements](#deployment-measurements).
 
 **Check it is up:**
 
 ```bash
 docker compose ps                          # STATUS shows (healthy) once ready
-curl http://127.0.0.1:8000/health          # from the machine running it
-curl http://<instance-ip>:8000/health    # our Jetstream2 instance, from anywhere
+curl http://127.0.0.1:8000/health
 ```
-
-`<instance-ip>` is the instance's public IP, shown on its page in the Jetstream2 dashboard.
 
 Expected response:
 
 ```json
 {"status":"ok","version":"0.1.0","environment":"production"}
+```
+
+To call the other endpoints, see [Call every endpoint](#call-every-endpoint).
+
+**Build the image on its own** (optional; `docker compose up -d` already does
+this):
+
+```bash
+docker compose build                       # same image Compose runs
+```
+
+**Run the image without Compose** (optional, e.g. for a quick local check). This
+uses the local-dev settings and does not keep the model between runs:
+
+```bash
+docker build -t app-assignment .
+docker run --rm -p 8000:8000 --env-file env/.env.example app-assignment
 ```
 
 **Deploy a new version** (e.g. on Jetstream2 after a merge):
@@ -216,14 +246,129 @@ docker compose down        # keeps the downloaded model
   the image:
 
   ```bash
-    echo "APP_API_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')" > env/.env
-    docker compose up -d
+  echo "APP_API_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')" > env/.env
+  docker compose up -d
   ```
 
 - **CPU-only PyTorch on Linux.** Our Jetstream2 instance (`m3.small`) has no GPU
   and a 20 GB disk. The default Linux PyTorch pulls in ~2 GB of NVIDIA CUDA
   packages, which filled the disk, so `pyproject.toml` installs PyTorch's
   CPU-only build on Linux. macOS is unaffected.
+
+### Deploy on a Jetstream2 instance
+
+Our service runs on a Jetstream2 `m3.small` instance (Ubuntu, no GPU, 20 GB
+disk). To start it on an instance from scratch:
+
+1. **Open port 8000.** In the Jetstream2 dashboard, the instance's security
+   group must allow inbound TCP on port 8000, or `/health` won't be reachable
+   from outside.
+2. **Install Docker** with the Compose plugin (2.24.0 or newer), following
+   [Docker's Ubuntu install guide](https://docs.docker.com/engine/install/ubuntu/).
+   Then make sure Docker starts at boot, so `restart: unless-stopped` can bring
+   the service back after a reboot or unshelve:
+
+   ```bash
+   sudo systemctl enable --now docker
+   systemctl is-enabled docker            # should print: enabled
+   ```
+
+3. **Clone and start** (on the instance, over SSH):
+
+   ```bash
+   git clone https://github.com/sv642-hub/app-assignment-1.git
+   cd app-assignment-1
+   docker compose up -d
+   docker compose ps                      # wait for (healthy)
+   ```
+
+   If your user isn't in the `docker` group, prefix the `docker` commands with
+   `sudo`.
+
+4. **Check it from your own machine** (not the instance):
+
+   ```bash
+   curl http://<instance-ip>:8000/health
+   ```
+
+   `<instance-ip>` is the public IP on the instance's page in the Jetstream2
+   dashboard.
+
+> **Not yet verified on our instance:** that the stack comes back on its own
+> after the instance is shelved and unshelved. The setup is designed for it
+> (Docker enabled at boot plus `restart: unless-stopped`), but the shelve and
+> unshelve test hasn't been recorded yet.
+
+### Call every endpoint
+
+Set `HOST` once, then copy and paste the commands below. Use `127.0.0.1` when
+the service runs on your machine (with `uv run` or Docker), or the instance's
+public IP for Jetstream2:
+
+```bash
+export HOST=127.0.0.1                      # local
+# export HOST=<instance-ip>                # Jetstream2: public IP from the dashboard
+```
+
+**`GET /health`**: liveness check.
+
+```bash
+curl http://$HOST:8000/health
+```
+
+```json
+{"status":"ok","version":"0.1.0","environment":"production"}
+```
+
+`environment` is `local` when running with `uv run` and the default settings.
+
+**`POST /predict`**: generate a reply with the model.
+
+```bash
+curl -X POST http://$HOST:8000/predict \
+  -H 'content-type: application/json' \
+  -d '{"text":"What is a bank? Answer in one short sentence."}'
+```
+
+```json
+{"prediction":"A bank is a financial institution that provides a wide range of services, including lending, borrowing, and checking accounts, as well as providing services like currency exchange, insurance, and tax preparation.","input_length":45}
+```
+
+This is the reply from our Jetstream2 instance. The wording can differ on other
+machines (see [Ask the model a question](#ask-the-model-a-question)).
+
+**`POST /predict` with invalid input**: an empty `text` is rejected with `422`.
+
+```bash
+curl -i -X POST http://$HOST:8000/predict \
+  -H 'content-type: application/json' \
+  -d '{"text":""}'
+```
+
+```json
+{"detail":[{"type":"string_too_short","loc":["body","text"],"msg":"String should have at least 1 character","input":"","ctx":{"min_length":1}}]}
+```
+
+**`GET /docs`**: interactive Swagger UI. Open `http://$HOST:8000/docs` in a
+browser, or check that it's served:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://$HOST:8000/docs     # prints 200
+```
+
+**`GET /redoc`**: an alternative API documentation page. Replace `$HOST` with
+the address selected above when opening `http://$HOST:8000/redoc` in a browser,
+or check that it's served:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://$HOST:8000/redoc    # prints 200
+```
+
+**`GET /openapi.json`**: the machine-readable API schema behind `/docs`.
+
+```bash
+curl http://$HOST:8000/openapi.json
+```
 
 ### Add a dependency
 
@@ -273,6 +418,11 @@ uv run pre-commit install
 | GET    | `/health`  | —                 | `HealthResponse`  | Liveness check for callers/CI.   |
 | POST   | `/predict` | `PredictRequest`  | `PredictResponse` | Text generation with SmolLM2.    |
 | GET    | `/docs`    | —                 | HTML              | Auto-generated Swagger UI.       |
+| GET    | `/redoc`   | —                 | HTML              | Alternative API documentation with ReDoc. |
+| GET    | `/openapi.json` | —            | JSON              | OpenAPI schema behind `/docs`.   |
+
+Copy-pasteable `curl` commands for each one are in
+[Call every endpoint](#call-every-endpoint).
 
 `PredictRequest` requires a non-empty `text`; invalid input returns HTTP `422`.
 `/predict` returns `500` if generation fails and `503` if the model is not
@@ -303,25 +453,32 @@ All variables use the `APP_` prefix and map to `Settings` in
 | `uv run pytest`                | Run the test suite.                                 |
 | `uv run ruff check`            | Lint.                                               |
 | `uv run mypy src/`             | Type-check.                                         |
+| `docker compose up -d`         | Build (if needed) and start the stack in the background. |
+| `docker compose ps`            | Show container status, including `(healthy)`.       |
+| `docker compose logs -f app`   | Follow the service logs.                            |
+| `docker compose up -d --build` | Rebuild and restart after a code change.            |
+| `docker compose down`          | Stop the stack (keeps the model volume).            |
 
 ### Project structure
 
 ```
 App - Assignment 1/
-├── .github/workflows/ci.yml   # lint, format, type-check, test on push & PR
+├── .github/
+│   ├── workflows/ci.yml       # lint, format, type-check, test on push & PR
+│   └── ISSUE_TEMPLATE/        # bug, documentation, and feature templates
 ├── .pre-commit-config.yaml    # ruff lint/format git hooks
 ├── pyproject.toml             # single declarative config (deps, build, tools)
 ├── uv.lock                    # machine-generated lockfile — always committed
-├── .dockerignore              # keeps .venv, .git, env files out of the image
-├── Dockerfile                 # uv install, cached dependency layer, non-root, HEALTHCHECK
-├── compose.yml                # runs the stack on Jetstream2 (named model volume)
-├── problem2-local-run.md      # Problem 2 local run guide
+├── Dockerfile                 # image: uv install, non-root user, HEALTHCHECK
+├── .dockerignore              # keeps .venv, .git, and env files out of the image
+├── compose.yml                # the service, model volume, restart policy
 ├── env/
 │   ├── .env.example           # local-dev config template
 │   └── .env.production.example # deployed config template
 ├── LICENSE · README.md
 ├── discussion.md              # blocking-call audit write-up
-├── benchmark_results/         # saved benchmark output (JSON)
+├── problem2-local-run.md      # step-by-step Problem 2 local run guide
+├── benchmark_results/         # saved benchmark and smoke-check output (JSON)
 ├── scripts/
 │   ├── benchmark_requests.py  # 10 concurrent /predict requests
 │   └── measure_steps.py       # per-stage timing of one request
@@ -465,4 +622,5 @@ uv run uvicorn --app-dir src app_assignment_1.api:app --reload
 The initial project setup — `uv`/`src` scaffolding, the FastAPI skeleton,
 Pydantic Settings configuration, the GitHub Actions CI workflow, and this
 documentation — was done with the help of [Claude Code](https://claude.com/claude-code)
-(Anthropic's Claude, Opus 4.8).
+(Anthropic's Claude, Opus 4.8). In Assignment 2, the `/health` responsiveness
+test and this README update were also done with Claude Code (Opus 5.5).
