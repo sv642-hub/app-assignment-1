@@ -1,0 +1,37 @@
+# Git files
+**/.git
+
+# Python-generated files
+**/__pycache__/
+**/*.py[oc]
+build/
+dist/
+wheels/
+**/*.egg-info
+
+# Virtual environments
+.venv
+
+# Environemnt files with secrets
+**/.env
+**/.env.*
+**/*.env
+
+# Test / coverage / type-check artifacts
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Rendered docs previews (Quarto / RStudio)
+README.html
+README_files/
+/*_files/
+*.quarto_ipynb
+**/.quarto/
+
+# macOS files
+**/.DS_Store
+
