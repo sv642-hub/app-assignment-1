@@ -132,13 +132,17 @@ Example response (decoding is greedy, so the same input gives the same answer):
 
 A single request took about 0.3 s of generation time on an Apple M4 CPU (see
 [`discussion.md`](discussion.md)); expect different timings on other machines.
+The separate [smoke check](benchmark_results/smoke_check.json) recorded about
+6.6 s for one `/predict` request. Its hardware, warm-up state, and timing method
+were not recorded, so that result cannot be directly compared with the 0.3 s
+generation measurement. It confirms a working request, not typical latency.
 Possible errors:
 
 | Status | Body                                    | Meaning                                                     |
 |--------|-----------------------------------------|-------------------------------------------------------------|
 | `422`  | validation details                      | `text` is missing or empty.                                 |
 | `500`  | `{"detail":"Model generation failed."}` | The model raised an error; the full error is in the server log. |
-| `503`  | `{"detail":"Model not loaded."}`        | The model is not available (for example, during shutdown).  |
+| `503`  | `{"detail":"Model not loaded."}`        | No model is attached to the app. A model load failure normally stops startup. |
 
 To change the model or reply length, see `APP_LLM_MODEL_NAME` and
 `APP_LLM_MAX_NEW_TOKENS` in the [settings reference](#configuration-settings).

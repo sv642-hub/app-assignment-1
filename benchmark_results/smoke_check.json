@@ -5,6 +5,7 @@
   "max_new_tokens": 64,
   "server": "uvicorn app_assignment_1.api:app --workers 1 (APP_LLM_MODEL_NAME and APP_LLM_MAX_NEW_TOKENS set explicitly)",
   "note": "Synthetic banking-support prompt; no secrets or customer data. Output is cut off at max_new_tokens.",
+  "timing_context": "The seconds values are single recorded request observations. Hardware, warm-up state, and timing method were not recorded. The predict timing is not established as generation-only time and cannot be directly compared with the Apple M4 generation measurement in discussion.md. This smoke check confirms the request path works; it does not establish typical latency.",
   "health": {
     "url": "http://127.0.0.1:8000/health",
     "status_code": 200,
