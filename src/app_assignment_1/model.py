@@ -3,16 +3,9 @@
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-MODEL_NAME = "HuggingFaceTB/SmolLM2-135M-Instruct"
-MAX_NEW_TOKENS = 64
-
 
 class TextGenerator:
-    def __init__(
-        self,
-        model_name: str = MODEL_NAME,
-        max_new_tokens: int = MAX_NEW_TOKENS,
-    ) -> None:
+    def __init__(self, model_name: str, max_new_tokens: int) -> None:
         self.max_new_tokens = max_new_tokens
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModelForCausalLM.from_pretrained(model_name)

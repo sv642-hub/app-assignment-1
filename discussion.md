@@ -69,4 +69,4 @@ Saved evidence:
 - Concurrent-request benchmark: `scripts/benchmark_requests.py`.
 - Single-request stage measurements: `scripts/measure_steps.py`.
 
-The model settings currently use explicit values in the startup code. Integration with the shared Pydantic settings remains pending.
+At the time of these measurements, the model settings were explicit values in the startup code. They now come from the shared Pydantic settings (`APP_LLM_MODEL_NAME`, `APP_LLM_MAX_NEW_TOKENS`), with the same defaults used here.
