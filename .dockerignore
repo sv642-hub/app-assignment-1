@@ -13,7 +13,9 @@ wheels/
 .venv
 
 # Environemnt files with secrets
-**/.env*
+**/.env
+**/.env.*
+**/*.env
 
 # Test / coverage / type-check artifacts
 .coverage
@@ -32,3 +34,4 @@ README_files/
 
 # macOS files
 **/.DS_Store
+
