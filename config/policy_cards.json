@@ -1,0 +1,106 @@
+{
+  "bank_name": "Harbor Point Bank",
+  "fallback_reply": "Thanks for contacting Harbor Point Bank. I couldn't match your message to a topic I can help with yet. Could you rephrase it, or reach a support agent in the app under Help > Chat with us?",
+  "cards": [
+    {
+      "intent": "card_arrival",
+      "title": "Card delivery times",
+      "facts": [
+        "New cards arrive within 5-7 business days after they ship.",
+        "Tracking appears in the app under Cards > Delivery.",
+        "If a card has not arrived after 10 business days, we send a free replacement."
+      ],
+      "reply_template": "Thanks for asking about your card. {facts} I hope it reaches you soon."
+    },
+    {
+      "intent": "lost_or_stolen_card",
+      "title": "Lost or stolen cards",
+      "facts": [
+        "Freeze the card right away in the app under Cards > Freeze.",
+        "Report it as lost or stolen so the card is cancelled for good.",
+        "A replacement card ships for free within 5-7 business days."
+      ],
+      "reply_template": "I'm sorry to hear about your card. {facts} Charges made after you report the card are not your responsibility."
+    },
+    {
+      "intent": "transfer_not_received_by_recipient",
+      "title": "Transfers the recipient has not received",
+      "facts": [
+        "Transfers in the same currency arrive within 1 business day; international transfers can take up to 3.",
+        "Check that the recipient's account details match the ones in the transfer receipt.",
+        "If the money is still missing after 3 business days, we open a trace at no cost."
+      ],
+      "reply_template": "Thanks for letting us know the money hasn't arrived. {facts}"
+    },
+    {
+      "intent": "exchange_rate",
+      "title": "Exchange rates",
+      "facts": [
+        "We use the interbank rate on weekdays.",
+        "A 0.5% markup applies to currency exchanges on weekends.",
+        "The exact rate is shown in the app before you confirm any exchange."
+      ],
+      "reply_template": "Here is how our exchange rates work. {facts}"
+    },
+    {
+      "intent": "top_up_failed",
+      "title": "Failed top-ups",
+      "facts": [
+        "A failed top-up is never charged; any pending hold is released within 2 business days.",
+        "Top-ups usually fail because the card issuer declined them or the card details are out of date.",
+        "Try again with a different card or by bank transfer."
+      ],
+      "reply_template": "Sorry your top-up didn't go through. {facts}"
+    },
+    {
+      "intent": "pending_transfer",
+      "title": "Pending transfers",
+      "facts": [
+        "Most transfers leave pending status within 1 business day.",
+        "Transfers made after 5 pm or on weekends start processing the next business day.",
+        "Some transfers are held for a short security review, which can add up to 24 hours."
+      ],
+      "reply_template": "Thanks for your patience with this transfer. {facts}"
+    },
+    {
+      "intent": "card_payment_fee_charged",
+      "title": "Card payment fees",
+      "facts": [
+        "Card payments in your account's currency are free.",
+        "Payments in a foreign currency carry a 1% fee.",
+        "Some merchants add their own surcharge, which we cannot refund."
+      ],
+      "reply_template": "I understand an unexpected fee is frustrating. {facts} The fee breakdown is on each transaction in the app."
+    },
+    {
+      "intent": "verify_my_identity",
+      "title": "Identity verification",
+      "facts": [
+        "Verification needs a photo of a government-issued ID and a selfie.",
+        "Most checks finish within 10 minutes.",
+        "Some features stay locked until verification is complete."
+      ],
+      "reply_template": "Happy to help you get verified. {facts} You can start from Profile > Verify identity."
+    },
+    {
+      "intent": "refund_not_showing_up",
+      "title": "Refunds that have not appeared",
+      "facts": [
+        "Merchants can take up to 10 business days to send a refund.",
+        "A refund appears as a separate credit, not as a change to the original payment.",
+        "If it is missing after 15 business days, we can open a dispute with the merchant."
+      ],
+      "reply_template": "Sorry you're still waiting on your refund. {facts}"
+    },
+    {
+      "intent": "wrong_amount_of_cash_received",
+      "title": "Wrong amount of cash from an ATM",
+      "facts": [
+        "Report the ATM, date, and amount in the app within 60 days.",
+        "We contact the ATM operator, which usually takes 5-10 business days.",
+        "Confirmed shortfalls are credited back to your account."
+      ],
+      "reply_template": "I'm sorry the ATM gave you the wrong amount. {facts}"
+    }
+  ]
+}

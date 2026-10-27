@@ -1,16 +1,35 @@
 services:
-  app:
-    build: .
+  # Caddy is the only service with a published port.
+  proxy:
+    image: caddy:2.10-alpine
     ports:
-      - "8000:8000"
+      - "8080:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      frontend:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      target: frontend
+    environment:
+      PLAYGROUND_GATEWAY_URL: http://gateway:8000
+    depends_on:
+      gateway:
+        condition: service_healthy
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: .
+      target: gateway
     env_file:
       - env/.env.production.example
       - path: env/.env
         required: false
-    volumes:
-      - hf_vol:/models
     restart: unless-stopped
-
-volumes:
-  hf_vol:
-  

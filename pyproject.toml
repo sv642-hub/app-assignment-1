@@ -1,8 +1,8 @@
 # Project identity and runtime dependencies
 [project]
-name = "app-assignment-1"
-version = "0.1.0"
-description = "DSAN 6700 App Deployment — Assignment 1: a src/-layout package scaffold with a shared, reproducible uv environment."
+name = "smart-ai-gateway"
+version = "0.2.0"
+description = "DSAN 6700 App Deployment — mocked prototype of the Smart AI Gateway: a FastAPI gateway, a Streamlit Playground, and a Caddy proxy."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -14,13 +14,16 @@ authors = [
 dependencies = [
     "fastapi>=0.141.1",
     "pydantic-settings>=2.15.0",
-    "torch>=2.14.1",
-    "transformers>=5.19.0",
     "uvicorn[standard]>=0.52.4",
 ]
 
-# Dev extra. Install with `uv sync --extra dev`.
+# Optional extras. Install with `uv sync --extra dev --extra playground`.
+# The gateway image installs neither; the frontend image adds `playground`.
 [project.optional-dependencies]
+playground = [
+    "httpx>=0.28.1",
+    "streamlit>=1.66.1",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov",
@@ -37,7 +40,7 @@ build-backend = "hatchling.build"
 
 # Hatchling: where to find the package sources (src/ layout)
 [tool.hatch.build.targets.wheel]
-packages = ["src/app_assignment_1"]
+packages = ["src/smart_gateway"]
 
 # Test runner
 [tool.pytest.ini_options]
@@ -50,15 +53,3 @@ line-length = 88
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
-
-# CPU-only torch on Linux. Jetstream2 has no GPU, and the default Linux torch
-# pulls in ~2 GB of NVIDIA CUDA packages. macOS keeps the normal PyPI torch.
-[tool.uv.sources]
-torch = [
-    { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
-]
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true

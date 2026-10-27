@@ -1,0 +1,54 @@
+{
+  "intents": [
+    {
+      "name": "card_arrival",
+      "complexity": "standard",
+      "keywords": ["card arrive", "card arrival", "new card", "card hasn't arrived", "card not arrived", "card in the mail", "when will my card", "card delivery"]
+    },
+    {
+      "name": "lost_or_stolen_card",
+      "complexity": "complex",
+      "keywords": ["lost my card", "lost card", "stolen", "card was stolen", "someone took my card", "misplaced my card", "freeze my card", "block my card"]
+    },
+    {
+      "name": "transfer_not_received_by_recipient",
+      "complexity": "complex",
+      "keywords": ["hasn't received", "has not received", "didn't receive the transfer", "recipient", "not received by", "transfer didn't arrive", "never got the money", "money hasn't arrived"]
+    },
+    {
+      "name": "exchange_rate",
+      "complexity": "standard",
+      "keywords": ["exchange rate", "conversion rate", "currency rate", "rate for euros", "how much is a dollar", "exchange rates"]
+    },
+    {
+      "name": "top_up_failed",
+      "complexity": "standard",
+      "keywords": ["top up failed", "top-up failed", "top up didn't work", "top-up didn't work", "couldn't top up", "top up declined", "top-up declined", "top up error"]
+    },
+    {
+      "name": "pending_transfer",
+      "complexity": "standard",
+      "keywords": ["transfer pending", "pending transfer", "transfer is pending", "transfer still pending", "transfer stuck", "transfer taking so long"]
+    },
+    {
+      "name": "card_payment_fee_charged",
+      "complexity": "complex",
+      "keywords": ["charged a fee", "fee for my card payment", "card payment fee", "extra fee", "fee on my payment", "why was i charged", "unexpected fee"]
+    },
+    {
+      "name": "verify_my_identity",
+      "complexity": "standard",
+      "keywords": ["verify my identity", "identity verification", "verify identity", "prove my identity", "id check", "verification code", "kyc"]
+    },
+    {
+      "name": "refund_not_showing_up",
+      "complexity": "complex",
+      "keywords": ["refund", "refund not showing", "haven't got my refund", "refund hasn't appeared", "where is my refund", "merchant refunded"]
+    },
+    {
+      "name": "wrong_amount_of_cash_received",
+      "complexity": "complex",
+      "keywords": ["wrong amount of cash", "atm gave me", "atm didn't give", "less cash", "wrong amount from the atm", "cash withdrawal was wrong", "atm short"]
+    }
+  ]
+}

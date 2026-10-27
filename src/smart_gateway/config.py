@@ -9,9 +9,10 @@ limping along with bad values.
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, FilePath, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -42,11 +43,14 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     api_key: str = ""
 
-    # Language model (loaded once at startup)
-    llm_model_name: str = Field(
-        default="HuggingFaceTB/SmolLM2-135M-Instruct", min_length=1
-    )
-    llm_max_new_tokens: int = Field(default=64, gt=0, le=512)
+    # Config files that stand in for Jev and the models. Relative paths resolve
+    # against the working directory: the repo root locally, /app in Docker.
+    intents_path: FilePath = Path("config/intents.json")
+    policy_cards_path: FilePath = Path("config/policy_cards.json")
+    backends_path: FilePath = Path("config/backends.json")
+
+    # How many recent requests GET /v1/requests/{id} can look up.
+    request_store_size: int = Field(default=1000, gt=0)
 
     @field_validator("api_key")
     @classmethod

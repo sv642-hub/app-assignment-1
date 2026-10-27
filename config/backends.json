@@ -1,0 +1,14 @@
+{
+  "backends": [
+    {
+      "name": "qwen3-1.7b",
+      "route": "standard",
+      "latency_ms": 120
+    },
+    {
+      "name": "qwen3-4b",
+      "route": "complex",
+      "latency_ms": 380
+    }
+  ]
+}
