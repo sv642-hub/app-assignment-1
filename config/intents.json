@@ -1,0 +1,99 @@
+[
+  {
+    "intent": "card_arrival",
+    "keywords": [
+      "card has not arrived",
+      "card hasn t arrived",
+      "card delivery",
+      "card arrival",
+      "where is my card"
+    ],
+    "complexity": "standard"
+  },
+  {
+    "intent": "lost_or_stolen_card",
+    "keywords": [
+      "lost my card",
+      "stolen card",
+      "card was stolen",
+      "lost card"
+    ],
+    "complexity": "complex"
+  },
+  {
+    "intent": "transfer_not_received_by_recipient",
+    "keywords": [
+      "transfer has not arrived",
+      "recipient has not received",
+      "recipient hasn t received",
+      "transfer not received"
+    ],
+    "complexity": "complex"
+  },
+  {
+    "intent": "exchange_rate",
+    "keywords": [
+      "exchange rate",
+      "currency conversion",
+      "convert currency"
+    ],
+    "complexity": "standard"
+  },
+  {
+    "intent": "top_up_failed",
+    "keywords": [
+      "top up failed",
+      "topup failed",
+      "failed top up",
+      "cannot top up"
+    ],
+    "complexity": "complex"
+  },
+  {
+    "intent": "pending_transfer",
+    "keywords": [
+      "pending transfer",
+      "transfer is pending",
+      "transfer pending"
+    ],
+    "complexity": "standard"
+  },
+  {
+    "intent": "card_payment_fee_charged",
+    "keywords": [
+      "card payment fee",
+      "charged a fee",
+      "payment fee"
+    ],
+    "complexity": "complex"
+  },
+  {
+    "intent": "verify_my_identity",
+    "keywords": [
+      "verify my identity",
+      "identity verification",
+      "verify identity"
+    ],
+    "complexity": "standard"
+  },
+  {
+    "intent": "refund_not_showing_up",
+    "keywords": [
+      "refund not showing",
+      "refund has not arrived",
+      "missing refund",
+      "refund hasn t arrived"
+    ],
+    "complexity": "complex"
+  },
+  {
+    "intent": "wrong_amount_of_cash_received",
+    "keywords": [
+      "wrong amount of cash",
+      "atm gave me less",
+      "cash missing",
+      "atm short"
+    ],
+    "complexity": "complex"
+  }
+]

@@ -1,53 +1,45 @@
-"""Settings tests for the language-model configuration."""
+"""Settings precedence, caching and invalid configuration."""
+
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from app_assignment_1.config import Settings
+from app_assignment_1.config import Settings, get_settings
 
 
-@pytest.fixture(autouse=True)
-def clean_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("APP_LLM_MODEL_NAME", raising=False)
-    monkeypatch.delenv("APP_LLM_MAX_NEW_TOKENS", raising=False)
+def test_paths_from_env_override_file(tmp_path: Path, monkeypatch):
+    env = tmp_path / ".env"
+    env.write_text("APP_INTENTS_PATH=file.json\nAPP_REQUEST_STORE_LIMIT=5\n")
+    monkeypatch.setenv("APP_INTENTS_PATH", "override.json")
+    settings = Settings(_env_file=env)
+    assert settings.intents_path == Path("override.json")
+    assert settings.request_store_limit == 5
 
 
-def test_llm_defaults() -> None:
-    settings = Settings(_env_file=None)
-
-    assert settings.llm_model_name == "HuggingFaceTB/SmolLM2-135M-Instruct"
-    assert settings.llm_max_new_tokens == 64
-
-
-def test_llm_settings_read_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("APP_LLM_MODEL_NAME", "example/other-model")
-    monkeypatch.setenv("APP_LLM_MAX_NEW_TOKENS", "128")
-
-    settings = Settings(_env_file=None)
-
-    assert settings.llm_model_name == "example/other-model"
-    assert settings.llm_max_new_tokens == 128
+def test_cache_requires_clear(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    get_settings.cache_clear()
+    try:
+        monkeypatch.setenv("APP_REQUEST_STORE_LIMIT", "4")
+        first = get_settings()
+        monkeypatch.setenv("APP_REQUEST_STORE_LIMIT", "8")
+        assert get_settings() is first
+        assert get_settings().request_store_limit == 4
+        get_settings.cache_clear()
+        assert get_settings().request_store_limit == 8
+    finally:
+        get_settings.cache_clear()
 
 
-@pytest.mark.parametrize("value", [1, 512])
-def test_max_new_tokens_accepts_bounds(value: int) -> None:
-    settings = Settings(_env_file=None, llm_max_new_tokens=value)
-
-    assert settings.llm_max_new_tokens == value
-
-
-@pytest.mark.parametrize("value", ["0", "-5", "513"])
-def test_max_new_tokens_rejects_out_of_range(
-    monkeypatch: pytest.MonkeyPatch, value: str
-) -> None:
-    monkeypatch.setenv("APP_LLM_MAX_NEW_TOKENS", value)
-
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("request_store_limit", 0),
+        ("request_timeout_seconds", 0),
+        ("environment", "typo"),
+    ],
+)
+def test_invalid_settings(field, value):
     with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
-def test_empty_model_name_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("APP_LLM_MODEL_NAME", "")
-
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
+        Settings(_env_file=None, **{field: value})

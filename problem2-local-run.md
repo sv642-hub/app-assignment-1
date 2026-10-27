@@ -1,3 +1,5 @@
+> Historical Assignment 2 documentation. These commands target the pre-prototype service. Use the current README for the mocked gateway; use Git history for the original model and benchmarks.
+
 # Run Problem 2 locally
 
 This guide runs the real SmolLM2 model, checks Pydantic Settings and environment

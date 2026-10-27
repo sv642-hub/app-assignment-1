@@ -1,8 +1,8 @@
 # Project identity and runtime dependencies
 [project]
 name = "app-assignment-1"
-version = "0.1.0"
-description = "DSAN 6700 App Deployment — Assignment 1: a src/-layout package scaffold with a shared, reproducible uv environment."
+version = "0.2.0"
+description = "Smart AI Gateway — DSAN 6700 mocked midpoint prototype."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -14,8 +14,8 @@ authors = [
 dependencies = [
     "fastapi>=0.141.1",
     "pydantic-settings>=2.15.0",
-    "torch>=2.14.1",
-    "transformers>=5.19.0",
+    "httpx>=0.28.1",
+    "streamlit>=1.40,<2",
     "uvicorn[standard]>=0.52.4",
 ]
 
@@ -50,15 +50,3 @@ line-length = 88
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
-
-# CPU-only torch on Linux. Jetstream2 has no GPU, and the default Linux torch
-# pulls in ~2 GB of NVIDIA CUDA packages. macOS keeps the normal PyPI torch.
-[tool.uv.sources]
-torch = [
-    { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
-]
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
