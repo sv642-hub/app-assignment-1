@@ -1,6 +1,7 @@
 """Backend interface and the mock Qwen backends: classify, read card, reply."""
 
 import asyncio
+import random
 from typing import Protocol
 
 from app_assignment_1.intents import match_intent
@@ -35,15 +36,21 @@ class MockBackend:
         self.config = config
         self.intents = intents
         self.cards = cards
+        self.rng = random.Random()
 
     async def generate(self, message: str) -> BackendReply:
         await asyncio.sleep(self.config.latency_ms / 1000)
         _, match = match_intent(self.intents, message)
         if match is None:
-            return BackendReply(intent="unknown", reply=UNKNOWN_REPLY, policy_facts=[])
-        card = self.cards[match.intent]
-        return BackendReply(
-            intent=match.intent,
-            reply=card.reply_template.format(facts=" ".join(card.facts)),
-            policy_facts=card.facts,
-        )
+            reply = BackendReply(intent="unknown", reply=UNKNOWN_REPLY, policy_facts=[])
+        else:
+            card = self.cards[match.intent]
+            reply = BackendReply(
+                intent=match.intent,
+                reply=card.reply_template.format(facts=" ".join(card.facts)),
+                policy_facts=card.facts,
+            )
+        if self.rng.random() < self.config.fault_rate:
+            # Simulated fault: a template slot the model failed to fill.
+            reply.reply += " {customer_name}"
+        return reply

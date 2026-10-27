@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,6 +24,16 @@ class Settings(BaseSettings):
     request_store_limit: int = Field(default=1000, ge=1, le=100000)
     jev_timeout_seconds: float = Field(default=2, gt=0, le=30)
     rule_router_complex_min_words: int = Field(default=20, ge=1, le=2000)
+    monitor_window: int = Field(default=20, ge=1, le=1000)
+    monitor_min_samples: int = Field(default=5, ge=1, le=1000)
+    monitor_failure_threshold: float = Field(default=0.5, gt=0, le=1)
+    controller_cooldown_seconds: float = Field(default=60, gt=0, le=3600)
+
+    @model_validator(mode="after")
+    def min_samples_fit_window(self) -> "Settings":
+        if self.monitor_min_samples > self.monitor_window:
+            raise ValueError("monitor_min_samples cannot exceed monitor_window")
+        return self
 
 
 @lru_cache

@@ -17,6 +17,25 @@ If the backend detects no intent, it returns intent `unknown` with a polite repl
 
 Confidence is a keyword heuristic, not a calibrated probability. Measured latency includes the simulated wait. A failed format check returns a safe apology (`reply_source: "format_fallback"`) with `format_check: "failed"` and reasons in `format_errors`. The malformed reply is not returned or stored. A passed format check does not establish semantic correctness.
 
+## Monitor and controller
+
+The gateway runs a small in-memory self-healing loop, the first piece of the planned monitor:
+
+- **Monitor:** for each backend, the gateway records whether each reply passed the format check, over the last `APP_MONITOR_WINDOW` replies (default 20).
+- **Controller:** once a backend has at least `APP_MONITOR_MIN_SAMPLES` replies (default 5) and its format-failure rate reaches `APP_MONITOR_FAILURE_THRESHOLD` (default 0.5), the controller disables it for `APP_CONTROLLER_COOLDOWN_SECONDS` (default 60). Traffic for that route moves to the other backend with `fallback_reason: "selected_backend_disabled"`. After the cooldown, the backend is re-enabled with an empty window.
+- **Action limit:** the controller never disables the last usable backend. It logs `kept_last_backend` instead and keeps serving.
+- **Visibility:** the request that triggers an action shows it in `trace.controller_action` and in the Playground trace table. `GET /v1/health` lists samples, failures, failure rate and disabled status for each backend, plus the last 50 interventions with their reasons.
+
+The monitor watches format failures only. It does not know whether an intent or reply is correct. Its state resets when the gateway restarts.
+
+To see the loop work, start the stack with the chaos override. In `config/backends.chaos.json`, the small model has `fault_rate: 1`, so it corrupts every reply:
+
+```bash
+docker compose -f compose.yml -f compose.chaos.yml up -d --build --wait
+```
+
+Send five standard messages, such as "My card has not arrived". All five fail the format check, and the fifth disables `qwen3-1.7b`. The sixth is answered by `qwen3-4b`. Open `http://localhost:8080/v1/health` to see the intervention. Return to normal with `docker compose up -d --wait`.
+
 ## Run with Docker Compose
 
 Requires Docker with Compose **2.24.0 or newer** for the optional env-file syntax. The clone commands use `main` and apply after this prototype PR is merged.
@@ -66,6 +85,10 @@ Pydantic Settings reads `.env` then `env/.env` in native local runs. Process env
 | `APP_REQUEST_STORE_LIMIT` | `1000` | Number of successful requests retained |
 | `APP_JEV_TIMEOUT_SECONDS` | `2` | Wait for the Jev routing call before using the rule router |
 | `APP_RULE_ROUTER_COMPLEX_MIN_WORDS` | `20` | Rule router sends messages this long or longer to `complex` |
+| `APP_MONITOR_WINDOW` | `20` | Recent replies per backend that the monitor keeps |
+| `APP_MONITOR_MIN_SAMPLES` | `5` | Replies needed before the controller may act; at most the window |
+| `APP_MONITOR_FAILURE_THRESHOLD` | `0.5` | Format-failure rate that disables a backend |
+| `APP_CONTROLLER_COOLDOWN_SECONDS` | `60` | How long a disabled backend stays out |
 
 Paths are relative to the working directory: run native commands from the repo root. In Docker the working directory is `/app`; use paths under the mounted `config/` directory. The gateway validates JSON and matching intent/policy-card coverage at startup. Both mock backends must be configured. Set `available` to `false` in `config/backends.json` to try fallback.
 
@@ -131,6 +154,7 @@ A standard response has this shape (ID and measured latency vary):
     "format_check": "passed",
     "format_errors": [],
     "fallback_reason": null,
+    "controller_action": null,
     "mocked": true
   }
 }
@@ -147,7 +171,7 @@ curl -fsS "http://localhost:8080/v1/requests/$REQUEST_ID"
 | --- | --- |
 | `POST /v1/chat` | 200 validated reply; 422 invalid input; 503 both backends unavailable |
 | `GET /v1/requests/{id}` | 200 stored response; 404 missing/evicted/restarted; 422 invalid UUID |
-| `GET /v1/health` | Typed Pydantic response documented in OpenAPI; 200 with mock backend availability; `degraded` when both disabled |
+| `GET /v1/health` | Typed Pydantic response documented in OpenAPI; 200 with backend config, monitor statistics and recent interventions; `degraded` when any backend is unavailable or disabled by the controller |
 | `GET /docs`, `/redoc`, `/openapi.json` | Interactive documentation and API schema |
 
 Messages must contain 1–2,000 characters and cannot be whitespace-only. Extra request fields are rejected.
@@ -239,7 +263,7 @@ uv run mypy src/
 uv run pytest
 ```
 
-CI runs these checks and a Compose smoke test through port 8080. Tests cover all ten intents, unknown messages, Jev failure and timeout, the rule router, backend fallback, label checks, request validation, policy grounding, settings overrides, bounded history and health responsiveness during simulated inference.
+CI runs these checks and a Compose smoke test through port 8080. Tests cover all ten intents, unknown messages, Jev failure and timeout, the rule router, backend fallback, label checks, the monitor and controller rules, request validation, policy grounding, settings overrides, bounded history and health responsiveness during simulated inference.
 
 - `src/app_assignment_1/`: settings, API contracts, routing interface, mock service and Playground.
 - `config/`: validated mock behavior, editable without Python changes.

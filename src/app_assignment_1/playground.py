@@ -88,6 +88,7 @@ if "result" in st.session_state:
                 "Simulated delay",
                 "Format check",
                 "Fallback reason",
+                "Controller action",
                 "Confidence (heuristic)",
             ],
             "Value": [
@@ -100,6 +101,7 @@ if "result" in st.session_state:
                 f"{trace.simulated_latency_ms} ms",
                 trace.format_check,
                 trace.fallback_reason or "None",
+                trace.controller_action or "None",
                 "None (rule router)"
                 if trace.confidence is None
                 else str(trace.confidence),

@@ -3,8 +3,9 @@
 import asyncio
 import logging
 import re
+import time
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from time import perf_counter
 from typing import Literal
 from uuid import UUID, uuid4
@@ -14,6 +15,7 @@ from pydantic import TypeAdapter
 from app_assignment_1.backends import Backend, MockBackend
 from app_assignment_1.config import Settings
 from app_assignment_1.intents import load_intents
+from app_assignment_1.monitor import Controller
 from app_assignment_1.router import Router, RuleRouter
 from app_assignment_1.schemas import (
     BackendConfig,
@@ -50,6 +52,7 @@ class Gateway:
         settings: Settings,
         router: Router,
         backends: Sequence[Backend] | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ):
         self.router = router
         self.rule_router = RuleRouter(settings.rule_router_complex_min_words)
@@ -76,6 +79,15 @@ class Gateway:
                 "Configure exactly one standard 1.7b and one complex 4b backend"
             )
         self.requests: OrderedDict[UUID, ChatResponse] = OrderedDict()
+        self.controller = Controller(
+            (b.config.name for b in self.backends), settings, clock
+        )
+
+    def usable(self, backend: Backend) -> bool:
+        """Configured available and not disabled by the controller."""
+        return backend.config.available and not self.controller.is_disabled(
+            backend.config.name
+        )
 
     async def chat(self, message: str) -> ChatResponse:
         start = perf_counter()
@@ -98,12 +110,16 @@ class Gateway:
             router_name = "rule_router"
             jev_choice = None
         backend = next(b for b in self.backends if b.config.route == decision.route)
-        if not backend.config.available:
-            available = next((b for b in self.backends if b.config.available), None)
+        if not self.usable(backend):
+            available = next((b for b in self.backends if self.usable(b)), None)
             if available is None:
                 raise BackendUnavailable
+            reasons.append(
+                "selected_backend_disabled"
+                if backend.config.available
+                else "selected_backend_unavailable"
+            )
             backend = available
-            reasons.append("selected_backend_unavailable")
         generated = BackendReply.model_validate(await backend.generate(message))
         intent, reply, facts = generated.intent, generated.reply, generated.policy_facts
         format_errors = check_reply(reply)
@@ -115,6 +131,10 @@ class Gateway:
             reply = "Sorry, the demo could not produce a valid reply. Please try again."
             facts = []
         # The trace reports validation of the original generated reply.
+        others_usable = any(self.usable(b) for b in self.backends if b is not backend)
+        action = self.controller.record(
+            backend.config.name, bool(format_errors), can_disable=others_usable
+        )
 
         response = ChatResponse(
             id=uuid4(),
@@ -139,6 +159,7 @@ class Gateway:
                 format_check="failed" if format_errors else "passed",
                 format_errors=format_errors,
                 fallback_reason=", ".join(reasons) or None,
+                controller_action=action,
             ),
         )
         self.requests[response.id] = response

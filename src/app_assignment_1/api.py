@@ -53,10 +53,13 @@ def create_app(
     @app.get("/v1/health", response_model=HealthResponse)
     async def health(request: Request) -> HealthResponse:
         gateway: Gateway = request.app.state.gateway
-        configs = [b.config for b in gateway.backends]
         return HealthResponse(
-            status="ok" if any(c.available for c in configs) else "degraded",
-            backends=configs,
+            status="ok"
+            if all(gateway.usable(b) for b in gateway.backends)
+            else "degraded",
+            backends=[b.config for b in gateway.backends],
+            monitor=gateway.controller.stats(),
+            interventions=list(gateway.controller.log),
         )
 
     return app

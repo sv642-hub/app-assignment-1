@@ -1,0 +1,6 @@
+# Demo only: the small model corrupts every reply so the controller acts.
+# docker compose -f compose.yml -f compose.chaos.yml up -d --wait
+services:
+  gateway:
+    environment:
+      APP_BACKENDS_PATH: config/backends.chaos.json
