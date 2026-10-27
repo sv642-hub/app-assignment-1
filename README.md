@@ -7,11 +7,13 @@ A mocked banking-support Playground for DSAN 6700 Deliverable 2. Enter a custome
 ## What happens to a message
 
 1. Streamlit sends the message over HTTP to the FastAPI gateway.
-2. `MockJevRouter` matches complete keyword phrases against ten configured intents. Longer/more matching phrases score higher. Config order breaks ties. The configured complexity selects `standard` or `complex`.
-3. Standard selects mock `qwen3-1.7b`. Complex selects mock `qwen3-4b`. The service waits for the configured simulated delay and fills the reply template with fictional policy facts.
-4. Reply checks reject blank text, replies over 4,000 characters and unfilled `{placeholder}` tokens. Pydantic validates the result. The Playground shows the intent, reply and trace.
+2. `MockJevRouter` stands in for Jev's difficulty call. It returns only a route (`standard` or `complex`) and a confidence, never an intent. It uses the configured complexity of the best keyword match; unmatched messages go to `standard`.
+3. Standard selects mock `qwen3-1.7b`. Complex selects mock `qwen3-4b`. The selected mock backend waits for its simulated delay, detects the intent by matching complete keyword phrases (longer/more matches score higher; config order breaks ties), and fills the reply template with fictional policy facts. Both mock backends share this classifier.
+4. Reply checks reject blank text, replies over 4,000 characters, unfilled `{placeholder}` tokens and intent labels outside the configured list. Pydantic validates the result. The Playground shows the intent, reply and trace.
 
-Unknown messages use the rule router with intent `unknown` and a polite fixed reply asking the user to rephrase. No backend is called or simulated for these replies: `model` and `route` are `null`, `reply_source` is `rule_router`, and simulated delay is zero. There is no fabricated Jev choice for unknown messages: `jev_choice` is `null`. If a selected mock backend is marked unavailable, the other is used only when available. Both unavailable returns HTTP 503 for a recognized intent. Unknown messages still receive the fixed rule reply. The trace preserves the initial Jev choice and identifies the final route.
+If Jev fails or does not answer within `APP_JEV_TIMEOUT_SECONDS`, the rule router chooses the route instead: messages of `APP_RULE_ROUTER_COMPLEX_MIN_WORDS` words or more go to `complex`, shorter ones to `standard`. The request still goes to a backend. The trace shows `router: "rule_router"`, `jev_choice: null`, `confidence: null` and `fallback_reason` `jev_timeout` or `jev_error`.
+
+If the backend detects no intent, it returns intent `unknown` with a polite reply asking the user to rephrase (`reply_source: "no_match"`). If the selected backend is marked unavailable, the other is used only when available (`selected_backend_unavailable`). When both are unavailable, every message returns HTTP 503. When Jev fails and the backend falls back, `fallback_reason` lists both reasons.
 
 Confidence is a keyword heuristic, not a calibrated probability. Measured latency includes the simulated wait. A failed format check returns a safe apology (`reply_source: "format_fallback"`) with `format_check: "failed"` and reasons in `format_errors`. The malformed reply is not returned or stored. A passed format check does not establish semantic correctness.
 
@@ -62,6 +64,8 @@ Pydantic Settings reads `.env` then `env/.env` in native local runs. Process env
 | `APP_GATEWAY_URL` | `http://127.0.0.1:8000` | Frontend's HTTP gateway address |
 | `APP_REQUEST_TIMEOUT_SECONDS` | `15` | Frontend HTTP timeout |
 | `APP_REQUEST_STORE_LIMIT` | `1000` | Number of successful requests retained |
+| `APP_JEV_TIMEOUT_SECONDS` | `2` | Wait for the Jev routing call before using the rule router |
+| `APP_RULE_ROUTER_COMPLEX_MIN_WORDS` | `20` | Rule router sends messages this long or longer to `complex` |
 
 Paths are relative to the working directory: run native commands from the repo root. In Docker the working directory is `/app`; use paths under the mounted `config/` directory. The gateway validates JSON and matching intent/policy-card coverage at startup. Both mock backends must be configured. Set `available` to `false` in `config/backends.json` to try fallback.
 
@@ -141,7 +145,7 @@ curl -fsS "http://localhost:8080/v1/requests/$REQUEST_ID"
 
 | Endpoint | Behavior |
 | --- | --- |
-| `POST /v1/chat` | 200 validated reply; 422 invalid input; 503 both backends unavailable for a recognized intent |
+| `POST /v1/chat` | 200 validated reply; 422 invalid input; 503 both backends unavailable |
 | `GET /v1/requests/{id}` | 200 stored response; 404 missing/evicted/restarted; 422 invalid UUID |
 | `GET /v1/health` | Typed Pydantic response documented in OpenAPI; 200 with mock backend availability; `degraded` when both disabled |
 | `GET /docs`, `/redoc`, `/openapi.json` | Interactive documentation and API schema |
@@ -235,7 +239,7 @@ uv run mypy src/
 uv run pytest
 ```
 
-CI runs these checks and a Compose smoke test through port 8080. Tests cover all ten intents, unknown messages, router failure, backend fallback, request validation, policy grounding, settings overrides, bounded history and health responsiveness during simulated inference.
+CI runs these checks and a Compose smoke test through port 8080. Tests cover all ten intents, unknown messages, Jev failure and timeout, the rule router, backend fallback, label checks, request validation, policy grounding, settings overrides, bounded history and health responsiveness during simulated inference.
 
 - `src/app_assignment_1/`: settings, API contracts, routing interface, mock service and Playground.
 - `config/`: validated mock behavior, editable without Python changes.
@@ -243,4 +247,4 @@ CI runs these checks and a Compose smoke test through port 8080. Tests cover all
 - `tests/`: unit and API tests. `scripts/smoke_compose.py`: public-proxy smoke test.
 - `discussion.md`, `problem2-local-run.md`, benchmark results: historical Assignment 2 records. The original SmolLM2 implementation and measurement scripts remain in Git history before this prototype.
 
-`Router` is a small async interface returning a validated `RoutingDecision`. A future real Jev client can implement it without changing the HTTP contract or Playground. Persistent storage and the rest of the planned architecture are follow-up work.
+`Router` is a small async interface returning a validated `RoutingDecision` (route and confidence only). A future real Jev client can implement it, and a real vLLM client can implement `Backend` (returning intent, reply and facts), without changing the HTTP contract or Playground. Persistent storage and the rest of the planned architecture are follow-up work.

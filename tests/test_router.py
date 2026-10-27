@@ -1,11 +1,32 @@
-"""All configured intents plus casing and word-boundary behavior."""
+"""Mock Jev routes, mock backend intents and the rule router, for all intents."""
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
 
-from app_assignment_1.router import MockJevRouter
+from app_assignment_1.backends import MockBackend
+from app_assignment_1.intents import load_intents
+from app_assignment_1.router import MockJevRouter, RuleRouter
+from app_assignment_1.schemas import BackendConfig, PolicyCard
+
+INTENTS = Path("config/intents.json")
+
+
+def backend() -> MockBackend:
+    cards = {
+        name: PolicyCard.model_validate(card)
+        for name, card in json.loads(
+            Path("config/policy_cards.json").read_text()
+        ).items()
+    }
+    config = BackendConfig(name="qwen3-1.7b", route="standard", latency_ms=0)
+    return MockBackend(config, load_intents(INTENTS), cards)
+
+
+def classify(message: str) -> str:
+    return asyncio.run(backend().generate(message)).intent
 
 
 @pytest.mark.parametrize(
@@ -27,18 +48,38 @@ from app_assignment_1.router import MockJevRouter
         ("wrong_amount_of_cash_received", "The ATM gave me less", "complex"),
     ],
 )
-def test_routing(intent, phrase, route):
-    result = asyncio.run(MockJevRouter(Path("config/intents.json")).route(phrase))
-    assert result.intent == intent
-    assert result.route == route
-    assert 0 < result.confidence <= 1
+def test_jev_route_and_backend_intent(intent, phrase, route):
+    decision = asyncio.run(MockJevRouter(INTENTS).route(phrase))
+    assert decision.route == route
+    assert decision.confidence is not None and 0 < decision.confidence <= 1
+    assert classify(phrase) == intent
+
+
+def test_jev_returns_route_only():
+    decision = asyncio.run(MockJevRouter(INTENTS).route("I lost my card"))
+    assert set(decision.model_dump()) == {"route", "confidence"}
+
+
+def test_unmatched_message_routes_standard_and_classifies_unknown():
+    decision = asyncio.run(MockJevRouter(INTENTS).route("weather on Mars"))
+    assert decision.route == "standard"
+    reply = asyncio.run(backend().generate("weather on Mars"))
+    assert reply.intent == "unknown"
+    assert reply.policy_facts == []
+    assert "rephrase" in reply.reply
 
 
 def test_no_substring_match():
-    result = asyncio.run(
-        MockJevRouter(Path("config/intents.json")).route("exchange ratesetter")
-    )
-    assert result.intent == "unknown"
+    assert classify("exchange ratesetter") == "unknown"
+
+
+@pytest.mark.parametrize(
+    "words,route", [(3, "standard"), (19, "standard"), (20, "complex")]
+)
+def test_rule_router_uses_message_length(words, route):
+    decision = asyncio.run(RuleRouter(20).route(" ".join(["card"] * words)))
+    assert decision.route == route
+    assert decision.confidence is None
 
 
 @pytest.mark.parametrize(
@@ -57,5 +98,4 @@ def test_no_substring_match():
     ],
 )
 def test_plain_customer_phrasings(phrase, intent):
-    result = asyncio.run(MockJevRouter(Path("config/intents.json")).route(phrase))
-    assert result.intent == intent
+    assert classify(phrase) == intent

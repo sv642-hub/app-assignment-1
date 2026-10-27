@@ -61,26 +61,56 @@ def test_invalid_inputs(settings, payload):
         assert client.post("/v1/chat", json=payload).status_code == 422
 
 
-def test_unknown_falls_back(settings):
+def test_unknown_message_still_calls_a_backend(settings):
     with TestClient(create_app(settings)) as client:
         result = client.post("/v1/chat", json={"message": "weather on Mars"}).json()
         assert result["intent"] == "unknown"
         assert result["policy_facts"] == []
-        assert result["trace"]["router"] == "rule_router"
-        assert result["trace"]["jev_choice"] is None
-        assert result["trace"]["fallback_reason"] == "no_matching_intent"
+        trace = result["trace"]
+        assert trace["router"] == "mock_jev"
+        assert trace["jev_choice"] == "standard"
+        assert trace["model"] == "qwen3-1.7b"
+        assert trace["reply_source"] == "no_match"
+        assert trace["fallback_reason"] is None
         assert "rephrase" in result["reply"]
 
 
-def test_router_failure(settings):
+@pytest.mark.parametrize(
+    "message,route,model",
+    [
+        ("I lost my card", "standard", "qwen3-1.7b"),
+        (" ".join(["lost card"] * 10), "complex", "qwen3-4b"),
+    ],
+)
+def test_jev_failure_uses_rule_router_and_a_backend(settings, message, route, model):
     class OfflineRouter:
         async def route(self, message):
-            raise TimeoutError
+            raise ConnectionError
 
     with TestClient(create_app(settings, OfflineRouter())) as client:
-        result = client.post("/v1/chat", json={"message": "lost card"}).json()
+        result = client.post("/v1/chat", json={"message": message}).json()
+        trace = result["trace"]
+        assert result["intent"] == "lost_or_stolen_card"
+        assert trace["router"] == "rule_router"
+        assert trace["jev_choice"] is None
+        assert trace["confidence"] is None
+        assert (trace["route"], trace["model"]) == (route, model)
+        assert trace["reply_source"] == "policy_template"
+        assert trace["fallback_reason"] == "jev_error"
+
+
+def test_slow_jev_times_out_to_rule_router(settings):
+    class SlowRouter:
+        async def route(self, message):
+            await asyncio.sleep(5)
+
+    settings.jev_timeout_seconds = 0.05
+    with TestClient(create_app(settings, SlowRouter())) as client:
+        result = client.post("/v1/chat", json={"message": "card arrival"}).json()
+        assert result["intent"] == "card_arrival"
         assert result["trace"]["router"] == "rule_router"
-        assert result["trace"]["fallback_reason"] == "router_unavailable"
+        assert result["trace"]["fallback_reason"] == "jev_timeout"
+        assert result["trace"]["latency_ms"] < 1000
 
 
 @pytest.mark.parametrize("both_down", [False, True])
@@ -154,21 +184,37 @@ def test_health_remains_responsive(settings):
     asyncio.run(run())
 
 
-def test_fixed_rule_reply_needs_no_backend(settings):
+@pytest.mark.parametrize("jev_down", [False, True])
+def test_no_backend_means_503_for_every_message(settings, jev_down):
+    class OfflineRouter:
+        async def route(self, message):
+            raise ConnectionError
+
     backends = json.loads(settings.backends_path.read_text())
     for backend in backends:
         backend["available"] = False
     settings.backends_path.write_text(json.dumps(backends))
-    with TestClient(create_app(settings)) as client:
-        response = client.post("/v1/chat", json={"message": "weather on Mars"})
-        assert response.status_code == 200
-        trace = response.json()["trace"]
-        assert trace["reply_source"] == "rule_router"
-        assert trace["model"] is None
-        assert trace["route"] is None
-        assert trace["jev_choice"] is None
-        assert trace["simulated_latency_ms"] == 0
-        assert trace["fallback_reason"] == "no_matching_intent"
+    router = OfflineRouter() if jev_down else None
+    with TestClient(create_app(settings, router)) as client:
+        for message in ["weather on Mars", "card arrival"]:
+            response = client.post("/v1/chat", json={"message": message})
+            assert response.status_code == 503
+
+
+def test_jev_failure_and_backend_fallback_are_both_traced(settings):
+    class OfflineRouter:
+        async def route(self, message):
+            raise ConnectionError
+
+    backends = json.loads(settings.backends_path.read_text())
+    backends[0]["available"] = False
+    settings.backends_path.write_text(json.dumps(backends))
+    with TestClient(create_app(settings, OfflineRouter())) as client:
+        trace = client.post("/v1/chat", json={"message": "card arrival"}).json()[
+            "trace"
+        ]
+        assert trace["model"] == "qwen3-4b"
+        assert trace["fallback_reason"] == "jev_error, selected_backend_unavailable"
 
 
 def test_health_has_documented_response_model(settings):

@@ -80,8 +80,12 @@ def test_gateway_errors_are_visible(monkeypatch, kind):
     assert len(page.table) == 0
 
 
-def test_unknown_trace_identifies_fixed_reply(monkeypatch):
-    with TestClient(create_app(Settings(_env_file=None))) as client:
+def test_rule_router_trace_is_labelled(monkeypatch):
+    class OfflineRouter:
+        async def route(self, message):
+            raise ConnectionError
+
+    with TestClient(create_app(Settings(_env_file=None), OfflineRouter())) as client:
         payload = client.post("/v1/chat", json={"message": "weather on Mars"}).json()
 
     def post(url, **kwargs):
@@ -94,6 +98,6 @@ def test_unknown_trace_identifies_fixed_reply(monkeypatch):
     assert not page.exception
     assert page.code[0].value == "unknown"
     values = page.table[0].value["Value"].tolist()
-    assert "None — fixed rule reply" in values
-    assert "No backend route" in values
-    assert "0 ms" in values
+    assert "Jev failed — rule router chose" in values
+    assert "qwen3-1.7b" in values
+    assert "None (rule router)" in values

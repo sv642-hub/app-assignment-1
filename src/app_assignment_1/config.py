@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     gateway_url: str = "http://127.0.0.1:8000"
     request_timeout_seconds: float = Field(default=15, gt=0, le=120)
     request_store_limit: int = Field(default=1000, ge=1, le=100000)
+    jev_timeout_seconds: float = Field(default=2, gt=0, le=30)
+    rule_router_complex_min_words: int = Field(default=20, ge=1, le=2000)
 
 
 @lru_cache

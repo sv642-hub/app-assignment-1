@@ -18,11 +18,9 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         configured = settings or get_settings()
-        mock = MockJevRouter(configured.intents_path)
-        gateway = Gateway(configured, router or mock)
-        if set(gateway.cards) != {item.intent for item in mock.intents}:
-            raise ValueError("Policy cards must match the configured intents exactly")
-        app.state.gateway = gateway
+        app.state.gateway = Gateway(
+            configured, router or MockJevRouter(configured.intents_path)
+        )
         yield
 
     app = FastAPI(
@@ -55,9 +53,10 @@ def create_app(
     @app.get("/v1/health", response_model=HealthResponse)
     async def health(request: Request) -> HealthResponse:
         gateway: Gateway = request.app.state.gateway
+        configs = [b.config for b in gateway.backends]
         return HealthResponse(
-            status="ok" if any(b.available for b in gateway.backends) else "degraded",
-            backends=gateway.backends,
+            status="ok" if any(c.available for c in configs) else "degraded",
+            backends=configs,
         )
 
     return app

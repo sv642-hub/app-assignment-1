@@ -26,18 +26,25 @@ class ChatRequest(StrictModel):
 
 
 class RoutingDecision(StrictModel):
+    """Jev decides difficulty only; the selected backend detects the intent."""
+
     route: Route
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+
+class BackendReply(StrictModel):
     intent: str = Field(min_length=1)
-    confidence: float = Field(ge=0, le=1)
+    reply: str
+    policy_facts: list[str]
 
 
 class Trace(StrictModel):
     router: Literal["mock_jev", "rule_router"]
     jev_choice: Route | None
-    route: Route | None
-    model: BackendName | None
-    reply_source: Literal["policy_template", "rule_router", "format_fallback"]
-    confidence: float = Field(ge=0, le=1)
+    route: Route
+    model: BackendName
+    reply_source: Literal["policy_template", "no_match", "format_fallback"]
+    confidence: float | None = Field(ge=0, le=1)
     latency_ms: float = Field(ge=0)
     simulated_latency_ms: int = Field(ge=0)
     format_check: Literal["passed", "failed"]

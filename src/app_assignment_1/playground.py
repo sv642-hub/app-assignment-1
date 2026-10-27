@@ -93,14 +93,16 @@ if "result" in st.session_state:
             "Value": [
                 trace.router,
                 trace.reply_source,
-                trace.jev_choice or "No match — rule fallback",
-                trace.route or "No backend route",
-                trace.model or "None — fixed rule reply",
+                trace.jev_choice or "Jev failed — rule router chose",
+                trace.route,
+                trace.model,
                 f"{trace.latency_ms:.2f} ms",
                 f"{trace.simulated_latency_ms} ms",
                 trace.format_check,
                 trace.fallback_reason or "None",
-                str(trace.confidence),
+                "None (rule router)"
+                if trace.confidence is None
+                else str(trace.confidence),
             ],
         }
     )

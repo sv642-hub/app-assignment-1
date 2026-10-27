@@ -58,11 +58,12 @@ def test_router_errors_fall_back_without_logging_sensitive_details(error, caplog
         async def route(self, message):
             raise error("secret-provider-detail")
 
+    expected = "jev_timeout" if error is TimeoutError else "jev_error"
     with TestClient(create_app(Settings(_env_file=None), BrokenRouter())) as client:
         response = client.post("/v1/chat", json={"message": "private-message"})
         assert response.status_code == 200
-        assert response.json()["trace"]["fallback_reason"] == "router_unavailable"
-    assert "Router failed" in caplog.text
+        assert response.json()["trace"]["fallback_reason"] == expected
+    assert "Jev routing failed" in caplog.text
     assert "secret-provider-detail" not in caplog.text
     assert "private-message" not in caplog.text
 
@@ -76,3 +77,28 @@ def test_router_cancellation_is_not_swallowed():
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(Gateway(Settings(_env_file=None), CancelledRouter()).chat("card"))
+
+
+def test_backend_label_outside_the_intent_list_fails_format_check():
+    from app_assignment_1.router import MockJevRouter
+    from app_assignment_1.schemas import BackendConfig, BackendReply
+    from app_assignment_1.service import Gateway
+
+    class InventingBackend:
+        def __init__(self, name, route):
+            self.config = BackendConfig(name=name, route=route, latency_ms=0)
+
+        async def generate(self, message):
+            return BackendReply(intent="made_up", reply="Hi.", policy_facts=[])
+
+    settings = Settings(_env_file=None)
+    backends = [
+        InventingBackend("qwen3-1.7b", "standard"),
+        InventingBackend("qwen3-4b", "complex"),
+    ]
+    gateway = Gateway(settings, MockJevRouter(settings.intents_path), backends)
+    result = asyncio.run(gateway.chat("card arrival"))
+    assert result.intent == "unknown"
+    assert result.trace.format_check == "failed"
+    assert result.trace.format_errors == ["unknown_label"]
+    assert result.trace.reply_source == "format_fallback"
