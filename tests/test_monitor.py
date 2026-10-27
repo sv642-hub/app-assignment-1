@@ -1,6 +1,7 @@
 """Format-failure monitor and controller: rules, gateway wiring and health."""
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -159,3 +160,34 @@ def test_shipped_chaos_config_is_valid():
             for b in client.get("/v1/health").json()["backends"]
         }
         assert faults == {"qwen3-1.7b": 1, "qwen3-4b": 0}
+
+
+def test_re_enabled_entry_is_dated_when_the_cooldown_ended(tmp_path):
+    clock = Clock()
+    c = controller(tmp_path, clock)
+    for _ in range(3):
+        c.record("qwen3-1.7b", True, can_disable=True)
+    clock.now = 100.0  # first checked 70 s after the 30 s cooldown ended
+    checked_at = datetime.now(UTC)
+    assert not c.is_disabled("qwen3-1.7b")
+    _, re_enabled = c.log
+    assert 69 < (checked_at - re_enabled.at).total_seconds() < 71
+
+
+def test_kept_last_backend_is_logged_once_per_run_above_threshold(tmp_path):
+    c = controller(tmp_path)
+    for _ in range(3):
+        c.record("qwen3-4b", True, can_disable=False)
+    # Another backend's entry in between must not cause a repeat warning.
+    for _ in range(3):
+        c.record("qwen3-1.7b", True, can_disable=True)
+    c.record("qwen3-4b", True, can_disable=False)
+    assert [i.action for i in c.log] == ["kept_last_backend", "disabled"]
+    # Dropping below the threshold ends the run; the next run warns again.
+    for failed in [False, False, False, True, True, True]:
+        c.record("qwen3-4b", failed, can_disable=False)
+    assert [i.action for i in c.log] == [
+        "kept_last_backend",
+        "disabled",
+        "kept_last_backend",
+    ]
