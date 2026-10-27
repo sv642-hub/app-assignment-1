@@ -32,3 +32,18 @@ jobs:
 
       - name: Tests (pytest)
         run: uv run pytest
+
+  compose-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start the mocked stack
+        run: docker compose up -d --build --wait --wait-timeout 180
+      - name: Check the public proxy
+        run: python3 scripts/smoke_compose.py http://localhost:8080
+      - name: Show logs
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Stop the stack
+        if: always()
+        run: docker compose down

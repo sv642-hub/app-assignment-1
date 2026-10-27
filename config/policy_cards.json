@@ -1,0 +1,78 @@
+{
+  "card_arrival": {
+    "facts": [
+      "DemoBank standard cards arrive within 5 business days.",
+      "Track delivery in the Cards section of the fictional app."
+    ],
+    "reply_template": "For this fictional DemoBank scenario: {facts}"
+  },
+  "lost_or_stolen_card": {
+    "facts": [
+      "Freeze your card in the fictional app.",
+      "Request a replacement through the Cards section.",
+      "Contact DemoBank support for unrecognized transactions."
+    ],
+    "reply_template": "For this fictional DemoBank scenario: {facts}"
+  },
+  "transfer_not_received_by_recipient": {
+    "facts": [
+      "DemoBank domestic transfers may take up to 2 business days.",
+      "Check recipient details and the transfer status.",
+      "Contact fictional support if the expected arrival date has passed."
+    ],
+    "reply_template": "For this fictional DemoBank scenario: {facts}"
+  },
+  "exchange_rate": {
+    "facts": [
+      "DemoBank displays the exchange rate before confirmation.",
+      "The displayed quote is illustrative and is not a live market rate."
+    ],
+    "reply_template": "For this fictional DemoBank scenario: {facts}"
+  },
+  "top_up_failed": {
+    "facts": [
+      "Check that the funding card details are correct.",
+      "A failed top-up does not add money to the DemoBank balance.",
+      "Ask the funding bank about any temporary authorization hold."
+    ],
+    "reply_template": "For this fictional DemoBank scenario: {facts}"
+  },
+  "pending_transfer": {
+    "facts": [
+      "A pending transfer is still being processed.",
+      "Check the expected completion date in the fictional transfer details."
+    ],
+    "reply_template": "For this fictional DemoBank scenario: {facts}"
+  },
+  "card_payment_fee_charged": {
+    "facts": [
+      "DemoBank lists any applicable fee in the transaction details.",
+      "Compare it with the fictional fee schedule.",
+      "Contact support if the fee is not explained."
+    ],
+    "reply_template": "For this fictional DemoBank scenario: {facts}"
+  },
+  "verify_my_identity": {
+    "facts": [
+      "DemoBank accepts a valid government-issued photo ID in its fictional verification flow.",
+      "Never submit identification documents to this demonstration."
+    ],
+    "reply_template": "For this fictional DemoBank scenario: {facts}"
+  },
+  "refund_not_showing_up": {
+    "facts": [
+      "DemoBank refunds may take up to 7 business days after merchant confirmation.",
+      "Ask the merchant for a refund reference.",
+      "Contact fictional support if the processing window has passed."
+    ],
+    "reply_template": "For this fictional DemoBank scenario: {facts}"
+  },
+  "wrong_amount_of_cash_received": {
+    "facts": [
+      "Record the ATM location and transaction time.",
+      "Keep the receipt if available.",
+      "Report the cash discrepancy to fictional DemoBank support."
+    ],
+    "reply_template": "For this fictional DemoBank scenario: {facts}"
+  }
+}

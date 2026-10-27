@@ -1,626 +1,250 @@
-# app-assignment-1
+# Smart AI Gateway
 
-DSAN 6700 (App Deployment) — Assignments 1 and 2.
+A mocked banking-support Playground for DSAN 6700 Deliverable 2. Enter a customer message and see a detected intent, a reply from a fictional policy card, and a routing trace.
 
-The base repo for Machine Learning App Deployment course
+**Everything is simulated.** There are no Jev calls, Qwen weights, GPU requirements, torch or Transformers dependencies. This prototype demonstrates the user journey in our planned architecture. It does not implement the full monitoring, self-healing, canary-release or linear-probe design.
 
-It follows the instructions of using `uv` and the `src/` layout. It contains a
-FastAPI service that uses Pydantic settings and models, with a `/predict`
-endpoint backed by a local language model
-([SmolLM2-135M-Instruct](https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct))
-running on CPU with PyTorch and Transformers. The service is packaged as a
-Docker image and runs on a Jetstream2 instance with Docker Compose.
+## What happens to a message
 
+1. Streamlit sends the message over HTTP to the FastAPI gateway.
+2. `MockJevRouter` stands in for Jev's difficulty call. It returns only a route (`standard` or `complex`) and a confidence, never an intent. It uses the configured complexity of the best keyword match; unmatched messages go to `standard`.
+3. Standard selects mock `qwen3-1.7b`. Complex selects mock `qwen3-4b`. The selected mock backend waits for its simulated delay, detects the intent by matching complete keyword phrases (longer/more matches score higher; config order breaks ties), and fills the reply template with fictional policy facts. Both mock backends share this classifier.
+4. Reply checks reject blank text, replies over 4,000 characters, unfilled `{placeholder}` tokens and intent labels outside the configured list. Pydantic validates the result. The Playground shows the intent, reply and trace.
 
-- **[Installing](#installing)** — get it running from zero.
-- **[How-to guides](#how-to-guides)** — task-focused recipes, including
-  [Docker](#run-the-service-with-docker),
-  [Jetstream2](#deploy-on-a-jetstream2-instance), and
-  [calling every endpoint](#call-every-endpoint).
-- **[Reference](#reference)** — endpoints, settings, commands, structure, and
-  [deployment measurements](#deployment-measurements).
+If Jev fails or does not answer within `APP_JEV_TIMEOUT_SECONDS`, the rule router chooses the route instead: messages of `APP_RULE_ROUTER_COMPLEX_MIN_WORDS` words or more go to `complex`, shorter ones to `standard`. The request still goes to a backend. The trace shows `router: "rule_router"`, `jev_choice: null`, `confidence: null` and `fallback_reason` `jev_timeout` or `jev_error`.
 
----
+If the backend detects no intent, it returns intent `unknown` with a polite reply asking the user to rephrase (`reply_source: "no_match"`). If the selected backend is marked unavailable, the other is used only when available (`selected_backend_unavailable`). When both are unavailable, every message returns HTTP 503. When Jev fails and the backend falls back, `fallback_reason` lists both reasons.
 
-## Installing
+Confidence is a keyword heuristic, not a calibrated probability. Measured latency includes the simulated wait. A failed format check returns a safe apology (`reply_source: "format_fallback"`) with `format_check: "failed"` and reasons in `format_errors`. The malformed reply is not returned or stored. A passed format check does not establish semantic correctness.
 
-How to install this repo on a new machine
+## Run with Docker Compose
 
-### 1. Install `uv`
-
-macOS / Linux:
+Requires Docker with Compose **2.24.0 or newer** for the optional env-file syntax. The clone commands use `main` and apply after this prototype PR is merged.
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
+git clone https://github.com/sv642-hub/app-assignment-1.git
+cd app-assignment-1
+docker compose up -d --build --wait
 ```
 
-Then restart your shell (or `source` your profile) so `uv` is on your `PATH`.
-Verify:
+Open [the Playground](http://localhost:8080) and click an example or type your own message. Click **Send message**. [API documentation](http://localhost:8080/docs) and [health](http://localhost:8080/v1/health) use the same port.
+
+Caddy is pinned to version 2.11.7 and the tested multi-platform image digest. Only Caddy publishes a host port (`8080`). Gateway port `8000` and Streamlit port `8501` stay inside the Compose network. Caddy proxies Streamlit WebSockets as well as HTTP. The three services restart unless stopped. Frontend startup waits for gateway health; proxy startup waits for both services.
 
 ```bash
-uv --version
+docker compose ps
+python3 scripts/smoke_compose.py http://localhost:8080
+docker compose logs --tail=100
+# Stop the prototype when finished:
+docker compose down
 ```
 
-### 2. Clone the repository
+Request history is in memory, bounded to the most recent 1,000 successful requests by default. It is lost when the gateway restarts. Run one gateway worker. No database or model volume is needed for this prototype. JSON configuration persists in the repository and is mounted read-only.
+
+## Configuration and env files
+
+Defaults work without an env file. To create optional overrides **without replacing an existing file**:
 
 ```bash
-git clone https://github.com/sv642-hub/app-assignment-1.git "App - Assignment 1"
-cd "App - Assignment 1"
+if [ ! -e env/.env ]; then
+  cp env/.env.example env/.env
+fi
 ```
 
-### 3. Create the environment from the lockfile
+Review an existing file before using it. Old Assignment 2 keys such as `APP_LLM_MODEL_NAME`, `APP_LLM_MAX_NEW_TOKENS`, `APP_API_KEY`, `APP_DEBUG`, `APP_HOST`, `APP_PORT` and `APP_LOG_LEVEL` no longer belong to this prototype. Remove obsolete keys manually; do not overwrite your existing file. Unknown dotenv keys fail validation.
 
-```bash
-uv sync --extra dev --frozen
-```
+Pydantic Settings reads `.env` then `env/.env` in native local runs. Process environment variables take precedence. Compose injects `env/.env` at runtime; no real env file is copied into the image. Compose explicitly sets the frontend gateway URL to `http://gateway:8000` so it reaches the internal service.
 
-This reads `uv.lock` and installs every dependency needed (check `uv.lock` for the list of dependencies).
-The `dev` extra adds the tools the app itself does not need: pytest, ruff, mypy,
-pre-commit. Omit `--extra dev` for a runtime-only install.
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `APP_ENVIRONMENT` | `local` | `local`, `staging` or `production` |
+| `APP_INTENTS_PATH` | `config/intents.json` | Intent keywords and mock complexity |
+| `APP_POLICY_CARDS_PATH` | `config/policy_cards.json` | Fictional facts and `{facts}` reply templates |
+| `APP_BACKENDS_PATH` | `config/backends.json` | Backend names, routes, delay and availability |
+| `APP_GATEWAY_URL` | `http://127.0.0.1:8000` | Frontend's HTTP gateway address |
+| `APP_REQUEST_TIMEOUT_SECONDS` | `15` | Frontend HTTP timeout |
+| `APP_REQUEST_STORE_LIMIT` | `1000` | Number of successful requests retained |
+| `APP_JEV_TIMEOUT_SECONDS` | `2` | Wait for the Jev routing call before using the rule router |
+| `APP_RULE_ROUTER_COMPLEX_MIN_WORDS` | `20` | Rule router sends messages this long or longer to `complex` |
 
-> The runtime dependencies include `torch` and `transformers`. On Linux,
-> `pyproject.toml` installs PyTorch's CPU-only build (no CUDA libraries), so the
-> first sync is a few hundred MB rather than several GB.
+Paths are relative to the working directory: run native commands from the repo root. In Docker the working directory is `/app`; use paths under the mounted `config/` directory. The gateway validates JSON and matching intent/policy-card coverage at startup. Both mock backends must be configured. Set `available` to `false` in `config/backends.json` to try fallback.
 
-### 4. Run the service
+Settings are cached and JSON files are loaded once at startup. After editing JSON files run `docker compose restart gateway`. After changing env values run `docker compose up -d --force-recreate`. Tests may call `get_settings.cache_clear()` to reread settings. Changing a model label does not run a real model.
 
-Start the live web server with uvicorn:
+Use public or fictional demo messages. The mock does not send messages to Jev or another model provider. It has no user authentication and stores responses in process memory. Streamlit usage telemetry is disabled in the documented commands.
 
-```bash
-uv run uvicorn app_assignment_1.api:app --reload
-```
+## Run natively with uv
 
-- `app_assignment_1.api:app` points at the `app` object in
-  [`src/app_assignment_1/api.py`](src/app_assignment_1/api.py).
-- `--reload` auto-restarts the server when you edit code — a dev convenience;
-  omit it in production.
-
-**First run downloads the model.** At startup the service loads
-SmolLM2-135M-Instruct once and reuses it for every request. The first time, the
-weights (about 270 MB) are downloaded from Hugging Face — no account or token
-needed — and cached under `~/.cache/huggingface` (set `HF_HOME` to move the
-cache). Later starts load from the cache. The server only accepts requests
-once the model has loaded; if the model cannot be loaded, the server logs the
-error and exits.
-
-Leave it running and, in a second terminal, confirm it's up:
-
-```bash
-curl http://127.0.0.1:8000/health
-```
-
-You should see:
-
-```json
-{"status":"ok","version":"0.1.0","environment":"local"}
-```
-
-> This runs the real service, not the test suite
-
-### 5. Run the tests
-
-```bash
-uv run pytest
-```
-
----
-
-## How-to guides
-
-### Run Problem 2 locally
-
-Follow [the Problem 2 local run guide](problem2-local-run.md) to check Pydantic
-Settings, run the real model, and reproduce the blocking and fixed benchmarks.
-
-### Configure the service
-
-Settings are read from `APP_*` environment variables (see
-[Settings reference](#configuration-settings)). For local development, copy the
-template and edit it:
-
-```bash
-cp env/.env.example .env
-```
-
-The deployed shape lives in `env/.env.production.example`.
-
-> Two different override files: `uv run uvicorn` reads `.env` at the repo root,
-> while Docker Compose reads `env/.env` (see
-> [How the deployment is put together](#how-the-deployment-is-put-together)).
-> Both are gitignored.
-
-### Ask the model a question
-
-With the service running:
-
-```bash
-curl -X POST http://127.0.0.1:8000/predict \
-  -H 'content-type: application/json' \
-  -d '{"text":"What is a bank? Answer in one short sentence."}'
-```
-
-Example response (decoding is greedy, so the same input gives the same answer
-on the same machine; other hardware or PyTorch builds may word it differently):
-
-```json
-{"prediction":"A bank is a financial institution that provides a wide range of services, including lending, borrowing, and checking accounts.","input_length":45}
-```
-
-A single request took about 0.3 s of generation time on an Apple M4 CPU (see
-[`discussion.md`](discussion.md)); expect different timings on other machines.
-The separate [smoke check](benchmark_results/smoke_check.json) recorded about
-6.6 s for one `/predict` request. Its hardware, warm-up state, and timing method
-were not recorded, so that result cannot be directly compared with the 0.3 s
-generation measurement. It confirms a working request, not typical latency.
-Possible errors:
-
-| Status | Body                                    | Meaning                                                     |
-|--------|-----------------------------------------|-------------------------------------------------------------|
-| `422`  | validation details                      | `text` is missing or empty.                                 |
-| `500`  | `{"detail":"Model generation failed."}` | The model raised an error; the full error is in the server log. |
-| `503`  | `{"detail":"Model not loaded."}`        | No model is attached to the app. A model load failure normally stops startup. |
-
-To change the model or reply length, see `APP_LLM_MODEL_NAME` and
-`APP_LLM_MAX_NEW_TOKENS` in the [settings reference](#configuration-settings).
-
-### Run the service with Docker
-
-The service ships as a Docker image and is started with Docker Compose. You need
-Docker with the Compose plugin, **version 2.24.0 or newer** (`docker compose
-version` to check). Older versions don't support the optional `env/.env` file
-used in `compose.yml`.
-
-**Start it** from the repository root:
-
-```bash
-docker compose up -d
-```
-
-That is the whole start procedure on a fresh clone: Compose builds the image
-from the [`Dockerfile`](Dockerfile), creates the model volume, and starts the
-container. The first start builds the image and downloads the model (~270 MB),
-so give it a minute or two. Image size, rebuild times, and `docker system df`
-on our instance are in [Deployment measurements](#deployment-measurements).
-
-**Check it is up:**
-
-```bash
-docker compose ps                          # STATUS shows (healthy) once ready
-curl http://127.0.0.1:8000/health
-```
-
-Expected response:
-
-```json
-{"status":"ok","version":"0.1.0","environment":"production"}
-```
-
-To call the other endpoints, see [Call every endpoint](#call-every-endpoint).
-
-**Build the image on its own** (optional; `docker compose up -d` already does
-this):
-
-```bash
-docker compose build                       # same image Compose runs
-```
-
-**Run the image without Compose** (optional, e.g. for a quick local check). This
-uses the local-dev settings and does not keep the model between runs:
-
-```bash
-docker build -t app-assignment .
-docker run --rm -p 8000:8000 --env-file env/.env.example app-assignment
-```
-
-**Deploy a new version** (e.g. on Jetstream2 after a merge):
-
-```bash
-git pull
-docker compose up -d --build
-```
-
-**Stop it:**
-
-```bash
-docker compose down        # keeps the downloaded model
-```
-
-> Do not add `-v` to `down` unless you want to delete the model volume; the
-> next start would download the model again.
-
-#### How the deployment is put together
-
-- **One service, no dependencies.** The stack has no database, vector store, or
-  cache; the model runs inside the app container.
-- **Named volume for the model.** The `hf_vol` volume is mounted at `/models`
-  (`HF_HOME`), so the downloaded model survives restarts and redeploys.
-- **Health check.** The image declares a `HEALTHCHECK` that calls `/health`
-  every 30 s, with a 120 s grace period while the model loads.
-- **Non-root.** The container runs as an unprivileged `appuser`.
-- **Restart policy.** `restart: unless-stopped` brings the service back after a
-  crash or a reboot, unless it was stopped on purpose.
-- **Configuration at run time.** Compose reads `env/.env.production.example`
-  (committed, no secrets) and then, if it exists, `env/.env`, which overrides
-  it. Put private values such as a real `APP_API_KEY` in `env/.env`. It is
-  gitignored, so it is never committed, and `.dockerignore` keeps it out of
-  the image:
-
-  ```bash
-  echo "APP_API_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')" > env/.env
-  docker compose up -d
-  ```
-
-- **CPU-only PyTorch on Linux.** Our Jetstream2 instance (`m3.small`) has no GPU
-  and a 20 GB disk. The default Linux PyTorch pulls in ~2 GB of NVIDIA CUDA
-  packages, which filled the disk, so `pyproject.toml` installs PyTorch's
-  CPU-only build on Linux. macOS is unaffected.
-
-### Deploy on a Jetstream2 instance
-
-Our service runs on a Jetstream2 `m3.small` instance (Ubuntu, no GPU, 20 GB
-disk). To start it on an instance from scratch:
-
-1. **Open port 8000.** In the Jetstream2 dashboard, the instance's security
-   group must allow inbound TCP on port 8000, or `/health` won't be reachable
-   from outside.
-2. **Install Docker** with the Compose plugin (2.24.0 or newer), following
-   [Docker's Ubuntu install guide](https://docs.docker.com/engine/install/ubuntu/).
-   Then make sure Docker starts at boot, so `restart: unless-stopped` can bring
-   the service back after a reboot or unshelve:
-
-   ```bash
-   sudo systemctl enable --now docker
-   systemctl is-enabled docker            # should print: enabled
-   ```
-
-3. **Clone and start** (on the instance, over SSH):
-
-   ```bash
-   git clone https://github.com/sv642-hub/app-assignment-1.git
-   cd app-assignment-1
-   docker compose up -d
-   docker compose ps                      # wait for (healthy)
-   ```
-
-   If your user isn't in the `docker` group, prefix the `docker` commands with
-   `sudo`.
-
-4. **Check it from your own machine** (not the instance):
-
-   ```bash
-   curl http://<instance-ip>:8000/health
-   ```
-
-   `<instance-ip>` is the public IP on the instance's page in the Jetstream2
-   dashboard.
-
-> **Not yet verified on our instance:** that the stack comes back on its own
-> after the instance is shelved and unshelved. The setup is designed for it
-> (Docker enabled at boot plus `restart: unless-stopped`), but the shelve and
-> unshelve test hasn't been recorded yet.
-
-### Call every endpoint
-
-Set `HOST` once, then copy and paste the commands below. Use `127.0.0.1` when
-the service runs on your machine (with `uv run` or Docker), or the instance's
-public IP for Jetstream2:
-
-```bash
-export HOST=127.0.0.1                      # local
-# export HOST=<instance-ip>                # Jetstream2: public IP from the dashboard
-```
-
-**`GET /health`**: liveness check.
-
-```bash
-curl http://$HOST:8000/health
-```
-
-```json
-{"status":"ok","version":"0.1.0","environment":"production"}
-```
-
-`environment` is `local` when running with `uv run` and the default settings.
-
-**`POST /predict`**: generate a reply with the model.
-
-```bash
-curl -X POST http://$HOST:8000/predict \
-  -H 'content-type: application/json' \
-  -d '{"text":"What is a bank? Answer in one short sentence."}'
-```
-
-```json
-{"prediction":"A bank is a financial institution that provides a wide range of services, including lending, borrowing, and checking accounts, as well as providing services like currency exchange, insurance, and tax preparation.","input_length":45}
-```
-
-This is the reply from our Jetstream2 instance. The wording can differ on other
-machines (see [Ask the model a question](#ask-the-model-a-question)).
-
-**`POST /predict` with invalid input**: an empty `text` is rejected with `422`.
-
-```bash
-curl -i -X POST http://$HOST:8000/predict \
-  -H 'content-type: application/json' \
-  -d '{"text":""}'
-```
-
-```json
-{"detail":[{"type":"string_too_short","loc":["body","text"],"msg":"String should have at least 1 character","input":"","ctx":{"min_length":1}}]}
-```
-
-**`GET /docs`**: interactive Swagger UI. Open `http://$HOST:8000/docs` in a
-browser, or check that it's served:
-
-```bash
-curl -s -o /dev/null -w '%{http_code}\n' http://$HOST:8000/docs     # prints 200
-```
-
-**`GET /redoc`**: an alternative API documentation page. Replace `$HOST` with
-the address selected above when opening `http://$HOST:8000/redoc` in a browser,
-or check that it's served:
-
-```bash
-curl -s -o /dev/null -w '%{http_code}\n' http://$HOST:8000/redoc    # prints 200
-```
-
-**`GET /openapi.json`**: the machine-readable API schema behind `/docs`.
-
-```bash
-curl http://$HOST:8000/openapi.json
-```
-
-### Add a dependency
-
-```bash
-uv add <package>                    # runtime dependency
-uv add --optional dev <package>     # dev-only (tests, linters, types)
-```
-
-Both commands update `pyproject.toml` **and** `uv.lock`. Commit both so the team
-stays in sync.
-
-### Run the full CI check suite locally
-
-These are the exact steps CI runs, in order:
+Use Python 3.13 as in CI. Install [uv](https://docs.astral.sh/uv/) first.
 
 ```bash
 uv sync --extra dev --frozen
+uv run uvicorn app_assignment_1.api:app --host 127.0.0.1 --port 8000
+```
+
+In another terminal at the repo root:
+
+```bash
+uv run streamlit run src/app_assignment_1/playground.py --server.address=127.0.0.1 --server.port=8501 --browser.gatherUsageStats=false
+```
+
+Open `http://localhost:8501`. Native development uses separate frontend and API ports. The Compose path above is the single-port deployment.
+
+## API examples
+
+```bash
+curl -fsS http://localhost:8080/v1/health
+
+curl -fsS http://localhost:8080/v1/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"My card has not arrived"}'
+
+curl -fsS http://localhost:8080/v1/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"I lost my card"}'
+
+curl -fsS http://localhost:8080/v1/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Tell me about the weather"}'
+```
+
+A standard response has this shape (ID and measured latency vary):
+
+```json
+{
+  "id": "d966fd25-4630-4289-8ce4-7a8c4a2afc6a",
+  "intent": "card_arrival",
+  "reply": "For this fictional DemoBank scenario: DemoBank standard cards arrive within 5 business days. Track delivery in the Cards section of the fictional app.",
+  "policy_facts": [
+    "DemoBank standard cards arrive within 5 business days.",
+    "Track delivery in the Cards section of the fictional app."
+  ],
+  "trace": {
+    "router": "mock_jev",
+    "jev_choice": "standard",
+    "route": "standard",
+    "model": "qwen3-1.7b",
+    "reply_source": "policy_template",
+    "confidence": 0.87,
+    "latency_ms": 121.4,
+    "simulated_latency_ms": 120,
+    "format_check": "passed",
+    "format_errors": [],
+    "fallback_reason": null,
+    "mocked": true
+  }
+}
+```
+
+Retrieve a response using its returned ID:
+
+```bash
+REQUEST_ID='paste-the-returned-id-here'
+curl -fsS "http://localhost:8080/v1/requests/$REQUEST_ID"
+```
+
+| Endpoint | Behavior |
+| --- | --- |
+| `POST /v1/chat` | 200 validated reply; 422 invalid input; 503 both backends unavailable |
+| `GET /v1/requests/{id}` | 200 stored response; 404 missing/evicted/restarted; 422 invalid UUID |
+| `GET /v1/health` | Typed Pydantic response documented in OpenAPI; 200 with mock backend availability; `degraded` when both disabled |
+| `GET /docs`, `/redoc`, `/openapi.json` | Interactive documentation and API schema |
+
+Messages must contain 1–2,000 characters and cannot be whitespace-only. Extra request fields are rejected.
+
+## Deploy on Jetstream2
+
+Unshelve the instance and confirm its current public IP first. Replace `YOUR_INSTANCE_IP` below with its current public IP. SSH username is `exouser`. The following assumes Docker with Compose 2.24+ is already installed and your account can run Docker.
+
+From your laptop:
+
+```bash
+ssh exouser@YOUR_INSTANCE_IP
+```
+
+Before building, inspect disk usage and stop the old Assignment 2 stack from its checkout. This stops that earlier service; do this only when it is no longer needed for grading.
+
+```bash
+docker compose ls
+docker system df
+# Change to the actual old checkout shown by docker compose ls.
+cd /path/to/old/assignment-checkout
+docker compose images
+docker compose down
+```
+
+Stopping containers does not reclaim their images or model cache. If space is still short, inspect resources before optionally deleting the old ones:
+
+```bash
+docker image ls
+docker volume ls
+# Substitute verified old resource names/IDs; do not use these placeholders literally.
+docker image inspect OLD_IMAGE_ID
+docker volume inspect OLD_MODEL_VOLUME
+# Optional: only after confirming these belong to the retired assignment stack.
+docker image rm OLD_IMAGE_ID
+# Permanently deletes that model cache. Skip if you need to preserve it.
+docker volume rm OLD_MODEL_VOLUME
+docker system df
+df -h /
+```
+
+Do not use a global prune command or delete resources belonging to other projects. Return to your home directory and use a separate checkout for this prototype:
+
+```bash
+cd ~
+```
+
+On the instance:
+
+```bash
+df -h /
+git clone --branch main --single-branch \
+  https://github.com/sv642-hub/app-assignment-1.git smart-ai-gateway-prototype
+cd smart-ai-gateway-prototype
+docker compose version
+docker compose -p smart-gateway-prototype up -d --build --wait
+docker compose -p smart-gateway-prototype ps
+curl -fsS http://127.0.0.1:8080/v1/health
+python3 scripts/smoke_compose.py http://127.0.0.1:8080
+```
+
+These deployment commands target `main` after this PR is merged. For updates:
+
+```bash
+cd ~/smart-ai-gateway-prototype
+git pull --ff-only
+docker compose -p smart-gateway-prototype up -d --build --wait
+```
+
+Allow inbound TCP **8080** in the instance's security group and host firewall. Keep the existing SSH access rule. Do not publish gateway, Streamlit or database ports. If 8080 is already occupied, identify that service before stopping anything.
+
+Back on your laptop, verify external access:
+
+```bash
+curl -fsS http://YOUR_INSTANCE_IP:8080/v1/health
+curl -fsS http://YOUR_INSTANCE_IP:8080/v1/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"My card has not arrived"}'
+```
+
+Open `http://YOUR_INSTANCE_IP:8080` and send a Playground message. Leave Compose running for grading. Local verification does not confirm instance deployment or external reachability.
+
+## Tests and project layout
+
+```bash
 uv run ruff check
 uv run ruff format --check
 uv run mypy src/
 uv run pytest
 ```
 
-Auto-fix formatting before committing:
+CI runs these checks and a Compose smoke test through port 8080. Tests cover all ten intents, unknown messages, Jev failure and timeout, the rule router, backend fallback, label checks, request validation, policy grounding, settings overrides, bounded history and health responsiveness during simulated inference.
 
-```bash
-uv run ruff format
-uv run ruff check --fix
-```
+- `src/app_assignment_1/`: settings, API contracts, routing interface, mock service and Playground.
+- `config/`: validated mock behavior, editable without Python changes.
+- `Dockerfile`, `compose.yml`, `Caddyfile`: deployment with one published port.
+- `tests/`: unit and API tests. `scripts/smoke_compose.py`: public-proxy smoke test.
+- `discussion.md`, `problem2-local-run.md`, benchmark results: historical Assignment 2 records. The original SmolLM2 implementation and measurement scripts remain in Git history before this prototype.
 
-### Enable the pre-commit hooks (optional)
-
-Runs ruff lint/format automatically on every commit:
-
-```bash
-uv run pre-commit install
-```
-
----
-
-## Reference
-
-### Endpoints
-
-| Method | Path       | Request body      | Response model    | Purpose                          |
-|--------|------------|-------------------|-------------------|----------------------------------|
-| GET    | `/health`  | —                 | `HealthResponse`  | Liveness check for callers/CI.   |
-| POST   | `/predict` | `PredictRequest`  | `PredictResponse` | Text generation with SmolLM2.    |
-| GET    | `/docs`    | —                 | HTML              | Auto-generated Swagger UI.       |
-| GET    | `/redoc`   | —                 | HTML              | Alternative API documentation with ReDoc. |
-| GET    | `/openapi.json` | —            | JSON              | OpenAPI schema behind `/docs`.   |
-
-Copy-pasteable `curl` commands for each one are in
-[Call every endpoint](#call-every-endpoint).
-
-`PredictRequest` requires a non-empty `text`; invalid input returns HTTP `422`.
-`/predict` returns `500` if generation fails and `503` if the model is not
-loaded, both with an `ErrorResponse` body (`{"detail": "..."}`).
-
-### Configuration (settings)
-
-All variables use the `APP_` prefix and map to `Settings` in
-[`src/app_assignment_1/config.py`](src/app_assignment_1/config.py).
-
-| Variable          | Type / allowed values                          | Default       | Notes                                             |
-|-------------------|------------------------------------------------|---------------|---------------------------------------------------|
-| `APP_ENVIRONMENT` | `local` \| `staging` \| `production`           | `local`       | Enables stricter validators in `production`.      |
-| `APP_DEBUG`       | bool                                           | `false`       | Must be `false` in production.                    |
-| `APP_HOST`        | str                                            | `127.0.0.1`   | Use `0.0.0.0` inside a container.                 |
-| `APP_PORT`        | int (1–65535)                                  | `8000`        | Out-of-range values fail at startup.              |
-| `APP_LOG_LEVEL`   | `DEBUG`…`CRITICAL`                             | `INFO`        | Standard logging levels.                          |
-| `APP_API_KEY`     | str                                            | `""`          | Required when `APP_ENVIRONMENT=production`.   |
-| `APP_LLM_MODEL_NAME` | str (Hugging Face model ID, non-empty)      | `HuggingFaceTB/SmolLM2-135M-Instruct` | Loaded once at startup.        |
-| `APP_LLM_MAX_NEW_TOKENS` | int (1–512)                             | `64`          | Max tokens per reply; out-of-range values fail at startup. |
-
-### Common commands
-
-| Command                        | What it does                                        |
-|--------------------------------|-----------------------------------------------------|
-| `uv sync --extra dev --frozen` | Install runtime + dev extra from the lockfile.      |
-| `uv run uvicorn app_assignment_1.api:app --reload` | Run the service with auto-reload.   |
-| `uv run pytest`                | Run the test suite.                                 |
-| `uv run ruff check`            | Lint.                                               |
-| `uv run mypy src/`             | Type-check.                                         |
-| `docker compose up -d`         | Build (if needed) and start the stack in the background. |
-| `docker compose ps`            | Show container status, including `(healthy)`.       |
-| `docker compose logs -f app`   | Follow the service logs.                            |
-| `docker compose up -d --build` | Rebuild and restart after a code change.            |
-| `docker compose down`          | Stop the stack (keeps the model volume).            |
-
-### Project structure
-
-```
-App - Assignment 1/
-├── .github/
-│   ├── workflows/ci.yml       # lint, format, type-check, test on push & PR
-│   └── ISSUE_TEMPLATE/        # bug, documentation, and feature templates
-├── .pre-commit-config.yaml    # ruff lint/format git hooks
-├── pyproject.toml             # single declarative config (deps, build, tools)
-├── uv.lock                    # machine-generated lockfile — always committed
-├── Dockerfile                 # image: uv install, non-root user, HEALTHCHECK
-├── .dockerignore              # keeps .venv, .git, and env files out of the image
-├── compose.yml                # the service, model volume, restart policy
-├── env/
-│   ├── .env.example           # local-dev config template
-│   └── .env.production.example # deployed config template
-├── LICENSE · README.md
-├── discussion.md              # blocking-call audit write-up
-├── problem2-local-run.md      # step-by-step Problem 2 local run guide
-├── benchmark_results/         # saved benchmark and smoke-check output (JSON)
-├── scripts/
-│   ├── benchmark_requests.py  # 10 concurrent /predict requests
-│   └── measure_steps.py       # per-stage timing of one request
-├── src/
-│   └── app_assignment_1/
-│       ├── __init__.py        # package marker + version
-│       ├── api.py             # FastAPI app, lifespan, endpoints, Pydantic models
-│       ├── config.py          # typed settings (Pydantic Settings)
-│       └── model.py           # SmolLM2 loading and text generation
-└── tests/
-    ├── test_api.py            # API tests with a fake model (no download)
-    └── test_config.py         # settings validation tests
-```
-
-### Deployment measurements
-
-Measured on our Jetstream2 instance (`m3.small`: 2 vCPU, 6 GB RAM, 20 GB disk,
-no GPU) on 2026-10-14, building `main` with the stack running via
-`docker compose up -d`.
-
-| Measurement | Result | Command |
-|---|---|---|
-| Image size on disk | **1.5 GB** (316 MB compressed) | `docker images app-assignment-1-app` |
-| Rebuild after a one-line code change, **with** the cached dependency layer | **2.8 s** | `time docker compose build` |
-| Rebuild after a one-line code change, **without** a cached dependency layer | **56 s** | `time docker compose build --no-cache` |
-
-The one-line change was a comment added to `src/app_assignment_1/api.py`. With
-the cache, only the last three steps rerun (copy `src/`, copy the README,
-install the project); the dependency install is reused. Without the cache,
-every step reruns, including installing PyTorch and exporting the image. That
-is why the Dockerfile copies `pyproject.toml` and `uv.lock` and installs the
-dependencies *before* copying the source.
-
-`docker system df` on the instance with the stack up:
-
-```
-TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
-Images          4         4         2.77GB    2.77GB (100%)
-Containers      4         3         27.1MB    12.29kB (0%)
-Local Volumes   2         1         272.5MB   357B (0%)
-Build Cache     0         0         0B        0B
-```
-
-- **Images:** our app image (1.5 GB) plus the three images Jetstream2's
-  Exosphere uses for its browser shell (guacamole, guacd, watchtower).
-- **Containers:** our app plus those three; watchtower is the one not running.
-- **Local Volumes:** the 272.5 MB is the downloaded model in `hf_vol`; the other
-  (357 B) is an unused leftover.
-- **Build Cache:** cleared with `docker builder prune` after measuring.
-
-**Why CPU-only PyTorch matters here:** with the default Linux PyTorch, the
-dependency layer also pulled in ~2.2 GB of NVIDIA CUDA wheels, several GB once
-installed, which filled the instance's 20 GB disk even though it has no GPU.
-With PyTorch's CPU-only build, the whole image is 1.5 GB.
-
-To reproduce on the instance (from the repo root, with the stack running):
-
-```bash
-docker images app-assignment-1-app                  # image size
-
-# one-line change Docker has not seen before
-sed -i "1s/^/# rebuild test $(date +%s)\n/" src/app_assignment_1/api.py
-time docker compose build                           # with the cached dependency layer
-time docker compose build --no-cache                # without the cache
-
-git checkout src/                                   # undo the change
-docker compose up -d --build                        # redeploy the clean version
-docker system df                                    # with the stack up
-```
-
----
-
-## Troubleshooting
-
-### `ModuleNotFoundError: No module named 'torch'` (or `transformers`)
-
-Your `.venv` was created before the model dependencies were added and is out of
-date with `uv.lock`. The tests also need `torch`, even though they use a fake
-model, because `api.py` imports `model.py`. Re-sync from the repo root:
-
-```bash
-uv sync --extra dev --frozen
-```
-
-### The server exits at startup with "Failed to load model"
-
-The model could not be downloaded or loaded. Check your internet connection
-(the first run downloads from Hugging Face), that `APP_LLM_MODEL_NAME` is a
-valid model ID, and that the cache directory (`~/.cache/huggingface` or
-`HF_HOME`) is writable. The full error is printed below the log line.
-
-### `ModuleNotFoundError: No module named 'app_assignment_1'`
-
-This means the **project package was not installed** into the environment you're
-running. Because this repo uses a `src/` layout, `app_assignment_1` lives in
-`src/app_assignment_1/` and is only importable once the project is *installed* —
-it is never found just by being in the folder. The usual cause is building the
-virtual environment by hand (e.g. `uv venv` + `uv pip install …`, or a conda env
-with `pip install uvicorn`) instead of letting `uv sync` install the project.
-
-**Fix — always set up with `uv sync`, from the repo root:**
-
-```bash
-cd "App - Assignment 1"
-rm -rf .venv
-uv sync --frozen
-uv run uvicorn app_assignment_1.api:app --reload
-```
-
-The `uv sync` output must include the project itself being installed:
-
-```
-+ app-assignment-1==0.1.0 (from file:///.../App - Assignment 1)
-```
-
-**Check which problem you have:**
-
-```bash
-uv run python -c "import app_assignment_1; print(app_assignment_1.__file__)"
-```
-
-Prints a path → installed correctly. Still errors → the `rm -rf .venv && uv sync`
-above fixes it.
-
-**Quick workaround** (runs even without installing the project, by putting `src`
-on the path):
-
-```bash
-uv run uvicorn --app-dir src app_assignment_1.api:app --reload
-```
-
-> The module name `app_assignment_1` comes from the package directory
-> `src/app_assignment_1/`. The uvicorn target `app_assignment_1.api:app` means
-> "import `src/app_assignment_1/api.py` and use its `app` object." Watch the
-> spelling: assign**ment**, not "assignement".
-
----
-
-## Acknowledgments
-
-The initial project setup — `uv`/`src` scaffolding, the FastAPI skeleton,
-Pydantic Settings configuration, the GitHub Actions CI workflow, and this
-documentation — was done with the help of [Claude Code](https://claude.com/claude-code)
-(Anthropic's Claude, Opus 4.8). In Assignment 2, the `/health` responsiveness
-test and this README update were also done with Claude Code (Opus 5.5).
+`Router` is a small async interface returning a validated `RoutingDecision` (route and confidence only). A future real Jev client can implement it, and a real vLLM client can implement `Backend` (returning intent, reply and facts), without changing the HTTP contract or Playground. Persistent storage and the rest of the planned architecture are follow-up work.

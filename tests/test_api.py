@@ -1,187 +1,230 @@
-"""API tests using a fake model; no model download required."""
+"""Contract, fallback and responsiveness tests with no external services."""
 
 import asyncio
-import time
-from collections.abc import Iterator
+import json
+from pathlib import Path
+from uuid import uuid4
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app_assignment_1 import __version__, api
-from app_assignment_1.config import get_settings
-
-# How long the fake model takes to answer in the responsiveness test.
-SLOW_PREDICT_SECONDS = 1.0
-
-
-class FakeGenerator:
-    instances: list["FakeGenerator"] = []
-
-    def __init__(
-        self, model_name: str, max_new_tokens: int, delay: float = 0.0
-    ) -> None:
-        self.model_name = model_name
-        self.max_new_tokens = max_new_tokens
-        self.delay = delay
-        FakeGenerator.instances.append(self)
-
-    def generate(self, text: str) -> str:
-        # A synchronous sleep stands in for CPU-bound inference.
-        time.sleep(self.delay)
-        return f"Test response for: {text}"
-
-
-class FailingGenerator(FakeGenerator):
-    def generate(self, text: str) -> str:
-        raise RuntimeError("internal detail that must not reach the caller")
-
-
-class UnloadableGenerator:
-    def __init__(self, model_name: str, max_new_tokens: int) -> None:
-        raise OSError("could not download model")
-
-
-@pytest.fixture(autouse=True)
-def fresh_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    # The lifespan reads get_settings(), which is cached; reset it around each
-    # test so environment overrides take effect and do not leak.
-    monkeypatch.setattr(FakeGenerator, "instances", [])
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
+from app_assignment_1.api import create_app
+from app_assignment_1.config import Settings
+from app_assignment_1.schemas import ChatResponse
 
 
 @pytest.fixture
-def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
-    monkeypatch.setattr(api, "TextGenerator", FakeGenerator)
-
-    with TestClient(api.app) as test_client:
-        yield test_client
-
-
-def test_health_ok(client: TestClient) -> None:
-    response = client.get("/health")
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "status": "ok",
-        "version": __version__,
-        "environment": api.settings.environment,
-    }
+def settings(tmp_path: Path) -> Settings:
+    backends = json.loads(Path("config/backends.json").read_text())
+    for backend in backends:
+        backend["latency_ms"] = 0
+    path = tmp_path / "backends.json"
+    path.write_text(json.dumps(backends))
+    return Settings(_env_file=None, backends_path=path)
 
 
-def test_predict_valid_input(client: TestClient) -> None:
-    response = client.post("/predict", json={"text": "hello"})
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "prediction": "Test response for: hello",
-        "input_length": 5,
-    }
-
-
-def test_predict_rejects_empty_text(client: TestClient) -> None:
-    response = client.post("/predict", json={"text": ""})
-
-    assert response.status_code == 422
-
-
-@pytest.mark.anyio
-async def test_health_answers_while_predict_in_flight(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """/health must answer while a slow /predict is still running.
-
-    Unlike the tests above, this one sends two requests at once, so it uses
-    httpx.AsyncClient over ASGITransport instead of TestClient. ASGITransport
-    does not run the app's lifespan, so the fake generator is placed on
-    app.state directly. If concurrency tests grow, move them to their own file.
-    """
-    slow_generator = FakeGenerator(
-        model_name="fake", max_new_tokens=1, delay=SLOW_PREDICT_SECONDS
-    )
-    monkeypatch.setattr(api.app.state, "generator", slow_generator, raising=False)
-
-    transport = httpx.ASGITransport(app=api.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        predict_task = asyncio.create_task(
-            client.post("/predict", json={"text": "slow"})
-        )
-        # Give /predict time to start. If it blocks the event loop, this
-        # sleep cannot return until the slow request has finished.
-        await asyncio.sleep(0.1)
-
-        start = time.perf_counter()
-        health_response = await client.get("/health")
-        health_seconds = time.perf_counter() - start
-
-        assert not predict_task.done(), "/predict finished before /health ran"
-        predict_response = await predict_task
-
-    assert health_response.status_code == 200
-    assert predict_response.status_code == 200
-    assert health_seconds < SLOW_PREDICT_SECONDS / 2
+@pytest.mark.parametrize(
+    "message,intent,model",
+    [
+        ("My card has not arrived", "card_arrival", "qwen3-1.7b"),
+        ("I lost my card", "lost_or_stolen_card", "qwen3-4b"),
+    ],
+)
+def test_chat_contract_and_history(settings, message, intent, model):
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/v1/chat", json={"message": message})
+        assert response.status_code == 200
+        result = ChatResponse.model_validate(response.json())
+        assert result.intent == intent
+        assert result.trace.model == model
+        assert result.trace.mocked is True
+        assert result.trace.format_check == "passed"
+        assert result.trace.jev_choice == result.trace.route
+        assert all(fact in result.reply for fact in result.policy_facts)
+        assert client.get(f"/v1/requests/{result.id}").json() == response.json()
 
 
-def test_model_loaded_once_for_many_requests(client: TestClient) -> None:
-    for _ in range(3):
-        assert client.post("/predict", json={"text": "hello"}).status_code == 200
-
-    assert len(FakeGenerator.instances) == 1
-
-
-def test_lifespan_passes_settings_to_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("APP_LLM_MODEL_NAME", "example/other-model")
-    monkeypatch.setenv("APP_LLM_MAX_NEW_TOKENS", "32")
-    monkeypatch.setattr(api, "TextGenerator", FakeGenerator)
-
-    with TestClient(api.app):
-        (generator,) = FakeGenerator.instances
-
-    assert generator.model_name == "example/other-model"
-    assert generator.max_new_tokens == 32
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"message": ""},
+        {"message": "   "},
+        {"message": "a" * 2001},
+        {"message": 123},
+        {"message": "test", "extra": True},
+    ],
+)
+def test_invalid_inputs(settings, payload):
+    with TestClient(create_app(settings)) as client:
+        assert client.post("/v1/chat", json=payload).status_code == 422
 
 
-def test_generation_failure_returns_500(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    monkeypatch.setattr(api, "TextGenerator", FailingGenerator)
-
-    with TestClient(api.app) as client:
-        response = client.post("/predict", json={"text": "hello"})
-
-    assert response.status_code == 500
-    assert response.json() == {"detail": "Model generation failed."}
-    assert "internal detail" not in response.text
-    assert "Model generation failed." in caplog.text
-
-
-def test_predict_without_loaded_model_returns_503() -> None:
-    # Without the context manager the lifespan never runs, so no model is loaded.
-    client = TestClient(api.app)
-
-    response = client.post("/predict", json={"text": "hello"})
-
-    assert response.status_code == 503
-    assert response.json() == {"detail": "Model not loaded."}
+def test_unknown_message_still_calls_a_backend(settings):
+    with TestClient(create_app(settings)) as client:
+        result = client.post("/v1/chat", json={"message": "weather on Mars"}).json()
+        assert result["intent"] == "unknown"
+        assert result["policy_facts"] == []
+        trace = result["trace"]
+        assert trace["router"] == "mock_jev"
+        assert trace["jev_choice"] == "standard"
+        assert trace["model"] == "qwen3-1.7b"
+        assert trace["reply_source"] == "no_match"
+        assert trace["fallback_reason"] is None
+        assert "rephrase" in result["reply"]
 
 
-def test_model_load_failure_stops_startup(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    monkeypatch.setattr(api, "TextGenerator", UnloadableGenerator)
+@pytest.mark.parametrize(
+    "message,route,model",
+    [
+        ("I lost my card", "standard", "qwen3-1.7b"),
+        (" ".join(["lost card"] * 10), "complex", "qwen3-4b"),
+    ],
+)
+def test_jev_failure_uses_rule_router_and_a_backend(settings, message, route, model):
+    class OfflineRouter:
+        async def route(self, message):
+            raise ConnectionError
 
-    with pytest.raises(OSError, match="could not download model"):
-        with TestClient(api.app):
+    with TestClient(create_app(settings, OfflineRouter())) as client:
+        result = client.post("/v1/chat", json={"message": message}).json()
+        trace = result["trace"]
+        assert result["intent"] == "lost_or_stolen_card"
+        assert trace["router"] == "rule_router"
+        assert trace["jev_choice"] is None
+        assert trace["confidence"] is None
+        assert (trace["route"], trace["model"]) == (route, model)
+        assert trace["reply_source"] == "policy_template"
+        assert trace["fallback_reason"] == "jev_error"
+
+
+def test_slow_jev_times_out_to_rule_router(settings):
+    class SlowRouter:
+        async def route(self, message):
+            await asyncio.sleep(5)
+
+    settings.jev_timeout_seconds = 0.05
+    with TestClient(create_app(settings, SlowRouter())) as client:
+        result = client.post("/v1/chat", json={"message": "card arrival"}).json()
+        assert result["intent"] == "card_arrival"
+        assert result["trace"]["router"] == "rule_router"
+        assert result["trace"]["fallback_reason"] == "jev_timeout"
+        assert result["trace"]["latency_ms"] < 1000
+
+
+@pytest.mark.parametrize("both_down", [False, True])
+def test_backend_fallback(settings, both_down):
+    backends = json.loads(settings.backends_path.read_text())
+    backends[0]["available"] = False
+    backends[1]["available"] = not both_down
+    settings.backends_path.write_text(json.dumps(backends))
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/v1/chat", json={"message": "card arrival"})
+        if both_down:
+            assert response.status_code == 503
+            assert client.get("/v1/health").json()["status"] == "degraded"
+        else:
+            assert response.status_code == 200
+            trace = response.json()["trace"]
+            assert trace["model"] == "qwen3-4b"
+            assert trace["jev_choice"] == "standard"
+            assert trace["route"] == "complex"
+            assert trace["fallback_reason"] == "selected_backend_unavailable"
+
+
+def test_history_is_bounded_and_missing_ids(settings):
+    settings.request_store_limit = 1
+    with TestClient(create_app(settings)) as client:
+        first = client.post("/v1/chat", json={"message": "card arrival"}).json()
+        second = client.post("/v1/chat", json={"message": "lost card"}).json()
+        assert client.get(f"/v1/requests/{first['id']}").status_code == 404
+        assert client.get(f"/v1/requests/{second['id']}").status_code == 200
+        assert client.get(f"/v1/requests/{uuid4()}").status_code == 404
+        assert client.get("/v1/requests/not-a-uuid").status_code == 422
+
+
+def test_docs_and_health(settings):
+    with TestClient(create_app(settings)) as client:
+        assert client.get("/v1/health").json()["mode"] == "mock"
+        assert client.get("/docs").status_code == 200
+        paths = client.get("/openapi.json").json()["paths"]
+        assert "/v1/chat" in paths
+        assert "503" in paths["/v1/chat"]["post"]["responses"]
+
+
+def test_bad_config_fails_startup(settings, tmp_path):
+    bad = tmp_path / "cards.json"
+    bad.write_text("{}")
+    settings.policy_cards_path = bad
+    with pytest.raises(ValueError, match="Policy cards"):
+        with TestClient(create_app(settings)):
             pass
 
-    assert "Failed to load model" in caplog.text
+
+def test_health_remains_responsive(settings):
+    async def run():
+        backends = json.loads(settings.backends_path.read_text())
+        backends[0]["latency_ms"] = 400
+        settings.backends_path.write_text(json.dumps(backends))
+        app = create_app(settings)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                pending = asyncio.create_task(
+                    client.post("/v1/chat", json={"message": "card arrival"})
+                )
+                await asyncio.sleep(0.05)
+                health = await client.get("/v1/health")
+                assert health.status_code == 200
+                assert not pending.done()
+                assert (await pending).status_code == 200
+
+    asyncio.run(run())
 
 
-def test_openapi_documents_predict_errors(client: TestClient) -> None:
-    responses = client.get("/openapi.json").json()["paths"]["/predict"]["post"][
-        "responses"
-    ]
+@pytest.mark.parametrize("jev_down", [False, True])
+def test_no_backend_means_503_for_every_message(settings, jev_down):
+    class OfflineRouter:
+        async def route(self, message):
+            raise ConnectionError
 
-    assert {"200", "422", "500", "503"} <= responses.keys()
+    backends = json.loads(settings.backends_path.read_text())
+    for backend in backends:
+        backend["available"] = False
+    settings.backends_path.write_text(json.dumps(backends))
+    router = OfflineRouter() if jev_down else None
+    with TestClient(create_app(settings, router)) as client:
+        for message in ["weather on Mars", "card arrival"]:
+            response = client.post("/v1/chat", json={"message": message})
+            assert response.status_code == 503
+
+
+def test_jev_failure_and_backend_fallback_are_both_traced(settings):
+    class OfflineRouter:
+        async def route(self, message):
+            raise ConnectionError
+
+    backends = json.loads(settings.backends_path.read_text())
+    backends[0]["available"] = False
+    settings.backends_path.write_text(json.dumps(backends))
+    with TestClient(create_app(settings, OfflineRouter())) as client:
+        trace = client.post("/v1/chat", json={"message": "card arrival"}).json()[
+            "trace"
+        ]
+        assert trace["model"] == "qwen3-4b"
+        assert trace["fallback_reason"] == "jev_error, selected_backend_unavailable"
+
+
+def test_health_has_documented_response_model(settings):
+    from app_assignment_1.schemas import HealthResponse
+
+    with TestClient(create_app(settings)) as client:
+        health = HealthResponse.model_validate(client.get("/v1/health").json())
+        assert health.status == "ok"
+        schema = client.get("/openapi.json").json()
+        response = schema["paths"]["/v1/health"]["get"]["responses"]["200"]
+        assert response["content"]["application/json"]["schema"]["$ref"].endswith(
+            "/HealthResponse"
+        )

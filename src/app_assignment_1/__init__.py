@@ -1,3 +1,3 @@
-"""app_assignment_1 — DSAN 6700 Assignment 1 FastAPI service package."""
+"""Smart AI Gateway — DSAN 6700 mocked prototype."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

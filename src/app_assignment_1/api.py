@@ -1,122 +1,65 @@
-"""FastAPI service skeleton for DSAN 6700 Assignment 1.
+"""Smart AI Gateway mocked midpoint API."""
 
-Exposes a typed /health endpoint and a /predict endpoint backed by a local
-language model, with input and output validated/serialized by Pydantic models.
-"""
-
-from __future__ import annotations
-
-import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel, Field
 
-from app_assignment_1 import __version__
-from app_assignment_1.config import get_settings
-from app_assignment_1.model import TextGenerator
-
-# Validate configuration at startup: if the environment is misconfigured this
-# raises immediately and the process refuses to start.
-
-settings = get_settings()
-
-logger = logging.getLogger(__name__)
+from app_assignment_1.config import Settings, get_settings
+from app_assignment_1.router import MockJevRouter, Router
+from app_assignment_1.schemas import ChatRequest, ChatResponse, HealthResponse
+from app_assignment_1.service import BackendUnavailable, Gateway
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    # Reuse the cached settings. Tests can clear the cache before startup.
-    model_settings = get_settings()
-    try:
-        app.state.generator = TextGenerator(
-            model_name=model_settings.llm_model_name,
-            max_new_tokens=model_settings.llm_max_new_tokens,
+def create_app(
+    settings: Settings | None = None, router: Router | None = None
+) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        configured = settings or get_settings()
+        app.state.gateway = Gateway(
+            configured, router or MockJevRouter(configured.intents_path)
         )
-    except Exception:
-        # Fail fast: a service without its model should not report healthy.
-        logger.exception(
-            "Failed to load model %r; refusing to start.",
-            model_settings.llm_model_name,
-        )
-        raise
-    yield
-    del app.state.generator
+        yield
 
-
-app = FastAPI(
-    title="app-assignment-1",
-    version=__version__,
-    lifespan=lifespan,
-    description="DSAN 6700 App Deployment — Assignment 1 service skeleton.",
-    debug=settings.debug,
-)
-
-
-class HealthResponse(BaseModel):
-    """Small typed payload confirming the service is up."""
-
-    status: str = "ok"
-    version: str = __version__
-    environment: str = settings.environment
-
-
-class PredictRequest(BaseModel):
-    """Validated input for the predict endpoint."""
-
-    text: str = Field(
-        ..., min_length=1, description="Input text for the language model."
+    app = FastAPI(
+        title="Smart AI Gateway (mock prototype)",
+        version="0.2.0",
+        description="Fictional policy replies. No Jev, Qwen or GPU calls.",
+        lifespan=lifespan,
     )
 
-
-class PredictResponse(BaseModel):
-    """Predictable, serialized output for the predict endpoint."""
-
-    prediction: str
-    input_length: int
-
-
-class ErrorResponse(BaseModel):
-    """Error payload returned when the model cannot answer."""
-
-    detail: str
-
-
-@app.get("/health", response_model=HealthResponse)
-def health() -> HealthResponse:
-    """Liveness check for callers, containers, and graders."""
-    return HealthResponse()
-
-
-@app.post(
-    "/predict",
-    response_model=PredictResponse,
-    responses={
-        500: {"model": ErrorResponse, "description": "Model generation failed."},
-        503: {"model": ErrorResponse, "description": "Model not loaded."},
-    },
-)
-def predict(
-    request: PredictRequest,
-    http_request: Request,
-) -> PredictResponse:
-    """Generate a reply with the language model loaded at startup.
-
-    Returns 503 if the model is not loaded and 500 if generation fails. The
-    underlying error is logged on the server and never returned to the caller.
-    """
-    generator: TextGenerator | None = getattr(http_request.app.state, "generator", None)
-    if generator is None:
-        raise HTTPException(status_code=503, detail="Model not loaded.")
-
-    try:
-        answer = generator.generate(request.text)
-    except Exception as exc:
-        logger.exception("Model generation failed.")
-        raise HTTPException(status_code=500, detail="Model generation failed.") from exc
-
-    return PredictResponse(
-        prediction=answer,
-        input_length=len(request.text),
+    @app.post(
+        "/v1/chat",
+        response_model=ChatResponse,
+        responses={503: {"description": "No backend available"}},
     )
+    async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
+        gateway: Gateway = request.app.state.gateway
+        try:
+            return await gateway.chat(payload.message)
+        except BackendUnavailable as exc:
+            raise HTTPException(503, "No mock backend is available") from exc
+
+    @app.get("/v1/requests/{request_id}", response_model=ChatResponse)
+    async def get_request(request_id: UUID, request: Request) -> ChatResponse:
+        gateway: Gateway = request.app.state.gateway
+        result = gateway.requests.get(request_id)
+        if result is None:
+            raise HTTPException(404, "Request not found or no longer retained")
+        return result
+
+    @app.get("/v1/health", response_model=HealthResponse)
+    async def health(request: Request) -> HealthResponse:
+        gateway: Gateway = request.app.state.gateway
+        configs = [b.config for b in gateway.backends]
+        return HealthResponse(
+            status="ok" if any(c.available for c in configs) else "degraded",
+            backends=configs,
+        )
+
+    return app
+
+
+app = create_app()
