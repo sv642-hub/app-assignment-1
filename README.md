@@ -11,25 +11,23 @@ A mocked banking-support Playground for DSAN 6700 Deliverable 2. Enter a custome
 3. Standard selects mock `qwen3-1.7b`. Complex selects mock `qwen3-4b`. The service waits for the configured simulated delay and fills the reply template with fictional policy facts.
 4. Reply checks reject blank text, replies over 4,000 characters and unfilled `{placeholder}` tokens. Pydantic validates the result. The Playground shows the intent, reply and trace.
 
-Unknown messages use the rule router with intent `unknown`, a standard route and a polite request to rephrase. There is no fabricated Jev choice for unknown messages: `jev_choice` is `null`. If a selected mock backend is marked unavailable, the other is used only when available. Both unavailable returns HTTP 503. The trace preserves the initial Jev choice and identifies the final route.
+Unknown messages use the rule router with intent `unknown` and a polite fixed reply asking the user to rephrase. No backend is called or simulated for these replies: `model` and `route` are `null`, `reply_source` is `rule_router`, and simulated delay is zero. There is no fabricated Jev choice for unknown messages: `jev_choice` is `null`. If a selected mock backend is marked unavailable, the other is used only when available. Both unavailable returns HTTP 503 for a recognized intent. Unknown messages still receive the fixed rule reply. The trace preserves the initial Jev choice and identifies the final route.
 
-Confidence is a keyword heuristic, not a calibrated probability. Measured latency includes the simulated wait. A failed format check returns a safe apology with `format_check: "failed"` and reasons in `format_errors`. The malformed reply is not returned or stored. A passed format check does not establish semantic correctness.
+Confidence is a keyword heuristic, not a calibrated probability. Measured latency includes the simulated wait. A failed format check returns a safe apology (`reply_source: "format_fallback"`) with `format_check: "failed"` and reasons in `format_errors`. The malformed reply is not returned or stored. A passed format check does not establish semantic correctness.
 
 ## Run with Docker Compose
 
-Requires Docker with Compose **2.24.0 or newer** for the optional env-file syntax.
+Requires Docker with Compose **2.24.0 or newer** for the optional env-file syntax. The clone commands use `main` and apply after this prototype PR is merged.
 
 ```bash
 git clone https://github.com/sv642-hub/app-assignment-1.git
 cd app-assignment-1
-# Until this PR is merged:
-git switch feat/smart-gateway-mocked-prototype
 docker compose up -d --build --wait
 ```
 
 Open [the Playground](http://localhost:8080) and click an example or type your own message. Click **Send message**. [API documentation](http://localhost:8080/docs) and [health](http://localhost:8080/v1/health) use the same port.
 
-Only Caddy publishes a host port (`8080`). Gateway port `8000` and Streamlit port `8501` stay inside the Compose network. Caddy proxies Streamlit WebSockets as well as HTTP. The three services restart unless stopped. Frontend startup waits for gateway health; proxy startup waits for both services.
+Caddy is pinned to version 2.11.7 and the tested multi-platform image digest. Only Caddy publishes a host port (`8080`). Gateway port `8000` and Streamlit port `8501` stay inside the Compose network. Caddy proxies Streamlit WebSockets as well as HTTP. The three services restart unless stopped. Frontend startup waits for gateway health; proxy startup waits for both services.
 
 ```bash
 docker compose ps
@@ -122,6 +120,7 @@ A standard response has this shape (ID and measured latency vary):
     "jev_choice": "standard",
     "route": "standard",
     "model": "qwen3-1.7b",
+    "reply_source": "policy_template",
     "confidence": 0.87,
     "latency_ms": 121.4,
     "simulated_latency_ms": 120,
@@ -142,21 +141,21 @@ curl -fsS "http://localhost:8080/v1/requests/$REQUEST_ID"
 
 | Endpoint | Behavior |
 | --- | --- |
-| `POST /v1/chat` | 200 validated reply; 422 invalid input; 503 both backends unavailable |
+| `POST /v1/chat` | 200 validated reply; 422 invalid input; 503 both backends unavailable for a recognized intent |
 | `GET /v1/requests/{id}` | 200 stored response; 404 missing/evicted/restarted; 422 invalid UUID |
-| `GET /v1/health` | 200 with mock backend availability; `degraded` when both disabled |
+| `GET /v1/health` | Typed Pydantic response documented in OpenAPI; 200 with mock backend availability; `degraded` when both disabled |
 | `GET /docs`, `/redoc`, `/openapi.json` | Interactive documentation and API schema |
 
 Messages must contain 1–2,000 characters and cannot be whitespace-only. Extra request fields are rejected.
 
 ## Deploy on Jetstream2
 
-Unshelve the instance and confirm its current public IP first. The last recorded address was `149.165.147.167`; verify it has not changed. SSH username is `exouser`. The following assumes Docker with Compose 2.24+ is already installed and your account can run Docker.
+Unshelve the instance and confirm its current public IP first. Replace `YOUR_INSTANCE_IP` below with its current public IP. SSH username is `exouser`. The following assumes Docker with Compose 2.24+ is already installed and your account can run Docker.
 
 From your laptop:
 
 ```bash
-ssh exouser@149.165.147.167
+ssh exouser@YOUR_INSTANCE_IP
 ```
 
 Before building, inspect disk usage and stop the old Assignment 2 stack from its checkout. This stops that earlier service; do this only when it is no longer needed for grading.
@@ -196,7 +195,7 @@ On the instance:
 
 ```bash
 df -h /
-git clone --branch feat/smart-gateway-mocked-prototype --single-branch \
+git clone --branch main --single-branch \
   https://github.com/sv642-hub/app-assignment-1.git smart-ai-gateway-prototype
 cd smart-ai-gateway-prototype
 docker compose version
@@ -206,7 +205,7 @@ curl -fsS http://127.0.0.1:8080/v1/health
 python3 scripts/smoke_compose.py http://127.0.0.1:8080
 ```
 
-After the PR merges, new deployments can clone `main` instead. For updates to this branch:
+These deployment commands target `main` after this PR is merged. For updates:
 
 ```bash
 cd ~/smart-ai-gateway-prototype
@@ -219,13 +218,13 @@ Allow inbound TCP **8080** in the instance's security group and host firewall. K
 Back on your laptop, verify external access:
 
 ```bash
-curl -fsS http://149.165.147.167:8080/v1/health
-curl -fsS http://149.165.147.167:8080/v1/chat \
+curl -fsS http://YOUR_INSTANCE_IP:8080/v1/health
+curl -fsS http://YOUR_INSTANCE_IP:8080/v1/chat \
   -H 'Content-Type: application/json' \
   -d '{"message":"My card has not arrived"}'
 ```
 
-Open `http://149.165.147.167:8080` and send a Playground message. Leave Compose running for grading. Local verification does not confirm instance deployment or external reachability.
+Open `http://YOUR_INSTANCE_IP:8080` and send a Playground message. Leave Compose running for grading. Local verification does not confirm instance deployment or external reachability.
 
 ## Tests and project layout
 

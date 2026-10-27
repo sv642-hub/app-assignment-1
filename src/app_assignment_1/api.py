@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, Request
 
 from app_assignment_1.config import Settings, get_settings
 from app_assignment_1.router import MockJevRouter, Router
-from app_assignment_1.schemas import ChatRequest, ChatResponse
+from app_assignment_1.schemas import ChatRequest, ChatResponse, HealthResponse
 from app_assignment_1.service import BackendUnavailable, Gateway
 
 
@@ -52,17 +52,13 @@ def create_app(
             raise HTTPException(404, "Request not found or no longer retained")
         return result
 
-    @app.get("/v1/health")
-    async def health(request: Request) -> dict:
+    @app.get("/v1/health", response_model=HealthResponse)
+    async def health(request: Request) -> HealthResponse:
         gateway: Gateway = request.app.state.gateway
-        return {
-            "status": "ok"
-            if any(b.available for b in gateway.backends)
-            else "degraded",
-            "mode": "mock",
-            "router": "mock_jev",
-            "backends": [b.model_dump() for b in gateway.backends],
-        }
+        return HealthResponse(
+            status="ok" if any(b.available for b in gateway.backends) else "degraded",
+            backends=gateway.backends,
+        )
 
     return app
 

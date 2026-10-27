@@ -80,14 +80,16 @@ class Gateway:
             reason = reason or "no_matching_intent"
             decision = RoutingDecision(route="standard", intent="unknown", confidence=0)
             jev_choice = None
-        backend = next(b for b in self.backends if b.route == decision.route)
-        if not backend.available:
-            available = next((b for b in self.backends if b.available), None)
-            if available is None:
-                raise BackendUnavailable
-            backend = available
-            reason = "selected_backend_unavailable"
-        await asyncio.sleep(backend.latency_ms / 1000)
+        backend = None
+        if decision.intent != "unknown":
+            backend = next(b for b in self.backends if b.route == decision.route)
+            if not backend.available:
+                available = next((b for b in self.backends if b.available), None)
+                if available is None:
+                    raise BackendUnavailable
+                backend = available
+                reason = "selected_backend_unavailable"
+            await asyncio.sleep(backend.latency_ms / 1000)
         if decision.intent == "unknown":
             facts: list[str] = []
             reply = (
@@ -113,11 +115,18 @@ class Gateway:
             trace=Trace(
                 router=router_name,
                 jev_choice=jev_choice,
-                route=backend.route,
-                model=backend.name,
+                route=backend.route if backend else None,
+                model=backend.name if backend else None,
+                reply_source=(
+                    "format_fallback"
+                    if format_errors
+                    else "policy_template"
+                    if backend
+                    else "rule_router"
+                ),
                 confidence=decision.confidence,
                 latency_ms=round((perf_counter() - start) * 1000, 2),
-                simulated_latency_ms=backend.latency_ms,
+                simulated_latency_ms=backend.latency_ms if backend else 0,
                 format_check="failed" if format_errors else "passed",
                 format_errors=format_errors,
                 fallback_reason=reason,

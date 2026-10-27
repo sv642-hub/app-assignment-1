@@ -80,6 +80,7 @@ if "result" in st.session_state:
         {
             "Field": [
                 "Routing source",
+                "Reply source",
                 "Jev choice (mock)",
                 "Final route",
                 "Model (mock)",
@@ -91,9 +92,10 @@ if "result" in st.session_state:
             ],
             "Value": [
                 trace.router,
+                trace.reply_source,
                 trace.jev_choice or "No match — rule fallback",
-                trace.route,
-                trace.model,
+                trace.route or "No backend route",
+                trace.model or "None — fixed rule reply",
                 f"{trace.latency_ms:.2f} ms",
                 f"{trace.simulated_latency_ms} ms",
                 trace.format_check,

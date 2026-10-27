@@ -34,8 +34,9 @@ class RoutingDecision(StrictModel):
 class Trace(StrictModel):
     router: Literal["mock_jev", "rule_router"]
     jev_choice: Route | None
-    route: Route
-    model: BackendName
+    route: Route | None
+    model: BackendName | None
+    reply_source: Literal["policy_template", "rule_router", "format_fallback"]
     confidence: float = Field(ge=0, le=1)
     latency_ms: float = Field(ge=0)
     simulated_latency_ms: int = Field(ge=0)
@@ -85,3 +86,10 @@ class BackendConfig(StrictModel):
     route: Route
     latency_ms: int = Field(ge=0, le=5000)
     available: bool = True
+
+
+class HealthResponse(StrictModel):
+    status: Literal["ok", "degraded"]
+    mode: Literal["mock"] = "mock"
+    router: Literal["mock_jev"] = "mock_jev"
+    backends: list[BackendConfig]

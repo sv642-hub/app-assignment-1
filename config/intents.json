@@ -6,7 +6,13 @@
       "card hasn t arrived",
       "card delivery",
       "card arrival",
-      "where is my card"
+      "where is my card",
+      "card hasn t come",
+      "card still hasn t arrived",
+      "waiting for my card",
+      "when will my card arrive",
+      "card is late",
+      "card not delivered"
     ],
     "complexity": "standard"
   },
@@ -16,7 +22,13 @@
       "lost my card",
       "stolen card",
       "card was stolen",
-      "lost card"
+      "lost card",
+      "stole my card",
+      "my card is missing",
+      "my card was lost",
+      "someone took my card",
+      "card has been stolen",
+      "can t find my card"
     ],
     "complexity": "complex"
   },
@@ -26,7 +38,12 @@
       "transfer has not arrived",
       "recipient has not received",
       "recipient hasn t received",
-      "transfer not received"
+      "transfer not received",
+      "transfer hasn t arrived",
+      "recipient did not receive",
+      "recipient didn t receive",
+      "transfer never arrived",
+      "bank transfer missing"
     ],
     "complexity": "complex"
   },
@@ -35,7 +52,12 @@
     "keywords": [
       "exchange rate",
       "currency conversion",
-      "convert currency"
+      "convert currency",
+      "exchange rates",
+      "conversion rate",
+      "conversion rates",
+      "rate for exchanging",
+      "foreign exchange"
     ],
     "complexity": "standard"
   },
@@ -45,7 +67,13 @@
       "top up failed",
       "topup failed",
       "failed top up",
-      "cannot top up"
+      "cannot top up",
+      "top up was declined",
+      "top up keeps failing",
+      "top up doesn t work",
+      "top up not working",
+      "can t top up",
+      "unable to top up"
     ],
     "complexity": "complex"
   },
@@ -54,7 +82,12 @@
     "keywords": [
       "pending transfer",
       "transfer is pending",
-      "transfer pending"
+      "transfer pending",
+      "transfer still pending",
+      "transfer is still pending",
+      "transfer stuck",
+      "transfer hasn t completed",
+      "transfer not completed"
     ],
     "complexity": "standard"
   },
@@ -63,7 +96,11 @@
     "keywords": [
       "card payment fee",
       "charged a fee",
-      "payment fee"
+      "payment fee",
+      "fee on my card payment",
+      "fee for paying by card",
+      "charged extra for a card payment",
+      "card transaction fee"
     ],
     "complexity": "complex"
   },
@@ -72,7 +109,12 @@
     "keywords": [
       "verify my identity",
       "identity verification",
-      "verify identity"
+      "verify identity",
+      "verify myself",
+      "verify my account",
+      "confirm my identity",
+      "identity check",
+      "proof of identity"
     ],
     "complexity": "standard"
   },
@@ -82,7 +124,13 @@
       "refund not showing",
       "refund has not arrived",
       "missing refund",
-      "refund hasn t arrived"
+      "refund hasn t arrived",
+      "where is my refund",
+      "refund still missing",
+      "haven t received my refund",
+      "refund not received",
+      "refund is missing",
+      "refund hasn t shown up"
     ],
     "complexity": "complex"
   },
@@ -92,7 +140,12 @@
       "wrong amount of cash",
       "atm gave me less",
       "cash missing",
-      "atm short"
+      "atm short",
+      "atm gave me the wrong amount",
+      "atm gave me too little",
+      "atm dispensed less",
+      "not enough cash from the atm",
+      "cash withdrawal was short"
     ],
     "complexity": "complex"
   }

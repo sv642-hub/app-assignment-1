@@ -36,6 +36,26 @@ def test_routing(intent, phrase, route):
 
 def test_no_substring_match():
     result = asyncio.run(
-        MockJevRouter(Path("config/intents.json")).route("exchange rates")
+        MockJevRouter(Path("config/intents.json")).route("exchange ratesetter")
     )
     assert result.intent == "unknown"
+
+
+@pytest.mark.parametrize(
+    "phrase,intent",
+    [
+        ("What are your exchange rates?", "exchange_rate"),
+        ("Someone stole my card", "lost_or_stolen_card"),
+        ("Where is my refund?", "refund_not_showing_up"),
+        ("Why is my transfer still pending?", "pending_transfer"),
+        ("When will my card arrive?", "card_arrival"),
+        ("My transfer hasn't arrived", "transfer_not_received_by_recipient"),
+        ("My top-up was declined", "top_up_failed"),
+        ("There is a fee on my card payment", "card_payment_fee_charged"),
+        ("How do I verify myself?", "verify_my_identity"),
+        ("The ATM gave me the wrong amount", "wrong_amount_of_cash_received"),
+    ],
+)
+def test_plain_customer_phrasings(phrase, intent):
+    result = asyncio.run(MockJevRouter(Path("config/intents.json")).route(phrase))
+    assert result.intent == intent

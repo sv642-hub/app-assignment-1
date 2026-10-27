@@ -78,3 +78,22 @@ def test_gateway_errors_are_visible(monkeypatch, kind):
     assert len(page.error) == 1
     assert not page.exception
     assert len(page.table) == 0
+
+
+def test_unknown_trace_identifies_fixed_reply(monkeypatch):
+    with TestClient(create_app(Settings(_env_file=None))) as client:
+        payload = client.post("/v1/chat", json={"message": "weather on Mars"}).json()
+
+    def post(url, **kwargs):
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx, "post", post)
+    page = AppTest.from_file(PAGE, default_timeout=15).run()
+    page.text_area[0].input("weather on Mars")
+    page.button[-1].click().run()
+    assert not page.exception
+    assert page.code[0].value == "unknown"
+    values = page.table[0].value["Value"].tolist()
+    assert "None — fixed rule reply" in values
+    assert "No backend route" in values
+    assert "0 ms" in values

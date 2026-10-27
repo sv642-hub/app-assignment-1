@@ -152,3 +152,33 @@ def test_health_remains_responsive(settings):
                 assert (await pending).status_code == 200
 
     asyncio.run(run())
+
+
+def test_fixed_rule_reply_needs_no_backend(settings):
+    backends = json.loads(settings.backends_path.read_text())
+    for backend in backends:
+        backend["available"] = False
+    settings.backends_path.write_text(json.dumps(backends))
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/v1/chat", json={"message": "weather on Mars"})
+        assert response.status_code == 200
+        trace = response.json()["trace"]
+        assert trace["reply_source"] == "rule_router"
+        assert trace["model"] is None
+        assert trace["route"] is None
+        assert trace["jev_choice"] is None
+        assert trace["simulated_latency_ms"] == 0
+        assert trace["fallback_reason"] == "no_matching_intent"
+
+
+def test_health_has_documented_response_model(settings):
+    from app_assignment_1.schemas import HealthResponse
+
+    with TestClient(create_app(settings)) as client:
+        health = HealthResponse.model_validate(client.get("/v1/health").json())
+        assert health.status == "ok"
+        schema = client.get("/openapi.json").json()
+        response = schema["paths"]["/v1/health"]["get"]["responses"]["200"]
+        assert response["content"]["application/json"]["schema"]["$ref"].endswith(
+            "/HealthResponse"
+        )
