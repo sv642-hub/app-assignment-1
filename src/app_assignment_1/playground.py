@@ -70,6 +70,10 @@ if "result" in st.session_state:
     st.code(result.intent, language=None)
     st.subheader("Reply")
     st.write(result.reply)
+    if result.trace.format_check == "failed":
+        st.warning(
+            "Reply format check failed: " + ", ".join(result.trace.format_errors)
+        )
     st.subheader("Request trace")
     trace = result.trace
     st.table(

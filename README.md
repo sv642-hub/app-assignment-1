@@ -9,11 +9,11 @@ A mocked banking-support Playground for DSAN 6700 Deliverable 2. Enter a custome
 1. Streamlit sends the message over HTTP to the FastAPI gateway.
 2. `MockJevRouter` matches complete keyword phrases against ten configured intents. Longer/more matching phrases score higher. Config order breaks ties. The configured complexity selects `standard` or `complex`.
 3. Standard selects mock `qwen3-1.7b`. Complex selects mock `qwen3-4b`. The service waits for the configured simulated delay and fills the reply template with fictional policy facts.
-4. Pydantic validates the result. The Playground shows the intent, reply and trace.
+4. Reply checks reject blank text, replies over 4,000 characters and unfilled `{placeholder}` tokens. Pydantic validates the result. The Playground shows the intent, reply and trace.
 
 Unknown messages use the rule router with intent `unknown`, a standard route and a polite request to rephrase. There is no fabricated Jev choice for unknown messages: `jev_choice` is `null`. If a selected mock backend is marked unavailable, the other is used only when available. Both unavailable returns HTTP 503. The trace preserves the initial Jev choice and identifies the final route.
 
-Confidence is a keyword heuristic, not a calibrated probability. Measured latency includes the simulated wait. A passed format check means the result has the required structure; it does not establish semantic correctness.
+Confidence is a keyword heuristic, not a calibrated probability. Measured latency includes the simulated wait. A failed format check returns a safe apology with `format_check: "failed"` and reasons in `format_errors`. The malformed reply is not returned or stored. A passed format check does not establish semantic correctness.
 
 ## Run with Docker Compose
 
@@ -126,6 +126,7 @@ A standard response has this shape (ID and measured latency vary):
     "latency_ms": 121.4,
     "simulated_latency_ms": 120,
     "format_check": "passed",
+    "format_errors": [],
     "fallback_reason": null,
     "mocked": true
   }
@@ -158,7 +159,40 @@ From your laptop:
 ssh exouser@149.165.147.167
 ```
 
-On the instance, use a separate directory so the earlier assignment checkout is preserved:
+Before building, inspect disk usage and stop the old Assignment 2 stack from its checkout. This stops that earlier service; do this only when it is no longer needed for grading.
+
+```bash
+docker compose ls
+docker system df
+# Change to the actual old checkout shown by docker compose ls.
+cd /path/to/old/assignment-checkout
+docker compose images
+docker compose down
+```
+
+Stopping containers does not reclaim their images or model cache. If space is still short, inspect resources before optionally deleting the old ones:
+
+```bash
+docker image ls
+docker volume ls
+# Substitute verified old resource names/IDs; do not use these placeholders literally.
+docker image inspect OLD_IMAGE_ID
+docker volume inspect OLD_MODEL_VOLUME
+# Optional: only after confirming these belong to the retired assignment stack.
+docker image rm OLD_IMAGE_ID
+# Permanently deletes that model cache. Skip if you need to preserve it.
+docker volume rm OLD_MODEL_VOLUME
+docker system df
+df -h /
+```
+
+Do not use a global prune command or delete resources belonging to other projects. Return to your home directory and use a separate checkout for this prototype:
+
+```bash
+cd ~
+```
+
+On the instance:
 
 ```bash
 df -h /

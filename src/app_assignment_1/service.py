@@ -1,6 +1,8 @@
 """Mock reply generation and bounded, process-local request history."""
 
 import asyncio
+import logging
+import re
 from collections import OrderedDict
 from time import perf_counter
 from typing import Literal
@@ -17,6 +19,21 @@ from app_assignment_1.schemas import (
     RoutingDecision,
     Trace,
 )
+
+logger = logging.getLogger(__name__)
+MAX_REPLY_LENGTH = 4000
+
+
+def check_reply(reply: str) -> list[str]:
+    """Check generated text before returning or storing it."""
+    errors = []
+    if not reply.strip():
+        errors.append("empty_reply")
+    if len(reply) > MAX_REPLY_LENGTH:
+        errors.append("reply_too_long")
+    if re.search(r"\{[a-zA-Z_][a-zA-Z0-9_]*\}", reply):
+        errors.append("unfilled_placeholder")
+    return errors
 
 
 class BackendUnavailable(Exception):
@@ -48,8 +65,13 @@ class Gateway:
         reason = None
         router_name: Literal["mock_jev", "rule_router"] = "mock_jev"
         try:
-            decision = await self.router.route(message)
-        except (TimeoutError, ConnectionError):
+            decision = RoutingDecision.model_validate(await self.router.route(message))
+        except Exception as exc:
+            # Only isolate the replaceable router call. Cancellation still propagates.
+            # Do not log input text, credentials or provider exception messages.
+            logger.warning(
+                "Router failed; using rule fallback (%s)", type(exc).__name__
+            )
             decision = RoutingDecision(route="standard", intent="unknown", confidence=0)
             reason = "router_unavailable"
         jev_choice = decision.route if decision.intent != "unknown" else None
@@ -76,7 +98,13 @@ class Gateway:
             card = self.cards[decision.intent]
             facts = card.facts
             reply = card.reply_template.format(facts=" ".join(facts))
-        # Constructing the Pydantic response validates the mock's output format.
+        format_errors = check_reply(reply)
+        if format_errors:
+            # Keep malformed generated content out of the UI and stored response.
+            reply = "Sorry, the demo could not produce a valid reply. Please try again."
+            facts = []
+        # The trace reports validation of the original generated reply.
+
         response = ChatResponse(
             id=uuid4(),
             intent=decision.intent,
@@ -90,7 +118,8 @@ class Gateway:
                 confidence=decision.confidence,
                 latency_ms=round((perf_counter() - start) * 1000, 2),
                 simulated_latency_ms=backend.latency_ms,
-                format_check="passed",
+                format_check="failed" if format_errors else "passed",
+                format_errors=format_errors,
                 fallback_reason=reason,
             ),
         )

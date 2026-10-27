@@ -39,7 +39,8 @@ class Trace(StrictModel):
     confidence: float = Field(ge=0, le=1)
     latency_ms: float = Field(ge=0)
     simulated_latency_ms: int = Field(ge=0)
-    format_check: Literal["passed"]
+    format_check: Literal["passed", "failed"]
+    format_errors: list[str] = Field(default_factory=list)
     fallback_reason: str | None = None
     mocked: Literal[True] = True
 
