@@ -1,5 +1,6 @@
 """Validated API contracts and on-disk mock configuration."""
 
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
@@ -50,6 +51,7 @@ class Trace(StrictModel):
     format_check: Literal["passed", "failed"]
     format_errors: list[str] = Field(default_factory=list)
     fallback_reason: str | None = None
+    controller_action: str | None = None
     mocked: Literal[True] = True
 
 
@@ -93,6 +95,24 @@ class BackendConfig(StrictModel):
     route: Route
     latency_ms: int = Field(ge=0, le=5000)
     available: bool = True
+    # Share of mock replies corrupted on purpose, to exercise the controller.
+    fault_rate: float = Field(default=0, ge=0, le=1)
+
+
+class BackendMonitor(StrictModel):
+    name: BackendName
+    samples: int = Field(ge=0)
+    format_failures: int = Field(ge=0)
+    failure_rate: float | None = Field(ge=0, le=1)
+    disabled_by_controller: bool
+    disabled_for_seconds: float | None = Field(default=None, ge=0)
+
+
+class Intervention(StrictModel):
+    at: datetime
+    backend: BackendName
+    action: Literal["disabled", "re-enabled", "kept_last_backend"]
+    reason: str
 
 
 class HealthResponse(StrictModel):
@@ -100,3 +120,5 @@ class HealthResponse(StrictModel):
     mode: Literal["mock"] = "mock"
     router: Literal["mock_jev"] = "mock_jev"
     backends: list[BackendConfig]
+    monitor: list[BackendMonitor]
+    interventions: list[Intervention]
