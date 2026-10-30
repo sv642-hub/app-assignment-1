@@ -10,7 +10,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from app_assignment_1.config import Settings
-from app_assignment_1.schemas import BackendMonitor, BackendName, Intervention
+from app_assignment_1.schemas import (
+    BackendMonitor,
+    BackendName,
+    ControllerRules,
+    Intervention,
+)
 
 
 class Controller:
@@ -30,6 +35,7 @@ class Controller:
         self.windows: dict[BackendName, deque[bool]] = {
             name: deque(maxlen=settings.monitor_window) for name in names
         }
+        self.window = settings.monitor_window
         self.min_samples = settings.monitor_min_samples
         self.threshold = settings.monitor_failure_threshold
         self.cooldown = settings.controller_cooldown_seconds
@@ -82,6 +88,14 @@ class Controller:
         self.disabled_until[name] = self.clock() + self.cooldown
         self._note(name, "disabled", reason)
         return f"disabled {name}: {reason}"
+
+    def rules(self) -> ControllerRules:
+        return ControllerRules(
+            window=self.window,
+            min_samples=self.min_samples,
+            failure_threshold=self.threshold,
+            cooldown_seconds=self.cooldown,
+        )
 
     def stats(self) -> list[BackendMonitor]:
         result = []

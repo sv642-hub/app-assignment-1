@@ -33,3 +33,6 @@ README_files/
 
 # macOS files
 .DS_Store
+# Frontend dependencies and build output
+node_modules/
+frontend/dist/

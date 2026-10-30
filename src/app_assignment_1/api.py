@@ -60,6 +60,7 @@ def create_app(
             backends=[b.config for b in gateway.backends],
             monitor=gateway.controller.stats(),
             interventions=list(gateway.controller.log),
+            controller=gateway.controller.rules(),
         )
 
     return app

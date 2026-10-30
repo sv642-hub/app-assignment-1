@@ -16,8 +16,10 @@ def fetch(path, payload=None):
         return response.read()
 
 
-for path in ["/", "/_stcore/health", "/docs", "/openapi.json", "/v1/health"]:
+assert b'id="root"' in fetch("/"), "React app not served at /"
+for path in ["/docs", "/openapi.json", "/v1/health"]:
     assert fetch(path), path
+assert "controller" in json.loads(fetch("/v1/health"))
 for message, intent, model in [
     ("My card has not arrived", "card_arrival", "qwen3-1.7b"),
     ("I lost my card", "lost_or_stolen_card", "qwen3-4b"),

@@ -115,6 +115,13 @@ class Intervention(StrictModel):
     reason: str
 
 
+class ControllerRules(StrictModel):
+    window: int = Field(ge=1)
+    min_samples: int = Field(ge=1)
+    failure_threshold: float = Field(gt=0, le=1)
+    cooldown_seconds: float = Field(gt=0)
+
+
 class HealthResponse(StrictModel):
     status: Literal["ok", "degraded"]
     mode: Literal["mock"] = "mock"
@@ -122,3 +129,4 @@ class HealthResponse(StrictModel):
     backends: list[BackendConfig]
     monitor: list[BackendMonitor]
     interventions: list[Intervention]
+    controller: ControllerRules
