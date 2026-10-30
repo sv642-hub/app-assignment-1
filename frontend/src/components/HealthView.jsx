@@ -109,7 +109,7 @@ export default function HealthView({ health, error }) {
           </div>
         )}
         {!health && !error && <p className="muted">Loading health…</p>}
-        {health && <HealthBody health={health} />}
+        {health && !error && <HealthBody health={health} />}
       </div>
     </div>
   );

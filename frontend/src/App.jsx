@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { GatewayError, getHealth, sendChat } from "./api.js";
 import ChatView from "./components/ChatView.jsx";
@@ -16,6 +16,7 @@ function viewFromHash() {
 export default function App() {
   const [view, setView] = useState(viewFromHash);
   const [turns, setTurns] = useState([]);
+  const nextTurnId = useRef(0);
   const [health, setHealth] = useState(null);
   const [healthError, setHealthError] = useState(null);
 
@@ -50,7 +51,8 @@ export default function App() {
   }, []);
 
   const send = useCallback(async (message) => {
-    const id = crypto.randomUUID();
+    // Turn IDs are local to this app session and also work over plain HTTP.
+    const id = nextTurnId.current++;
     setTurns((current) => [...current, { id, message, status: "pending" }]);
     let update;
     try {

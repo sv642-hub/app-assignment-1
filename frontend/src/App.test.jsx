@@ -1,8 +1,8 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import App from "./App.jsx";
+import App, { HEALTH_POLL_MS } from "./App.jsx";
 import { degradedHealth, fakeGateway, healthyHealth } from "./test/fixtures.js";
 
 function renderWith(gateway) {
@@ -13,6 +13,24 @@ function renderWith(gateway) {
 }
 
 describe("Chat", () => {
+  it("sends multiple turns when randomUUID is unavailable over HTTP", async () => {
+    vi.stubGlobal("crypto", {});
+    try {
+      const gateway = fakeGateway();
+      const user = renderWith(gateway);
+      await user.type(screen.getByLabelText("Message"), "I lost my card{Enter}");
+      expect(await screen.findByText(/Freeze your card in the fictional app/)).toBeInTheDocument();
+      await user.type(screen.getByLabelText("Message"), "Please help with my card{Enter}");
+      expect(await screen.findAllByText(/Freeze your card in the fictional app/)).toHaveLength(2);
+      expect(gateway.sent).toEqual([
+        { message: "I lost my card" },
+        { message: "Please help with my card" },
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("sends an example and shows the reply with only its route", async () => {
     const gateway = fakeGateway();
     const user = renderWith(gateway);
@@ -61,6 +79,28 @@ describe("Chat", () => {
 });
 
 describe("Health", () => {
+  it("hides stale model status after a failed poll and restores it on recovery", async () => {
+    const interval = vi.spyOn(globalThis, "setInterval");
+    const gateway = fakeGateway();
+    const user = renderWith(gateway);
+    await user.click(screen.getByRole("button", { name: "Health" }));
+    expect(await screen.findByText("All systems normal")).toBeInTheDocument();
+    const poll = interval.mock.calls.find(([, delay]) => delay === HEALTH_POLL_MS)[0];
+
+    globalThis.fetch.mockRejectedValueOnce(new Error("Connection failed"));
+    await act(async () => { await poll(); });
+    expect(screen.getByRole("alert")).toHaveTextContent("Gateway unreachable");
+    expect(screen.queryByText("All systems normal")).not.toBeInTheDocument();
+    expect(screen.queryByText("Serving")).not.toBeInTheDocument();
+    expect(screen.queryByText("Gateway healthy")).not.toBeInTheDocument();
+
+    await act(async () => { await poll(); });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText("All systems normal")).toBeInTheDocument();
+    expect(screen.getAllByText("Serving")).toHaveLength(2);
+    expect(screen.getByText("Gateway healthy")).toBeInTheDocument();
+  });
+
   it("shows a healthy gateway", async () => {
     const user = renderWith(fakeGateway({ health: healthyHealth }));
 
