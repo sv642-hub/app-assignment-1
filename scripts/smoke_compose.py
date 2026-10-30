@@ -17,6 +17,8 @@ def fetch(path, payload=None):
 
 
 assert b'id="root"' in fetch("/"), "React app not served at /"
+with urlopen(base + "/", timeout=15) as page:
+    assert page.headers["Cache-Control"] == "no-cache", "index.html must be rechecked"
 for path in ["/docs", "/openapi.json", "/v1/health"]:
     assert fetch(path), path
 assert "controller" in json.loads(fetch("/v1/health"))
