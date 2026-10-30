@@ -1,9 +1,23 @@
 :8080 {
+    encode zstd gzip
+
     @gateway path /v1 /v1/* /docs /docs/* /openapi.json /redoc
     handle @gateway {
         reverse_proxy gateway:8000
     }
+
+    # The React app: static files, with unknown paths falling back to index.html.
     handle {
-        reverse_proxy frontend:8501
+        # Build files have a content hash in their names, so they can be cached
+        # for good. Everything else (index.html) is rechecked on each visit, so
+        # a redeploy reaches browsers that loaded the old version.
+        @hashed path /assets/*
+        header @hashed Cache-Control "public, max-age=31536000, immutable"
+        @page not path /assets/*
+        header @page Cache-Control "no-cache"
+
+        root * /srv
+        try_files {path} /index.html
+        file_server
     }
 }

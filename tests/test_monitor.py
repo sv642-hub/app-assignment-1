@@ -191,3 +191,15 @@ def test_kept_last_backend_is_logged_once_per_run_above_threshold(tmp_path):
         "disabled",
         "kept_last_backend",
     ]
+
+
+def test_health_reports_the_controller_rules(tmp_path):
+    settings = make_settings(tmp_path, monitor_failure_threshold=0.4)
+    with TestClient(create_app(settings)) as client:
+        rules = client.get("/v1/health").json()["controller"]
+    assert rules == {
+        "window": 4,
+        "min_samples": 3,
+        "failure_threshold": 0.4,
+        "cooldown_seconds": 30,
+    }

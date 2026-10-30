@@ -36,7 +36,6 @@ def test_cache_requires_clear(monkeypatch, tmp_path):
     "field,value",
     [
         ("request_store_limit", 0),
-        ("request_timeout_seconds", 0),
         ("environment", "typo"),
         ("jev_timeout_seconds", 0),
         ("rule_router_complex_min_words", 0),

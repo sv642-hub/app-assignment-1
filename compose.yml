@@ -8,35 +8,16 @@ services:
       - ./config:/app/config:ro
     restart: unless-stopped
 
-  frontend:
-    build: .
-    command: ["streamlit", "run", "src/app_assignment_1/playground.py", "--server.address=0.0.0.0", "--server.port=8501", "--browser.gatherUsageStats=false"]
-    env_file:
-      - path: env/.env
-        required: false
-    environment:
-      APP_GATEWAY_URL: http://gateway:8000
-    depends_on:
-      gateway:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=4)"]
-      interval: 10s
-      timeout: 5s
-      start_period: 20s
-      retries: 5
-    restart: unless-stopped
-
+  # Caddy serves the built React app and proxies the API. It is the only
+  # service with a published port.
   proxy:
-    image: caddy:2.11.7-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
     ports:
       - "8080:8080"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
     depends_on:
       gateway:
-        condition: service_healthy
-      frontend:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/v1/health"]
