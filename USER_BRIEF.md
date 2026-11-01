@@ -8,4 +8,4 @@
 
 **What can it do, and what can't it do?** It recognizes ten banking intents, replies from a fictional bank's policy cards, shows how each request was routed, and disables a model whose replies keep failing the format check. Everything is simulated: no real AI models run, intents are matched by keywords, and all data resets when the app restarts. Screens for deployments, router metrics and fault injection are not built yet.
 
-**What feedback are we seeking?** Was the app's purpose clear within a minute? Which trace fields helped, and which confused you? What would you need on the Health screen to trust the routing? If answers got worse, what would you check first? Please send your answers to [FEEDBACK LINK].
+**What feedback are we seeking?** Was the app's purpose clear within a minute? Which trace fields helped, and which confused you? What would you need on the Health screen to trust the routing? If answers got worse, what would you check first? Please file each finding as its own GitHub issue on our repository (the README link above), saying what feature you were testing, what you expected or wanted to happen, and what actually happened.
