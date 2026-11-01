@@ -36,3 +36,6 @@ README_files/
 # Frontend dependencies and build output
 node_modules/
 frontend/dist/
+
+# Personal Claude Code notes
+CLAUDE.local.md
