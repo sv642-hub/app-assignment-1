@@ -1,5 +1,7 @@
 # Smart AI Gateway
 
+Who owns what: [docs/TEAM_PLAN.md](docs/TEAM_PLAN.md) · Beta testers: [USER_BRIEF.md](USER_BRIEF.md)
+
 A mocked banking-support gateway for DSAN 6700 Deliverable 2, with a React chat app in front of it. Send a customer message and get a reply from a fictional policy card, tagged `standard` or `complex`, with the intent and routing trace one click away. A Health screen shows the models and the self-healing controller.
 
 **Everything is simulated.** There are no Jev calls, Qwen weights, GPU requirements, torch or Transformers dependencies. This prototype demonstrates the user journey in our planned architecture. It does not implement the full monitoring, self-healing, canary-release or linear-probe design.
