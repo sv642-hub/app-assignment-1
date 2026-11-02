@@ -17,7 +17,7 @@ function formatTime(iso) {
 export function describeModels(health) {
   const monitors = Object.fromEntries(health.monitor.map((m) => [m.name, m]));
   const models = health.backends.map((b) => {
-    const m = monitors[b.name] ?? { samples: 0, format_failures: 0, failure_rate: null };
+    const m = monitors[b.name] ?? { samples: 0, format_failures: 0, call_errors: 0, failure_rate: null };
     const usable = b.available && !m.disabled_by_controller;
     return { ...b, ...m, usable };
   });
@@ -65,9 +65,9 @@ function ModelCard({ model, threshold }) {
       </div>
       <div className="meter-block">
         <div className="meter-label">
-          <span className="muted">Format failures (last {model.samples})</span>
+          <span className="muted">Failures (last {model.samples})</span>
           <strong>
-            {model.failure_rate === null ? "no data yet" : `${percent(rate)} (${model.format_failures} of ${model.samples})`}
+            {model.failure_rate === null ? "no data yet" : `${percent(rate)} (${model.format_failures + model.call_errors} of ${model.samples})`}
           </strong>
         </div>
         <div className="meter" aria-hidden="true">
@@ -75,6 +75,11 @@ function ModelCard({ model, threshold }) {
           <div className="meter-mark" style={{ left: `${threshold * 100}%` }} />
         </div>
         <span className="muted small">Marker shows the {percent(threshold)} threshold</span>
+        {model.call_errors > 0 && (
+          <span className="muted small">
+            Failed calls: {model.call_errors}. Format failures: {model.format_failures}.
+          </span>
+        )}
       </div>
       <div className="stat-grid">
         <div className="stat">
@@ -172,7 +177,7 @@ function HealthBody({ health }) {
       <section className="card">
         <h2>Controller rules</h2>
         <p className="muted small">
-          A model is taken out of service when its format-failure rate crosses the threshold. The last working model is never disabled.
+          A model is taken out of service when its failure rate (failed format checks and failed calls) crosses the threshold. The last working model is never disabled.
         </p>
         <div className="rules">
           <div className="stat">
