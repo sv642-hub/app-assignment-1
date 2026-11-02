@@ -43,7 +43,7 @@ def check_reply(reply: str) -> list[str]:
 
 
 class BackendUnavailable(Exception):
-    """Neither configured mock backend is available."""
+    """No configured backend is available or able to answer."""
 
 
 class Gateway:
@@ -89,6 +89,9 @@ class Gateway:
             backend.config.name
         )
 
+    def others_usable(self, backend: Backend) -> bool:
+        return any(self.usable(b) for b in self.backends if b is not backend)
+
     async def chat(self, message: str) -> ChatResponse:
         start = perf_counter()
         reasons = []
@@ -109,18 +112,33 @@ class Gateway:
             decision = await self.rule_router.route(message)
             router_name = "rule_router"
             jev_choice = None
-        backend = next(b for b in self.backends if b.config.route == decision.route)
-        if not self.usable(backend):
-            available = next((b for b in self.backends if self.usable(b)), None)
-            if available is None:
-                raise BackendUnavailable
-            reasons.append(
-                "selected_backend_disabled"
-                if backend.config.available
-                else "selected_backend_unavailable"
-            )
-            backend = available
-        generated = BackendReply.model_validate(await backend.generate(message))
+        selected = next(b for b in self.backends if b.config.route == decision.route)
+        action = None
+        for backend in (selected, *(b for b in self.backends if b is not selected)):
+            if not self.usable(backend):
+                if backend is selected:
+                    reasons.append(
+                        "selected_backend_disabled"
+                        if backend.config.available
+                        else "selected_backend_unavailable"
+                    )
+                continue
+            try:
+                generated = BackendReply.model_validate(await backend.generate(message))
+                break
+            except Exception as exc:
+                # Cancellation still propagates. Do not log input text or provider
+                # exception messages.
+                logger.warning(
+                    "Backend %s failed (%s)", backend.config.name, type(exc).__name__
+                )
+                action = self.controller.record_error(
+                    backend.config.name, can_disable=self.others_usable(backend)
+                )
+                if backend is selected:
+                    reasons.append("selected_backend_error")
+        else:
+            raise BackendUnavailable
         intent, reply, facts = generated.intent, generated.reply, generated.policy_facts
         format_errors = check_reply(reply)
         if intent != "unknown" and intent not in self.cards:
@@ -131,9 +149,13 @@ class Gateway:
             reply = "Sorry, the demo could not produce a valid reply. Please try again."
             facts = []
         # The trace reports validation of the original generated reply.
-        others_usable = any(self.usable(b) for b in self.backends if b is not backend)
-        action = self.controller.record(
-            backend.config.name, bool(format_errors), can_disable=others_usable
+        action = (
+            self.controller.record(
+                backend.config.name,
+                bool(format_errors),
+                can_disable=self.others_usable(backend),
+            )
+            or action
         )
 
         response = ChatResponse(
