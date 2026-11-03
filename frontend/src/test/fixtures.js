@@ -1,8 +1,8 @@
 // Responses shaped like the gateway's Pydantic models.
 
 const BACKENDS = [
-  { name: "qwen3-1.7b", route: "standard", latency_ms: 120, available: true, fault_rate: 0 },
-  { name: "qwen3-4b", route: "complex", latency_ms: 350, available: true, fault_rate: 0 },
+  { name: "qwen3-1.7b", route: "standard", latency_ms: 120, available: true, fault_rate: 0, error_rate: 0 },
+  { name: "qwen3-4b", route: "complex", latency_ms: 350, available: true, fault_rate: 0, error_rate: 0 },
 ];
 const RULES = { window: 20, min_samples: 5, failure_threshold: 0.5, cooldown_seconds: 60 };
 

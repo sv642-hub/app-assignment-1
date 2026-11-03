@@ -40,6 +40,8 @@ class MockBackend:
 
     async def generate(self, message: str) -> BackendReply:
         await asyncio.sleep(self.config.latency_ms / 1000)
+        if self.rng.random() < self.config.error_rate:
+            raise ConnectionError("Simulated backend outage")
         _, match = match_intent(self.intents, message)
         if match is None:
             reply = BackendReply(intent="unknown", reply=UNKNOWN_REPLY, policy_facts=[])

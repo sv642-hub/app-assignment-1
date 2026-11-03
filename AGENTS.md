@@ -18,11 +18,11 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 - `src/app_assignment_1/config.py`: cached Pydantic Settings.
 - `src/app_assignment_1/__init__.py`: package version.
 - `frontend/`: React (Vite) app with Chat and Health screens; `frontend/Dockerfile` builds it into the Caddy image.
-- `config/`: `intents.json`, `policy_cards.json`, `backends.json`, and `backends.chaos.json` for chaos mode.
+- `config/`: `intents.json`, `policy_cards.json`, `backends.json`, plus `backends.chaos.json` and `backends.outage.json` for simulated faults.
 - `tests/`: pytest suite. Frontend tests are in `frontend/src/App.test.jsx`.
 - `scripts/smoke_compose.py`: smoke test against the public proxy.
 - `env/`: `.env.example` and `.env.production.example` templates. A real `env/.env` is optional and ignored by git.
-- `compose.yml`: `gateway` and `proxy` services. `compose.chaos.yml`: override that makes the small model corrupt every reply.
+- `compose.yml`: `gateway` and `proxy` services. `compose.chaos.yml`: override that makes the small model corrupt every reply. `compose.outage.yml`: override that makes every call to the small model raise an error.
 - `Caddyfile`: serves the React app on port 8080 and proxies `/v1`, `/docs`, `/redoc` and `/openapi.json` to the gateway.
 - `docs/TEAM_PLAN.md`: who owns what. `USER_BRIEF.md`: guide for beta testers.
 
@@ -59,8 +59,9 @@ docker compose up -d --build --wait
 # Smoke test the running stack
 python3 scripts/smoke_compose.py http://localhost:8080
 
-# Chaos mode, then back to normal
+# Chaos mode or a simulated outage, then back to normal
 docker compose -f compose.yml -f compose.chaos.yml up -d --build --wait
+docker compose -f compose.yml -f compose.outage.yml up -d --build --wait
 docker compose up -d --wait
 
 # Stop the stack

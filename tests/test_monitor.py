@@ -21,11 +21,14 @@ class Clock:
         return self.now
 
 
-def make_settings(tmp_path: Path, faults=(0, 0), **overrides) -> Settings:
+def make_settings(
+    tmp_path: Path, faults=(0, 0), errors=(0, 0), **overrides
+) -> Settings:
     backends = json.loads(Path("config/backends.json").read_text())
-    for backend, fault in zip(backends, faults, strict=True):
+    for backend, fault, error in zip(backends, faults, errors, strict=True):
         backend["latency_ms"] = 0
         backend["fault_rate"] = fault
+        backend["error_rate"] = error
     path = tmp_path / "backends.json"
     path.write_text(json.dumps(backends))
     values = {
@@ -230,6 +233,43 @@ def test_shipped_chaos_config_is_valid():
             for b in client.get("/v1/health").json()["backends"]
         }
         assert faults == {"qwen3-1.7b": 1, "qwen3-4b": 0}
+
+
+def test_outage_fault_moves_traffic_and_disables_the_model(tmp_path):
+    settings = make_settings(tmp_path, errors=(1, 0))
+    with TestClient(create_app(settings)) as client:
+        traces = [
+            client.post("/v1/chat", json={"message": "card arrival"}).json()["trace"]
+            for _ in range(4)
+        ]
+        assert [t["model"] for t in traces] == ["qwen3-4b"] * 4
+        assert [t["format_check"] for t in traces] == ["passed"] * 4
+        assert traces[2]["controller_action"].startswith(
+            "disabled qwen3-1.7b: call error rate"
+        )
+        assert traces[3]["fallback_reason"] == "selected_backend_disabled"
+        monitors = {m["name"]: m for m in client.get("/v1/health").json()["monitor"]}
+        assert monitors["qwen3-1.7b"]["call_errors"] == 3
+
+
+def test_outage_fault_on_both_models_returns_503(tmp_path):
+    settings = make_settings(tmp_path, errors=(1, 1))
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/v1/chat", json={"message": "card arrival"})
+        assert response.status_code == 503
+
+
+def test_shipped_outage_config_is_valid():
+    settings = Settings(
+        _env_file=None, backends_path=Path("config/backends.outage.json")
+    )
+    with TestClient(create_app(settings)) as client:
+        backends = client.get("/v1/health").json()["backends"]
+    assert {b["name"]: b["error_rate"] for b in backends} == {
+        "qwen3-1.7b": 1,
+        "qwen3-4b": 0,
+    }
+    assert all(b["fault_rate"] == 0 for b in backends)
 
 
 def test_re_enabled_entry_is_dated_when_the_cooldown_ended(tmp_path):

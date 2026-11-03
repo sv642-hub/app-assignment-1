@@ -97,6 +97,8 @@ class BackendConfig(StrictModel):
     available: bool = True
     # Share of mock replies corrupted on purpose, to exercise the controller.
     fault_rate: float = Field(default=0, ge=0, le=1)
+    # Share of mock calls that raise on purpose, to simulate an outage.
+    error_rate: float = Field(default=0, ge=0, le=1)
 
 
 class BackendMonitor(StrictModel):

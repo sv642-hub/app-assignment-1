@@ -40,6 +40,14 @@ docker compose -f compose.yml -f compose.chaos.yml up -d --build --wait
 
 Send five standard messages, such as "My card has not arrived". All five fail the format check, and the fifth disables `qwen3-1.7b`. The sixth is answered by `qwen3-4b`. Open the **Health** screen (`http://localhost:8080/#/health`) to see the model disabled and the intervention. Return to normal with `docker compose up -d --wait`.
 
+To see an outage instead, use the outage override. In `config/backends.outage.json`, the small model has `error_rate: 1`, so every call to it raises an error:
+
+```bash
+docker compose -f compose.yml -f compose.outage.yml up -d --build --wait
+```
+
+Send five standard messages. Each one is still answered, by `qwen3-4b` with `fallback_reason: "selected_backend_error"`, and the fifth disables `qwen3-1.7b`. Health shows the failed calls and the intervention. Both overrides simulate faults with the mock backends; neither stops a real model.
+
 ## Run with Docker Compose
 
 Requires Docker with Compose **2.24.0 or newer** for the optional env-file syntax. The clone commands use `main` and apply after this prototype PR is merged.
