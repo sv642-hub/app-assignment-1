@@ -128,7 +128,7 @@ The window, thresholds, coverage minimum and how long to wait for a late answer 
 
 These are gaps in the current code that the records depend on.
 
-1. **Outages are invisible today.** `Gateway.chat` does not catch errors from `backend.generate`. In a local test with a backend that raised `TimeoutError`, all 6 requests raised an uncaught error, no samples were recorded, and the controller took no action. The gateway must catch these, write a record with `status` set to `timeout` or `error`, and count them toward the controller's decision.
+1. **Failed calls leave no record.** `Gateway.chat` now catches errors from `backend.generate`, tries the other backend and counts the failure toward the controller's decision, but it writes no record of the call. It must write one with `status` set to `timeout` or `error`. A call that never returns is still not detected, so the real client must time out and raise.
 2. **`request_id` comes too late.** It is created when the response is built, but it must exist before the first Jev call.
 3. **The model's intent is overwritten.** After a failed format check, `intent` becomes `unknown` for the customer's response. The record must be written with the model's original intent.
 4. **The router's choice is lost.** `Trace.route` holds the route of the backend that served the request, and `jev_choice` is empty when the rule router chose. `selected_route` and `route_source` keep this.
@@ -149,7 +149,7 @@ Both mock backends share one keyword classifier. A mock intent call using that s
 **Yanzhen**
 
 1. Can `generate` raise separate errors for a timeout and a failed call, so the gateway can set `status` and `error_type`?
-2. How should invalid or cut-off JSON be reported? Proposal: `status="ok"`, `format_check="failed"`, and `invalid_json` in `format_errors`, since the model did answer. This is the "broken output format" fault in the evaluation plan.
+2. How should invalid or cut-off JSON be reported? Today a reply that does not match `BackendReply` counts as a failed call (`call_errors`), not a format failure, and the request is tried on the other backend. Proposal: `status="ok"`, `format_check="failed"`, and `invalid_json` in `format_errors`, since the model did answer. This is the "broken output format" fault in the evaluation plan. The proposal would require changing `Gateway.chat`, and the customer would get the safe apology instead of a reply from the other backend unless that retry is kept.
 3. Can the output constraint include `unknown`, using the same labels as the Jev intent call?
 4. Who sets `version_id`: the backend from its config, or the gateway per request for canary traffic? This also needs Verness, who owns the Deployments screen.
 5. With Jackson: does the probe gate need the model's token-probability confidence on this record, or only in offline dev runs?
