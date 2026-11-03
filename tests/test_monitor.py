@@ -1,4 +1,4 @@
-"""Format-failure monitor and controller: rules, gateway wiring and health."""
+"""Failure monitor and controller: rules, gateway wiring and health."""
 
 import json
 from datetime import UTC, datetime
@@ -48,9 +48,7 @@ def test_waits_for_minimum_samples(tmp_path):
     assert c.record("qwen3-1.7b", True, can_disable=True) is None
     assert c.record("qwen3-1.7b", True, can_disable=True) is None
     action = c.record("qwen3-1.7b", True, can_disable=True)
-    assert (
-        action == "disabled qwen3-1.7b: format failure rate 100% over last 3 responses"
-    )
+    assert action == "disabled qwen3-1.7b: format failure rate 100% over last 3 calls"
     assert c.is_disabled("qwen3-1.7b")
     assert [i.action for i in c.log] == ["disabled"]
 
@@ -148,6 +146,78 @@ def test_healthy_traffic_takes_no_action(tmp_path):
         assert health["status"] == "ok"
         assert health["interventions"] == []
         assert all(m["failure_rate"] == 0 for m in health["monitor"])
+
+
+def test_format_failures_and_call_errors_share_one_rate(tmp_path):
+    c = controller(tmp_path)
+    assert c.record("qwen3-1.7b", True, can_disable=True) is None
+    assert c.record("qwen3-1.7b", False, can_disable=True) is None
+    action = c.record_error("qwen3-1.7b", can_disable=True)
+    assert action == "disabled qwen3-1.7b: failure rate 67% over last 3 calls"
+    stats = {s.name: s for s in c.stats()}["qwen3-1.7b"]
+    assert (stats.format_failures, stats.call_errors) == (1, 1)
+    assert stats.failure_rate == 0.67
+
+
+async def failing_generate(message):
+    raise TimeoutError("provider detail with a secret")
+
+
+def test_failing_backend_falls_back_and_is_disabled(tmp_path, caplog):
+    settings = make_settings(tmp_path)
+    with TestClient(create_app(settings)) as client:
+        gateway = client.app.state.gateway
+        small = next(b for b in gateway.backends if b.config.name == "qwen3-1.7b")
+        small.generate = failing_generate
+        responses = [
+            client.post("/v1/chat", json={"message": "card arrival"}) for _ in range(4)
+        ]
+        assert [r.status_code for r in responses] == [200] * 4
+        traces = [r.json()["trace"] for r in responses]
+        assert [t["model"] for t in traces] == ["qwen3-4b"] * 4
+        assert [t["fallback_reason"] for t in traces] == [
+            "selected_backend_error",
+            "selected_backend_error",
+            "selected_backend_error",
+            "selected_backend_disabled",
+        ]
+        assert [t["controller_action"] for t in traces[:2]] == [None, None]
+        assert traces[2]["controller_action"] == (
+            "disabled qwen3-1.7b: call error rate 100% over last 3 calls"
+        )
+        assert traces[3]["controller_action"] is None
+        assert responses[0].json()["intent"] == "card_arrival"
+
+        health = client.get("/v1/health").json()
+        assert health["status"] == "degraded"
+        monitors = {m["name"]: m for m in health["monitor"]}
+        assert monitors["qwen3-1.7b"]["disabled_by_controller"] is True
+        assert monitors["qwen3-1.7b"]["call_errors"] == 3
+        assert monitors["qwen3-1.7b"]["format_failures"] == 0
+        assert monitors["qwen3-1.7b"]["failure_rate"] == 1
+        assert monitors["qwen3-4b"]["samples"] == 4
+    assert "TimeoutError" in caplog.text
+    assert "secret" not in caplog.text
+
+
+def test_all_backends_failing_returns_503_and_keeps_the_last(tmp_path):
+    settings = make_settings(tmp_path)
+    with TestClient(create_app(settings)) as client:
+        gateway = client.app.state.gateway
+        for backend in gateway.backends:
+            backend.generate = failing_generate
+        for _ in range(4):
+            response = client.post("/v1/chat", json={"message": "card arrival"})
+            assert response.status_code == 503
+        health = client.get("/v1/health").json()
+        assert health["status"] == "degraded"
+        disabled = {m["name"]: m["disabled_by_controller"] for m in health["monitor"]}
+        assert disabled == {"qwen3-1.7b": True, "qwen3-4b": False}
+        assert [i["action"] for i in health["interventions"]] == [
+            "disabled",
+            "kept_last_backend",
+        ]
+        assert gateway.requests == {}
 
 
 def test_shipped_chaos_config_is_valid():

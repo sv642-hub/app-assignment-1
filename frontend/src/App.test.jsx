@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import App, { HEALTH_POLL_MS } from "./App.jsx";
-import { degradedHealth, fakeGateway, healthyHealth } from "./test/fixtures.js";
+import { degradedHealth, fakeGateway, healthyHealth, outageHealth } from "./test/fixtures.js";
 
 function renderWith(gateway) {
   vi.spyOn(globalThis, "fetch").mockImplementation(gateway.fetch);
@@ -109,7 +109,7 @@ describe("Health", () => {
     expect(await screen.findByText("All systems normal")).toBeInTheDocument();
     expect(screen.getAllByText("Serving")).toHaveLength(2);
     expect(screen.getByText("No interventions since the gateway started.")).toBeInTheDocument();
-    expect(screen.getByText("last 20 replies")).toBeInTheDocument();
+    expect(screen.getByText("last 20 calls")).toBeInTheDocument();
     expect(window.location.hash).toBe("#/health");
   });
 
@@ -133,6 +133,18 @@ describe("Health", () => {
     const rows = within(screen.getByRole("table")).getAllByRole("row");
     expect(rows[1]).toHaveTextContent("100% over last 5");
     expect(screen.getByText("Gateway degraded")).toBeInTheDocument();
+  });
+
+  it("counts failed calls as failures and explains the mix", async () => {
+    const user = renderWith(fakeGateway({ health: outageHealth }));
+
+    await user.click(screen.getByRole("button", { name: /Health/ }));
+
+    const small = await screen.findByRole("region", { name: "qwen3-1.7b" });
+    expect(within(small).getByText("100% (5 of 5)")).toBeInTheDocument();
+    expect(within(small).getByText("Failed calls: 4. Format failures: 1.")).toBeInTheDocument();
+    const large = screen.getByRole("region", { name: "qwen3-4b" });
+    expect(within(large).queryByText(/Failed calls/)).not.toBeInTheDocument();
   });
 
   it("opens on the Health screen from its link", async () => {

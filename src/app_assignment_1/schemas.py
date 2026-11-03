@@ -103,6 +103,7 @@ class BackendMonitor(StrictModel):
     name: BackendName
     samples: int = Field(ge=0)
     format_failures: int = Field(ge=0)
+    call_errors: int = Field(ge=0)
     failure_rate: float | None = Field(ge=0, le=1)
     disabled_by_controller: bool
     disabled_for_seconds: float | None = Field(default=None, ge=0)
