@@ -1,0 +1,6 @@
+# Demo only: every call to the small model fails so the fallback and controller act.
+# docker compose -f compose.yml -f compose.outage.yml up -d --build --wait
+services:
+  gateway:
+    environment:
+      APP_BACKENDS_PATH: config/backends.outage.json
