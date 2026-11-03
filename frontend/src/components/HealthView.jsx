@@ -182,7 +182,7 @@ function HealthBody({ health }) {
         <div className="rules">
           <div className="stat">
             <div className="muted">Window</div>
-            <strong>last {rules.window} replies</strong>
+            <strong>last {rules.window} calls</strong>
           </div>
           <div className="stat">
             <div className="muted">Minimum samples</div>

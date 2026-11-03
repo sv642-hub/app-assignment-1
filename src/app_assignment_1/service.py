@@ -127,8 +127,9 @@ class Gateway:
                 generated = BackendReply.model_validate(await backend.generate(message))
                 break
             except Exception as exc:
-                # Cancellation still propagates. Do not log input text or provider
-                # exception messages.
+                # A reply that fails BackendReply validation also counts as a call
+                # error. Cancellation still propagates. Do not log input text or
+                # provider exception messages.
                 logger.warning(
                     "Backend %s failed (%s)", backend.config.name, type(exc).__name__
                 )

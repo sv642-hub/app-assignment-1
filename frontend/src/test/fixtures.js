@@ -27,8 +27,8 @@ export const degradedHealth = {
     { name: "qwen3-4b", samples: 12, format_failures: 0, call_errors: 0, failure_rate: 0, disabled_by_controller: false, disabled_for_seconds: null },
   ],
   interventions: [
-    { at: "2026-10-30T14:19:51Z", backend: "qwen3-1.7b", action: "disabled", reason: "format failure rate 60% over last 5 responses" },
-    { at: "2026-10-30T14:32:08Z", backend: "qwen3-1.7b", action: "disabled", reason: "format failure rate 100% over last 5 responses" },
+    { at: "2026-10-30T14:19:51Z", backend: "qwen3-1.7b", action: "disabled", reason: "format failure rate 60% over last 5 calls" },
+    { at: "2026-10-30T14:32:08Z", backend: "qwen3-1.7b", action: "disabled", reason: "format failure rate 100% over last 5 calls" },
   ],
 };
 
@@ -40,7 +40,7 @@ export const outageHealth = {
     { name: "qwen3-4b", samples: 12, format_failures: 0, call_errors: 0, failure_rate: 0, disabled_by_controller: false, disabled_for_seconds: null },
   ],
   interventions: [
-    { at: "2026-10-30T14:32:08Z", backend: "qwen3-1.7b", action: "disabled", reason: "failure rate 100% over last 5 responses" },
+    { at: "2026-10-30T14:32:08Z", backend: "qwen3-1.7b", action: "disabled", reason: "failure rate 100% over last 5 calls" },
   ],
 };
 
