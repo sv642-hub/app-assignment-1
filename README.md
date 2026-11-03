@@ -17,7 +17,7 @@ If Jev fails or does not answer within `APP_JEV_TIMEOUT_SECONDS`, the rule route
 
 If the backend detects no intent, it returns intent `unknown` with a polite reply asking the user to rephrase (`reply_source: "no_match"`). If the selected backend is marked unavailable, the other is used only when available (`selected_backend_unavailable`). When both are unavailable, every message returns HTTP 503. When Jev fails and the backend falls back, `fallback_reason` lists both reasons.
 
-If the selected backend's call raises an error, the request is tried once on the other usable backend (`selected_backend_error`). When no backend can answer, the message returns HTTP 503. The log records the backend and error type, not the message or the provider's error text. The gateway sets no time limit on a backend call yet, so a call that hangs is not treated as a failure; the real client must time out and raise.
+If the selected backend's call raises an error, or returns a reply that does not match the backend reply schema, the request is tried once on the other usable backend (`selected_backend_error`). Both cases count as failed calls (`call_errors`), not format failures. When no backend can answer, the message returns HTTP 503. The log records the backend and error type, not the message or the provider's error text. The gateway sets no time limit on a backend call yet, so a call that hangs is not treated as a failure; the real client must time out and raise.
 
 Confidence is a keyword heuristic, not a calibrated probability. Measured latency includes the simulated wait. A failed format check returns a safe apology (`reply_source: "format_fallback"`) with `format_check: "failed"` and reasons in `format_errors`. The malformed reply is not returned or stored. A passed format check does not establish semantic correctness.
 
@@ -26,7 +26,7 @@ Confidence is a keyword heuristic, not a calibrated probability. Measured latenc
 The gateway runs a small in-memory self-healing loop, the first piece of the planned monitor:
 
 - **Monitor:** for each backend, the gateway records whether each reply passed the format check and whether each call raised an error, over the last `APP_MONITOR_WINDOW` calls (default 20).
-- **Controller:** once a backend has at least `APP_MONITOR_MIN_SAMPLES` replies (default 5) and its failure rate (failed format checks plus failed calls) reaches `APP_MONITOR_FAILURE_THRESHOLD` (default 0.5), the controller disables it for `APP_CONTROLLER_COOLDOWN_SECONDS` (default 60). Traffic for that route moves to the other backend with `fallback_reason: "selected_backend_disabled"`. After the cooldown, the backend is re-enabled with an empty window.
+- **Controller:** once a backend has at least `APP_MONITOR_MIN_SAMPLES` calls (default 5) and its failure rate (failed format checks plus failed calls) reaches `APP_MONITOR_FAILURE_THRESHOLD` (default 0.5), the controller disables it for `APP_CONTROLLER_COOLDOWN_SECONDS` (default 60). Traffic for that route moves to the other backend with `fallback_reason: "selected_backend_disabled"`. After the cooldown, the backend is re-enabled with an empty window.
 - **Action limit:** the controller never disables the last usable backend. It logs `kept_last_backend` instead and keeps serving.
 - **Visibility:** the request that triggers an action shows it in `trace.controller_action` and in that reply's details. `GET /v1/health` lists samples, format failures, call errors, failure rate and disabled status for each backend, the last 50 interventions with their reasons, and the controller rules. The **Health** screen shows the same data and refreshes every 5 seconds.
 
@@ -95,8 +95,8 @@ Pydantic Settings reads `.env` then `env/.env` in native local runs. Process env
 | `APP_REQUEST_STORE_LIMIT` | `1000` | Number of successful requests retained |
 | `APP_JEV_TIMEOUT_SECONDS` | `2` | Wait for the Jev routing call before using the rule router |
 | `APP_RULE_ROUTER_COMPLEX_MIN_WORDS` | `20` | Rule router sends messages this long or longer to `complex` |
-| `APP_MONITOR_WINDOW` | `20` | Recent replies per backend that the monitor keeps |
-| `APP_MONITOR_MIN_SAMPLES` | `5` | Replies needed before the controller may act; at most the window |
+| `APP_MONITOR_WINDOW` | `20` | Recent calls per backend that the monitor keeps |
+| `APP_MONITOR_MIN_SAMPLES` | `5` | Calls needed before the controller may act; at most the window |
 | `APP_MONITOR_FAILURE_THRESHOLD` | `0.5` | Failure rate (failed format checks plus failed calls) that disables a backend |
 | `APP_CONTROLLER_COOLDOWN_SECONDS` | `60` | How long a disabled backend stays out |
 

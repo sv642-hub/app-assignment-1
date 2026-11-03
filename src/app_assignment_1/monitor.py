@@ -100,7 +100,7 @@ class Controller:
             if errors == failures
             else "failure"
         )
-        reason = f"{kind} rate {rate:.0%} over last {len(window)} responses"
+        reason = f"{kind} rate {rate:.0%} over last {len(window)} calls"
         if not can_disable:
             # Log once per run above the threshold, not on every failing request.
             if name not in self.warned:

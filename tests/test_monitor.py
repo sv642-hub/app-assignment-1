@@ -51,9 +51,7 @@ def test_waits_for_minimum_samples(tmp_path):
     assert c.record("qwen3-1.7b", True, can_disable=True) is None
     assert c.record("qwen3-1.7b", True, can_disable=True) is None
     action = c.record("qwen3-1.7b", True, can_disable=True)
-    assert (
-        action == "disabled qwen3-1.7b: format failure rate 100% over last 3 responses"
-    )
+    assert action == "disabled qwen3-1.7b: format failure rate 100% over last 3 calls"
     assert c.is_disabled("qwen3-1.7b")
     assert [i.action for i in c.log] == ["disabled"]
 
@@ -158,7 +156,7 @@ def test_format_failures_and_call_errors_share_one_rate(tmp_path):
     assert c.record("qwen3-1.7b", True, can_disable=True) is None
     assert c.record("qwen3-1.7b", False, can_disable=True) is None
     action = c.record_error("qwen3-1.7b", can_disable=True)
-    assert action == "disabled qwen3-1.7b: failure rate 67% over last 3 responses"
+    assert action == "disabled qwen3-1.7b: failure rate 67% over last 3 calls"
     stats = {s.name: s for s in c.stats()}["qwen3-1.7b"]
     assert (stats.format_failures, stats.call_errors) == (1, 1)
     assert stats.failure_rate == 0.67
@@ -188,7 +186,7 @@ def test_failing_backend_falls_back_and_is_disabled(tmp_path, caplog):
         ]
         assert [t["controller_action"] for t in traces[:2]] == [None, None]
         assert traces[2]["controller_action"] == (
-            "disabled qwen3-1.7b: call error rate 100% over last 3 responses"
+            "disabled qwen3-1.7b: call error rate 100% over last 3 calls"
         )
         assert traces[3]["controller_action"] is None
         assert responses[0].json()["intent"] == "card_arrival"
