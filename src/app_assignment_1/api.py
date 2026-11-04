@@ -64,11 +64,11 @@ def create_app(
             else "degraded",
             recent_requests=[
                 RecentRequest(
-                    id=r.id,
                     completed_at=r.completed_at,
                     route=r.trace.route,
                     model=r.trace.model,
                     fallback_reason=r.trace.fallback_reason,
+                    format_check=r.trace.format_check,
                 )
                 for r in list(gateway.requests.values())[-20:][::-1]
             ],

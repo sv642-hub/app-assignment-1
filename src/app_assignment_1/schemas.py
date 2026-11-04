@@ -127,11 +127,13 @@ class ControllerRules(StrictModel):
 
 
 class RecentRequest(StrictModel):
-    id: UUID
+    # No request id: /v1/requests/{id} has no login, so listing ids would expose
+    # other customers' replies.
     completed_at: datetime
     route: Route
     model: BackendName
     fallback_reason: str | None
+    format_check: Literal["passed", "failed"]
 
 
 class HealthResponse(StrictModel):

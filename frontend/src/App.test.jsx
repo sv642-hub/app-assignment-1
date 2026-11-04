@@ -162,5 +162,9 @@ describe("Issue 30", () => {
     await user.click(screen.getByRole("button", { name: "Health" }));
     expect(await screen.findByRole("heading", { name: "Recent completed requests" })).toBeInTheDocument();
     expect(screen.getByText(/Actual model/)).toBeInTheDocument();
+    const rows = within(screen.getByRole("table", { name: "Recent completed requests" })).getAllByRole("row");
+    expect(rows).toHaveLength(3);
+    expect(rows[1]).toHaveTextContent(/qwen3-1\.7b.*none.*failed/);
+    expect(rows[2]).toHaveTextContent(/qwen3-4b.*selected_backend_error.*passed/);
   });
 });
