@@ -2,12 +2,13 @@
 
 **Status:** proposal, not built. For review by Verness (Jev assessment) and Yanzhen (backend response), per "Interfaces to agree first" in [TEAM_PLAN.md](TEAM_PLAN.md). Once agreed, these models move into `src/app_assignment_1/schemas.py`.
 
-The monitor needs two records for each request. Both use the same `request_id`, so the monitor can join them even though Jev's intent answer arrives after the customer already has a reply.
+The monitor reads two kinds of record: one per Jev call and one per backend call. A normal request has three records (two Jev, one backend). A request that falls back has four, because it makes a second backend call. All of them use the same `request_id`, so the monitor can join them even though Jev's intent answer arrives after the customer already has a reply.
 
 ```text
 request_id created
   ├─ Jev routing call (gateway waits)  ──> JevAssessment (call="routing")
-  ├─ Qwen backend call (gateway waits) ──> BackendResponseRecord
+  ├─ Qwen backend call (gateway waits) ──> BackendResponseRecord (attempt=1)
+  ├─ Other backend, only if that call failed (gateway waits) ──> BackendResponseRecord (attempt=2)
   └─ Jev intent call (gateway does not wait) ──> JevAssessment (call="intent")
 ```
 
@@ -40,6 +41,8 @@ class JevAssessment(StrictModel):
     @model_validator(mode="after")
     def check_call(self) -> "JevAssessment":
         answer = (self.choice, self.confidence, self.probabilities)
+        if (self.error_type is not None) != (self.status in ("timeout", "error")):
+            raise ValueError("error_type is set exactly when the call failed")
         if self.status != "ok":
             if any(value is not None for value in answer):
                 raise ValueError("Only an ok call has an answer")
@@ -56,6 +59,8 @@ class JevAssessment(StrictModel):
             raise ValueError("An ok call needs its answer, model and tokens")
         if self.choice not in self.probabilities:
             raise ValueError("The choice must be one of the options")
+        if not all(0 <= value <= 1 for value in self.probabilities.values()):
+            raise ValueError("Each probability must be between 0 and 1")
         if abs(sum(self.probabilities.values()) - 1) > 0.05:
             raise ValueError("Probabilities should sum to about 1")
         if self.call == "routing" and set(self.probabilities) != {
@@ -70,12 +75,13 @@ Jev's confidence only summarizes the top probability, and the formula depends on
 
 ## Backend response record
 
-One record per backend call. `model` is the model that actually served the request.
+One record per backend call, so up to two per request. `model` is the model that was called. `attempt` is 1 for the first call made for the request and 2 for the fallback. A disabled backend is skipped without a call, so it writes no record and the other backend's call is attempt 1.
 
 ```python
 class BackendResponseRecord(StrictModel):
     request_id: UUID
     model: BackendName
+    attempt: Literal[1, 2]
     # Prompt, policy cards and output format in use. Canary and rollback need this.
     version_id: str = Field(min_length=1)
     option_set_version: str = Field(min_length=1)
@@ -93,6 +99,8 @@ class BackendResponseRecord(StrictModel):
 
     @model_validator(mode="after")
     def check_outcome(self) -> "BackendResponseRecord":
+        if (self.error_type is not None) != (self.status != "ok"):
+            raise ValueError("error_type is set exactly when the call failed")
         if self.status != "ok":
             if self.intent or self.reply or self.format_check or self.format_errors:
                 raise ValueError("A call that did not return has no output")
@@ -108,6 +116,8 @@ class BackendResponseRecord(StrictModel):
 ```
 
 ## How the monitor scores a request
+
+Each backend record is scored on its own, against the request's intent assessment. A request that fell back gives one outage sample for the first model, then one more row for the second. The gateway stops once a call returns, so today at most one backend record per request has `status="ok"`, and a request gives at most one agreement or disagreement.
 
 | Backend record | Intent assessment | The monitor counts |
 |---|---|---|
@@ -138,18 +148,21 @@ These are gaps in the current code that the records depend on.
 
 Both mock backends share one keyword classifier. A mock intent call using that same classifier would always agree with them, so a 0% disagreement rate in mock mode says nothing about quality. Mock records set `mocked=True`, and a chaos fault that swaps labels is needed to show the monitor working. That fault would also answer issue #32, which asks for a way to see declining quality.
 
+## Answered by Verness
+
+1. **The intent call includes an `unknown` option.** Jev must choose from the options it is given, so without one, every no-match reply counts as a disagreement and inflates the rate. It uses the same label set as the backends: the planned 77 Banking77 intents plus `unknown`, so 78 options, within Jev's limit of 255. `config/intents.json` has 10 intents today. Jev and the backends need one definition of `unknown`. Proposal: "not one of the banking topics", rather than "banking, but unclear".
+2. **Two Jev calls, not one.** One combined call would put the 78-option intent question on the path the customer waits for, behind the 2-second routing timeout.
+
 ## Questions to settle
 
 **Verness**
 
-1. Should the intent call include an `unknown` option? Jev must choose from the options it is given, so without one, every no-match reply counts as a disagreement. Proposal: yes, with the same label set the backends use (77 + 1 = 78 options, within Jev's limit of 255).
-2. Two calls or one? Jev allows several questions in one request, which could lower cost, but the gateway would then wait for the intent answer before routing. Proposal: keep two calls, as in the design.
-3. Will you use the SDK? Jev documents `x-typesafe-request-id` in its SDK docs, not on its HTTP API page, so `provider_request_id` is optional.
+1. Plain `httpx` or the SDK? Verness is leaning towards `httpx` and will check one live HTTP response for `x-typesafe-request-id`, which Jev documents in its SDK docs, not on its HTTP API page. `provider_request_id` is optional, so the record works either way.
 
 **Yanzhen**
 
 1. Can `generate` raise separate errors for a timeout and a failed call, so the gateway can set `status` and `error_type`?
-2. How should invalid or cut-off JSON be reported? Today a reply that does not match `BackendReply` counts as a failed call (`call_errors`), not a format failure, and the request is tried on the other backend. Proposal: `status="ok"`, `format_check="failed"`, and `invalid_json` in `format_errors`, since the model did answer. This is the "broken output format" fault in the evaluation plan. The proposal would require changing `Gateway.chat`, and the customer would get the safe apology instead of a reply from the other backend unless that retry is kept.
-3. Can the output constraint include `unknown`, using the same labels as the Jev intent call?
+2. How should invalid or cut-off JSON be reported? Today a reply that does not match `BackendReply` counts as a failed call (`call_errors`), not a format failure, and the request is tried on the other backend. Proposal: `status="ok"`, `format_check="failed"`, and `invalid_json` in `format_errors`, since the model did answer. This is the "broken output format" fault in the evaluation plan. The proposal would require changing `Gateway.chat`, and the customer would get the safe apology instead of a reply from the other backend unless that retry is kept. If it is kept, a request could have two `ok` backend records, and the scoring section would need to say which one counts.
+3. Can the output constraint include `unknown`, using the same labels and definition as the Jev intent call?
 4. Who sets `version_id`: the backend from its config, or the gateway per request for canary traffic? This also needs Verness, who owns the Deployments screen.
 5. With Jackson: does the probe gate need the model's token-probability confidence on this record, or only in offline dev runs?
