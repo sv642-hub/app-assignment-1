@@ -143,12 +143,20 @@ function HealthBody({ health }) {
       </div>
 
       <section className="card">
+        <h2>Recent completed requests</h2>
+        <p className="muted small">Up to 20 retained requests that got a reply, newest first, including replies that failed the format check. Requests that got no reply (HTTP 503) are not listed. Resets on restart.</p>
+        <div className="table-scroll"><table aria-label="Recent completed requests"><thead><tr><th>Completed</th><th>Route</th><th>Actual model</th><th>Fallback</th><th>Format check</th></tr></thead>
+          <tbody>{(health.recent_requests ?? []).map((r, i) => <tr key={`${r.completed_at}-${i}`}><td>{new Date(r.completed_at).toLocaleString()}</td><td>{r.route}</td><td>{r.model}</td><td>{r.fallback_reason ?? "none"}</td><td>{r.format_check}</td></tr>)}</tbody>
+        </table></div>
+        {!health.recent_requests?.length && <p>No retained completed requests.</p>}
+      </section>
+      <section className="card">
         <h2>Interventions</h2>
         {log.length === 0 ? (
           <p className="muted small">No interventions since the gateway started.</p>
         ) : (
           <div className="table-scroll">
-            <table className="log">
+            <table className="log" aria-label="Interventions">
               <thead>
                 <tr>
                   <th scope="col">Time</th>

@@ -17,6 +17,10 @@ export const healthyHealth = {
   ],
   interventions: [],
   controller: RULES,
+  recent_requests: [
+    { completed_at: "2026-10-30T14:33:02Z", route: "standard", model: "qwen3-1.7b", fallback_reason: null, format_check: "failed" },
+    { completed_at: "2026-10-30T14:32:51Z", route: "complex", model: "qwen3-4b", fallback_reason: "selected_backend_error", format_check: "passed" },
+  ],
 };
 
 export const degradedHealth = {
