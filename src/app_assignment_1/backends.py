@@ -14,7 +14,9 @@ from app_assignment_1.schemas import (
 
 UNKNOWN_REPLY = (
     "I'm sorry, I could not match that message to a demo banking topic. "
-    "Please rephrase it or try an example. This is a fictional bank demo."
+    "Could you describe the banking problem you need help with? "
+    "Please rephrase your request with the details, or try an example. "
+    "This is a fictional bank demo."
 )
 
 
