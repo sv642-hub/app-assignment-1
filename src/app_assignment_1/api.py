@@ -57,6 +57,7 @@ def create_app(
             status="ok"
             if all(gateway.usable(b) for b in gateway.backends)
             else "degraded",
+            usage=list(gateway.usage.values()),
             backends=[b.config for b in gateway.backends],
             monitor=gateway.controller.stats(),
             interventions=list(gateway.controller.log),

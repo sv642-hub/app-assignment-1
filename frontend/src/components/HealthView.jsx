@@ -136,6 +136,14 @@ function HealthBody({ health }) {
         </div>
       </div>
 
+      <section className="card">
+        <h2>Usage since gateway startup</h2>
+        <p>Mock mode: token usage and estimated cost are unavailable. No model-provider inference calls are made. Infrastructure costs are not measured; these figures cannot establish routing savings.</p>
+        <p className="muted small">Totals include fallback attempts and do not expire with the monitoring window. A completed call may still fail the format check. In-flight or cancelled calls can leave attempts greater than completed plus failed calls. Resets on restart.</p>
+        <table><thead><tr><th>Model</th><th>Attempted calls</th><th>Completed calls</th><th>Failed calls</th></tr></thead><tbody>
+          {(health.usage ?? []).map((u) => <tr key={u.name}><td>{u.name}</td><td>{u.attempted_calls}</td><td>{u.completed_calls}</td><td>{u.failed_calls}</td></tr>)}
+        </tbody></table>
+      </section>
       <div className="model-grid">
         {models.map((model) => (
           <ModelCard key={model.name} model={model} threshold={rules.failure_threshold} />
@@ -148,7 +156,7 @@ function HealthBody({ health }) {
           <p className="muted small">No interventions since the gateway started.</p>
         ) : (
           <div className="table-scroll">
-            <table className="log">
+            <table className="log" aria-label="Interventions">
               <thead>
                 <tr>
                   <th scope="col">Time</th>

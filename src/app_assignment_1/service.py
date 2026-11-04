@@ -21,6 +21,7 @@ from app_assignment_1.schemas import (
     BackendConfig,
     BackendReply,
     ChatResponse,
+    ModelUsage,
     PolicyCard,
     RoutingDecision,
     Trace,
@@ -70,6 +71,12 @@ class Gateway:
             )
             backends = [MockBackend(c, intents, self.cards) for c in configs]
         self.backends = list(backends)
+        self.usage = {
+            b.config.name: ModelUsage(
+                name=b.config.name, attempted_calls=0, completed_calls=0, failed_calls=0
+            )
+            for b in self.backends
+        }
         expected = {("standard", "qwen3-1.7b"), ("complex", "qwen3-4b")}
         if (
             len(self.backends) != 2
@@ -123,10 +130,14 @@ class Gateway:
                         else "selected_backend_unavailable"
                     )
                 continue
+            usage = self.usage[backend.config.name]
+            usage.attempted_calls += 1
             try:
                 generated = BackendReply.model_validate(await backend.generate(message))
+                usage.completed_calls += 1
                 break
             except Exception as exc:
+                usage.failed_calls += 1
                 # A reply that fails BackendReply validation also counts as a call
                 # error. Cancellation still propagates. Do not log input text or
                 # provider exception messages.

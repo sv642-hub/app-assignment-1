@@ -130,7 +130,7 @@ describe("Health", () => {
     expect(within(large).getByText("standard (rerouted)")).toBeInTheDocument();
 
     // Newest intervention first.
-    const rows = within(screen.getByRole("table")).getAllByRole("row");
+    const rows = within(screen.getByRole("table", { name: "Interventions" })).getAllByRole("row");
     expect(rows[1]).toHaveTextContent("100% over last 5");
     expect(screen.getByText("Gateway degraded")).toBeInTheDocument();
   });
@@ -152,5 +152,15 @@ describe("Health", () => {
     renderWith(fakeGateway());
 
     expect(await screen.findByRole("heading", { name: "Health" })).toBeInTheDocument();
+  });
+});
+
+
+describe("Issue 31", () => {
+  it("explains usage since gateway startup on Health", async () => {
+    const user = renderWith(fakeGateway());
+    await user.click(screen.getByRole("button", { name: "Health" }));
+    expect(await screen.findByRole("heading", { name: "Usage since gateway startup" })).toBeInTheDocument();
+    expect(screen.getByText(/Mock mode: token usage/)).toBeInTheDocument();
   });
 });
