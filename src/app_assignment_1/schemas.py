@@ -136,8 +136,19 @@ class RecentRequest(StrictModel):
     format_check: Literal["passed", "failed"]
 
 
+class ModelUsage(StrictModel):
+    name: BackendName
+    attempted_calls: int = Field(ge=0)
+    completed_calls: int = Field(ge=0)
+    failed_calls: int = Field(ge=0)
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    estimated_cost_usd: float | None = None
+
+
 class HealthResponse(StrictModel):
     recent_requests: list[RecentRequest] = Field(default_factory=list)
+    usage: list[ModelUsage] = Field(default_factory=list)
     status: Literal["ok", "degraded"]
     mode: Literal["mock"] = "mock"
     router: Literal["mock_jev"] = "mock_jev"

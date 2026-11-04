@@ -72,6 +72,7 @@ def create_app(
                 )
                 for r in list(gateway.requests.values())[-20:][::-1]
             ],
+            usage=list(gateway.usage.values()),
             backends=[b.config for b in gateway.backends],
             monitor=gateway.controller.stats(),
             interventions=list(gateway.controller.log),

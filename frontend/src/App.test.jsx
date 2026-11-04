@@ -168,3 +168,17 @@ describe("Issue 30", () => {
     expect(rows[2]).toHaveTextContent(/qwen3-4b.*selected_backend_error.*passed/);
   });
 });
+
+describe("Issue 31", () => {
+  it("explains usage since gateway startup on Health", async () => {
+    const user = renderWith(fakeGateway());
+    await user.click(screen.getByRole("button", { name: "Health" }));
+    expect(await screen.findByRole("heading", { name: "Usage since gateway startup" })).toBeInTheDocument();
+    expect(screen.getByText(/Mock mode: token usage/)).toBeInTheDocument();
+    const rows = within(screen.getByRole("table", { name: "Usage since gateway startup" })).getAllByRole("row");
+    expect(rows).toHaveLength(3);
+    // Columns: model, attempted, completed, failed.
+    expect(within(rows[1]).getAllByRole("cell").map((c) => c.textContent)).toEqual(["qwen3-1.7b", "7", "2", "5"]);
+    expect(within(rows[2]).getAllByRole("cell").map((c) => c.textContent)).toEqual(["qwen3-4b", "9", "9", "0"]);
+  });
+});
