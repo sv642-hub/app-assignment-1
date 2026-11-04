@@ -8,7 +8,12 @@ from fastapi import FastAPI, HTTPException, Request
 
 from app_assignment_1.config import Settings, get_settings
 from app_assignment_1.router import MockJevRouter, Router
-from app_assignment_1.schemas import ChatRequest, ChatResponse, HealthResponse
+from app_assignment_1.schemas import (
+    ChatRequest,
+    ChatResponse,
+    HealthResponse,
+    RecentRequest,
+)
 from app_assignment_1.service import BackendUnavailable, Gateway
 
 
@@ -57,6 +62,16 @@ def create_app(
             status="ok"
             if all(gateway.usable(b) for b in gateway.backends)
             else "degraded",
+            recent_requests=[
+                RecentRequest(
+                    completed_at=r.completed_at,
+                    route=r.trace.route,
+                    model=r.trace.model,
+                    fallback_reason=r.trace.fallback_reason,
+                    format_check=r.trace.format_check,
+                )
+                for r in list(gateway.requests.values())[-20:][::-1]
+            ],
             usage=list(gateway.usage.values()),
             backends=[b.config for b in gateway.backends],
             monitor=gateway.controller.stats(),

@@ -14,11 +14,19 @@ from app_assignment_1.schemas import (
 
 UNKNOWN_REPLY = (
     "I'm sorry, I could not match that message to a demo banking topic. "
-    "Please rephrase it or try an example. This is a fictional bank demo."
+    "Could you describe the banking problem you need help with? "
+    "Please rephrase your request with the details, or try an example. "
+    "This is a fictional bank demo."
 )
 
 
 class Backend(Protocol):
+    """A Qwen backend. A message that matches no intent must return intent
+    `unknown`, no policy facts, and a reply asking the customer to describe
+    their banking problem (#24). tests/test_beta_feedback.py checks the mock
+    through the API; a real backend needs the same checks.
+    """
+
     config: BackendConfig
 
     async def generate(self, message: str) -> BackendReply: ...

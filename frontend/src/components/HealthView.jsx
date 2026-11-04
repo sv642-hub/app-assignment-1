@@ -140,16 +140,44 @@ function HealthBody({ health }) {
         <h2>Usage since gateway startup</h2>
         <p>Mock mode: token usage and estimated cost are unavailable. No model-provider inference calls are made. Infrastructure costs are not measured; these figures cannot establish routing savings.</p>
         <p className="muted small">Totals include fallback attempts and do not expire with the monitoring window. A completed call may still fail the format check. In-flight or cancelled calls can leave attempts greater than completed plus failed calls. Resets on restart.</p>
-        <table><thead><tr><th>Model</th><th>Attempted calls</th><th>Completed calls</th><th>Failed calls</th></tr></thead><tbody>
-          {(health.usage ?? []).map((u) => <tr key={u.name}><td>{u.name}</td><td>{u.attempted_calls}</td><td>{u.completed_calls}</td><td>{u.failed_calls}</td></tr>)}
-        </tbody></table>
+        <div className="table-scroll">
+          <table className="log" aria-label="Usage since gateway startup">
+            <thead>
+              <tr>
+                <th scope="col">Model</th>
+                <th scope="col">Attempted calls</th>
+                <th scope="col">Completed calls</th>
+                <th scope="col">Failed calls</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(health.usage ?? []).map((u) => (
+                <tr key={u.name}>
+                  <td className="mono">{u.name}</td>
+                  <td>{u.attempted_calls}</td>
+                  <td>{u.completed_calls}</td>
+                  <td>{u.failed_calls}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </section>
+
       <div className="model-grid">
         {models.map((model) => (
           <ModelCard key={model.name} model={model} threshold={rules.failure_threshold} />
         ))}
       </div>
 
+      <section className="card">
+        <h2>Recent completed requests</h2>
+        <p className="muted small">Up to 20 retained requests that got a reply, newest first, including replies that failed the format check. Requests that got no reply (HTTP 503) are not listed. Resets on restart.</p>
+        <div className="table-scroll"><table aria-label="Recent completed requests"><thead><tr><th>Completed</th><th>Route</th><th>Actual model</th><th>Fallback</th><th>Format check</th></tr></thead>
+          <tbody>{(health.recent_requests ?? []).map((r, i) => <tr key={`${r.completed_at}-${i}`}><td>{new Date(r.completed_at).toLocaleString()}</td><td>{r.route}</td><td>{r.model}</td><td>{r.fallback_reason ?? "none"}</td><td>{r.format_check}</td></tr>)}</tbody>
+        </table></div>
+        {!health.recent_requests?.length && <p>No retained completed requests.</p>}
+      </section>
       <section className="card">
         <h2>Interventions</h2>
         {log.length === 0 ? (
@@ -190,7 +218,7 @@ function HealthBody({ health }) {
         <div className="rules">
           <div className="stat">
             <div className="muted">Window</div>
-            <strong>last {rules.window} calls</strong>
+            <strong>last {rules.window} calls per model</strong>
           </div>
           <div className="stat">
             <div className="muted">Minimum samples</div>

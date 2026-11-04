@@ -32,7 +32,8 @@ def test_usage_survives_window_and_counts_fallbacks():
         )
         gateway.backends[1].config.error_rate = 1
         assert c.post("/v1/chat", json={"message": "card arrival"}).status_code == 503
-        assert c.get("/v1/health").json()["usage"][1]["failed_calls"] == 1
+        usage = {u["name"]: u for u in c.get("/v1/health").json()["usage"]}
+        assert usage["qwen3-4b"]["failed_calls"] == 1
     with TestClient(create_app(settings)) as c:
         assert all(
             u["attempted_calls"] == 0 for u in c.get("/v1/health").json()["usage"]
