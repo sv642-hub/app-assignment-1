@@ -21,6 +21,12 @@ UNKNOWN_REPLY = (
 
 
 class Backend(Protocol):
+    """A Qwen backend. A message that matches no intent must return intent
+    `unknown`, no policy facts, and a reply asking the customer to describe
+    their banking problem (#24). tests/test_beta_feedback.py checks the mock
+    through the API; a real backend needs the same checks.
+    """
+
     config: BackendConfig
 
     async def generate(self, message: str) -> BackendReply: ...
