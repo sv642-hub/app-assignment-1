@@ -183,7 +183,7 @@ curl -fsS "http://localhost:8080/v1/requests/$REQUEST_ID"
 | --- | --- |
 | `POST /v1/chat` | 200 validated reply; 422 invalid input; 503 no backend available or able to answer |
 | `GET /v1/requests/{id}` | 200 stored response; 404 missing/evicted/restarted; 422 invalid UUID |
-| `GET /v1/health` | Typed Pydantic response documented in OpenAPI; 200 with backend config, monitor statistics and recent interventions; `degraded` when any backend is unavailable or disabled by the controller |
+| `GET /v1/health` | Typed Pydantic response documented in OpenAPI; 200 with backend config, monitor statistics, recent interventions, recent requests (`recent_requests`) and per-model call totals (`usage`); `degraded` when any backend is unavailable or disabled by the controller |
 | `GET /docs`, `/redoc`, `/openapi.json` | Interactive documentation and API schema |
 
 Messages must contain 1–2,000 characters and cannot be whitespace-only. Extra request fields are rejected.
