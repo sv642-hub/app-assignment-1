@@ -154,3 +154,13 @@ describe("Health", () => {
     expect(await screen.findByRole("heading", { name: "Health" })).toBeInTheDocument();
   });
 });
+
+
+describe("Issue 32", () => {
+  it("explains try a simulated failure on Health", async () => {
+    const user = renderWith(fakeGateway());
+    await user.click(screen.getByRole("button", { name: "Health" }));
+    expect(await screen.findByRole("heading", { name: "Try a simulated failure" })).toBeInTheDocument();
+    expect(screen.getByText(/fifth disables/)).toBeInTheDocument();
+  });
+});

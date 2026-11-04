@@ -136,6 +136,12 @@ function HealthBody({ health }) {
         </div>
       </div>
 
+      <section className="card">
+        <h2>Try a simulated failure</h2>
+        <p>Ordinary supported or unmatched questions do not inject faults. Ask the demo operator to enable the README's chaos override in a separate test deployment; it deliberately corrupts every small-model reply.</p>
+        <ol><li>Send “My card has not arrived” five times in Chat.</li><li>Open Show details: each of those replies should fail its format check. The fifth disables qwen3-1.7b.</li><li>Send it a sixth time: qwen3-4b should answer. Health shows five format failures, a disabled small model and an intervention.</li><li>Ask the operator to restore normal mode afterward.</li></ol>
+        <p>This tests formatting failures and rerouting. A wrong answer with valid formatting is not detected by this monitor. The cooldown may re-enable the faulty model if the fault is left active.</p>
+      </section>
       <div className="model-grid">
         {models.map((model) => (
           <ModelCard key={model.name} model={model} threshold={rules.failure_threshold} />
