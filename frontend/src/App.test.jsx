@@ -188,7 +188,7 @@ describe("Issue 32", () => {
     const user = renderWith(fakeGateway());
     await user.click(screen.getByRole("button", { name: "Health" }));
     expect(await screen.findByRole("heading", { name: "Try a simulated failure" })).toBeInTheDocument();
-    expect(screen.getByText(/on a different host from the one testers use/)).toBeInTheDocument();
+    expect(screen.getByText(/The team runs this as a demo, on a host testers do not use/)).toBeInTheDocument();
     // Numbers come from the controller rules in the fixture.
     expect(screen.getByText(/After 5 failed replies, the controller disables qwen3-1\.7b/)).toBeInTheDocument();
     expect(screen.getByText(/Finish within 60 s/)).toBeInTheDocument();

@@ -9,5 +9,3 @@
 **What can it do, and what can't it do?** It recognizes ten banking intents, replies from a fictional bank's policy cards, shows each request's route, and disables a model that keeps failing. Everything is simulated: no real AI models run, and intents are matched by keywords. Each message stands alone, so when asked for details, resend the full problem. All data resets when the app restarts. Deployment, router-metric and fault-injection screens are not built yet.
 
 **What feedback are we seeking?** Was the app's purpose clear within a minute? Which trace fields helped, and which confused you? What would you need on the Health screen to trust the routing? If answers got worse, what would you check first? Please file each finding as one GitHub issue on our repository (README link above): feature tested, what you expected, what actually happened.
-
-**How can you observe a failure?** Normal questions do not cause failures. Ask the operator for the chaos test deployment, then follow *Try a simulated failure* on the Health screen. It shows failed format checks and rerouting, not factually wrong answers.
