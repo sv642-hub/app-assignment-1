@@ -143,12 +143,20 @@ function HealthBody({ health }) {
       </div>
 
       <section className="card">
+        <h2>Recent completed requests</h2>
+        <p className="muted small">Up to 20 retained successful requests, newest first. Resets on restart. Failed requests are excluded.</p>
+        <div className="table-scroll"><table><thead><tr><th>Completed</th><th>Request</th><th>Route</th><th>Actual model</th><th>Fallback</th></tr></thead>
+          <tbody>{(health.recent_requests ?? []).map((r) => <tr key={r.id}><td>{new Date(r.completed_at).toLocaleString()}</td><td>{r.id}</td><td>{r.route}</td><td>{r.model}</td><td>{r.fallback_reason ?? "none"}</td></tr>)}</tbody>
+        </table></div>
+        {!health.recent_requests?.length && <p>No retained completed requests.</p>}
+      </section>
+      <section className="card">
         <h2>Interventions</h2>
         {log.length === 0 ? (
           <p className="muted small">No interventions since the gateway started.</p>
         ) : (
           <div className="table-scroll">
-            <table className="log">
+            <table className="log" aria-label="Interventions">
               <thead>
                 <tr>
                   <th scope="col">Time</th>

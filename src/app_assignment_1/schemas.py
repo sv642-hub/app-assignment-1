@@ -1,6 +1,6 @@
 """Validated API contracts and on-disk mock configuration."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
@@ -56,6 +56,7 @@ class Trace(StrictModel):
 
 
 class ChatResponse(StrictModel):
+    completed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     id: UUID
     intent: str
     reply: str = Field(min_length=1)
@@ -125,7 +126,16 @@ class ControllerRules(StrictModel):
     cooldown_seconds: float = Field(gt=0)
 
 
+class RecentRequest(StrictModel):
+    id: UUID
+    completed_at: datetime
+    route: Route
+    model: BackendName
+    fallback_reason: str | None
+
+
 class HealthResponse(StrictModel):
+    recent_requests: list[RecentRequest] = Field(default_factory=list)
     status: Literal["ok", "degraded"]
     mode: Literal["mock"] = "mock"
     router: Literal["mock_jev"] = "mock_jev"
