@@ -17,6 +17,14 @@ export const healthyHealth = {
   ],
   interventions: [],
   controller: RULES,
+  recent_requests: [
+    { completed_at: "2026-10-30T14:33:02Z", route: "standard", model: "qwen3-1.7b", fallback_reason: null, format_check: "failed" },
+    { completed_at: "2026-10-30T14:32:51Z", route: "complex", model: "qwen3-4b", fallback_reason: "selected_backend_error", format_check: "passed" },
+  ],
+  usage: [
+    { name: "qwen3-1.7b", attempted_calls: 7, completed_calls: 2, failed_calls: 5, input_tokens: null, output_tokens: null, estimated_cost_usd: null },
+    { name: "qwen3-4b", attempted_calls: 9, completed_calls: 9, failed_calls: 0, input_tokens: null, output_tokens: null, estimated_cost_usd: null },
+  ],
 };
 
 export const degradedHealth = {

@@ -25,7 +25,8 @@ def test_documented_six_requests_really_inject_and_recover():
                 assert trace["model"] == "qwen3-4b"
                 assert trace["format_check"] == "passed"
                 assert trace["fallback_reason"] == "selected_backend_disabled"
-        small = c.get("/v1/health").json()["monitor"][0]
+        monitor = {m["name"]: m for m in c.get("/v1/health").json()["monitor"]}
+        small = monitor["qwen3-1.7b"]
         assert small["format_failures"] == 5 and small["disabled_by_controller"]
     with TestClient(create_app(Settings(_env_file=None))) as c:
         trace = c.post("/v1/chat", json={"message": "My card has not arrived"}).json()[
