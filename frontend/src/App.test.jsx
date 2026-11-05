@@ -167,6 +167,13 @@ describe("Issue 30", () => {
     expect(rows[1]).toHaveTextContent(/qwen3-1\.7b.*none.*failed/);
     expect(rows[2]).toHaveTextContent(/qwen3-4b.*selected_backend_error.*passed/);
   });
+
+  it("replaces the recent requests table with a message when there are none", async () => {
+    const user = renderWith(fakeGateway({ health: { ...healthyHealth, recent_requests: [] } }));
+    await user.click(screen.getByRole("button", { name: "Health" }));
+    expect(await screen.findByText("No retained completed requests.")).toBeInTheDocument();
+    expect(screen.queryByRole("table", { name: "Recent completed requests" })).not.toBeInTheDocument();
+  });
 });
 
 describe("Issue 31", () => {
