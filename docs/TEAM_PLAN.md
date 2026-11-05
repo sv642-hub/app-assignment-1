@@ -16,7 +16,7 @@ Final project for DSAN 6700. This file records who owns what. Owners decide and 
 ## Interfaces to agree first
 
 - **Yanzhen + Pavlos:** vLLM URLs for both models and the request/response format. Yanzhen builds against a local stub until the GPU host is ready.
-- **Verness + Sebastian:** the Jev assessment record (routing call and async intent call) that the monitor reads.
+- **Verness + Sebastian:** the Jev assessment records (one combined routing and intent call per request) that the monitor reads.
 - **Yanzhen + Sebastian:** the backend response record (intent, reply, format check, latency, version ID) that the monitor scores.
 
 ## Evaluation set (shared)
