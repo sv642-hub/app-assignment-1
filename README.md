@@ -32,6 +32,8 @@ The gateway runs a small in-memory self-healing loop, the first piece of the pla
 
 The monitor watches format failures and failed calls only. It does not know whether an intent or reply is correct. Its state resets when the gateway restarts.
 
+Do not run the overrides below on the deployment testers use. They use the default Compose project and port 8080, so they replace the running stack and reset its history. Use your own machine or a different host.
+
 To see the loop work, start the stack with the chaos override. In `config/backends.chaos.json`, the small model has `fault_rate: 1`, so it corrupts every reply:
 
 ```bash

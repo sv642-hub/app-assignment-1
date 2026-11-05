@@ -189,3 +189,15 @@ describe("Issue 31", () => {
     expect(within(rows[2]).getAllByRole("cell").map((c) => c.textContent)).toEqual(["qwen3-4b", "9", "9", "0"]);
   });
 });
+
+describe("Issue 32", () => {
+  it("explains how to try a simulated failure on Health", async () => {
+    const user = renderWith(fakeGateway());
+    await user.click(screen.getByRole("button", { name: "Health" }));
+    expect(await screen.findByRole("heading", { name: "Try a simulated failure" })).toBeInTheDocument();
+    expect(screen.getByText(/The team runs this as a demo, on a host testers do not use/)).toBeInTheDocument();
+    // Numbers come from the controller rules in the fixture.
+    expect(screen.getByText(/After 5 failed replies, the controller disables qwen3-1\.7b/)).toBeInTheDocument();
+    expect(screen.getByText(/Finish within 60 s/)).toBeInTheDocument();
+  });
+});
