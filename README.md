@@ -11,11 +11,11 @@ A mocked banking-support gateway for DSAN 6700 Deliverable 2, with a React chat 
 1. The React app sends the message over HTTP to the FastAPI gateway.
 2. `MockJevRouter` stands in for Jev's difficulty call. It returns only a route (`standard` or `complex`) and a confidence, never an intent. It uses the configured complexity of the best keyword match; unmatched messages go to `standard`.
 3. Standard selects mock `qwen3-1.7b`. Complex selects mock `qwen3-4b`. The selected mock backend waits for its simulated delay, detects the intent by matching complete keyword phrases (longer/more matches score higher; config order breaks ties), and fills the reply template with fictional policy facts. Both mock backends share this classifier.
-4. Reply checks reject blank text, replies over 4,000 characters, unfilled `{placeholder}` tokens and intent labels outside the configured list. Pydantic validates the result. The chat shows the reply and its route; **Show details** opens the intent, policy facts and trace.
+4. Reply checks reject blank text, replies over 4,000 characters, unfilled `{placeholder}` tokens and intent labels outside `config/labels.json`. Pydantic validates the result. The chat shows the reply and its route; **Show details** opens the intent, policy facts and trace.
 
 If Jev fails or does not answer within `APP_JEV_TIMEOUT_SECONDS`, the rule router chooses the route instead: messages of `APP_RULE_ROUTER_COMPLEX_MIN_WORDS` words or more go to `complex`, shorter ones to `standard`. The request still goes to a backend. The trace shows `router: "rule_router"`, `jev_choice: null`, `confidence: null` and `fallback_reason` `jev_timeout` or `jev_error`.
 
-If the backend detects no intent, it returns intent `unknown` with a reply asking the customer to describe their banking problem (`reply_source: "no_match"`). A real backend must keep this behaviour. Vague and off-topic messages currently get the same reply. If the selected backend is marked unavailable, the other is used only when available (`selected_backend_unavailable`). When both are unavailable, every message returns HTTP 503. When Jev fails and the backend falls back, `fallback_reason` lists both reasons.
+If the backend detects no intent, it returns intent `unknown` with a reply asking the customer to describe their banking problem (`reply_source: "no_match"`). A real backend must keep this behaviour. Vague and off-topic messages currently get the same reply. If a backend returns one of the 67 Banking77 intents that has no policy card, it must send an empty reply and no policy facts. The gateway then replies that the demo does not cover that topic (`reply_source: "unsupported_topic"`). The mock backends only match the 10 carded intents, so they never take this path. If the selected backend is marked unavailable, the other is used only when available (`selected_backend_unavailable`). When both are unavailable, every message returns HTTP 503. When Jev fails and the backend falls back, `fallback_reason` lists both reasons.
 
 If the selected backend's call raises an error, or returns a reply that does not match the backend reply schema, the request is tried once on the other usable backend (`selected_backend_error`). Both cases count as failed calls (`call_errors`), not format failures. When no backend can answer, the message returns HTTP 503. The log records the backend and error type, not the message or the provider's error text. The gateway sets no time limit on a backend call yet, so a call that hangs is not treated as a failure; the real client must time out and raise.
 
@@ -92,6 +92,7 @@ Pydantic Settings reads `.env` then `env/.env` in native local runs. Process env
 | --- | --- | --- |
 | `APP_ENVIRONMENT` | `local` | `local`, `staging` or `production` |
 | `APP_INTENTS_PATH` | `config/intents.json` | Intent keywords and mock complexity |
+| `APP_LABELS_PATH` | `config/labels.json` | The 77 Banking77 intents plus `unknown` that Jev and Qwen classify into; every intent with a policy card must be one of them |
 | `APP_POLICY_CARDS_PATH` | `config/policy_cards.json` | Fictional facts and `{facts}` reply templates |
 | `APP_BACKENDS_PATH` | `config/backends.json` | Backend names, routes, delay and availability |
 | `APP_REQUEST_STORE_LIMIT` | `1000` | Number of successful requests retained |
@@ -101,6 +102,15 @@ Pydantic Settings reads `.env` then `env/.env` in native local runs. Process env
 | `APP_MONITOR_MIN_SAMPLES` | `5` | Calls needed before the controller may act; at most the window |
 | `APP_MONITOR_FAILURE_THRESHOLD` | `0.5` | Failure rate (failed format checks plus failed calls) that disables a backend |
 | `APP_CONTROLLER_COOLDOWN_SECONDS` | `60` | How long a disabled backend stays out |
+| `APP_PROVIDER_MODE` | `mock` | `mock` or `real`. Real mode needs `APP_JEV_API_KEY` and is rejected at startup until the real clients exist |
+| `APP_JEV_BASE_URL` | `https://api.typesafe.ai` | TypeSafe API for real Jev calls (not used yet) |
+| `APP_JEV_API_KEY` | unset | Server-side TypeSafe key; set only in the real env file |
+| `APP_JEV_MODEL` | `jev-1.14.0` | Pinned Jev version, not an alias such as `jev-latest` |
+| `APP_JEV_INPUT_PRICE_PER_MILLION_USD`, `APP_JEV_OUTPUT_PRICE_PER_MILLION_USD` | unset | Jev token prices for cost estimates; cost stays null while unset |
+| `APP_JEV_BREAKER_FAILURES` | `5` | Consecutive Jev failures before the circuit breaker skips Jev (not used yet) |
+| `APP_JEV_BREAKER_COOLDOWN_SECONDS` | `30` | How long the breaker skips Jev (not used yet) |
+| `APP_REQUEST_DEADLINE_SECONDS` | `45` | Total time for one chat request (not used yet) |
+| `APP_ALTERNATE_RESERVE_SECONDS` | `15` | Part of the deadline kept for the alternate backend (not used yet); with the Jev timeout, must stay below the deadline |
 
 Paths are relative to the working directory: run native commands from the repo root. In Docker the working directory is `/app`; use paths under the mounted `config/` directory. The gateway validates JSON and matching intent/policy-card coverage at startup. Both mock backends must be configured. Set `available` to `false` in `config/backends.json` to try fallback.
 
