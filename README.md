@@ -1,6 +1,6 @@
 # Smart AI Gateway
 
-Who owns what: [docs/TEAM_PLAN.md](docs/TEAM_PLAN.md) · Beta testers: [USER_BRIEF.md](USER_BRIEF.md)
+Who owns what: [docs/TEAM_PLAN.md](docs/TEAM_PLAN.md) · What is built: [docs/architecture.svg](docs/architecture.svg) · Beta testers: [USER_BRIEF.md](USER_BRIEF.md)
 
 A mocked banking-support gateway for DSAN 6700 Deliverable 2, with a React chat app in front of it. Send a customer message and get a reply from a fictional policy card, tagged `standard` or `complex`, with the intent and routing trace one click away. A Health screen shows the models and the self-healing controller.
 

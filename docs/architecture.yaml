@@ -1,0 +1,282 @@
+# Architecture status: the source for docs/architecture.svg.
+#
+# Update this file in any PR that changes what is built, simulated or owned,
+# then run:  uv run python scripts/render_architecture.py
+# CI fails if docs/architecture.svg does not match this file.
+#
+# Status describes `main` after your PR merges. Do not track other open PRs here.
+#
+# Each item is one line with one of three marks:
+#   built:     works on main with the real thing
+#   simulated: works on main, but against a mock
+#   todo:      planned, not built yet
+# A box's status comes from its items: all built = Built, no built items =
+# Not built (a mock alone does not count), anything else = Partly built.
+#
+# owner: a name from docs/TEAM_PLAN.md, or null if nobody owns it yet.
+# Positions live under `layout` at the bottom; you rarely need to touch them.
+# If the renderer says a box overflows, make that box taller there.
+
+title: "Smart AI Gateway: technical architecture, marked with current status"
+subtitle: "Planned design from the proposal. Marks show what is on main. Owners come from docs/TEAM_PLAN.md."
+
+components:
+  browser:
+    title: Browser
+    owner: Beta testers
+    items:
+      - built: Chat and Health over HTTP on :8080
+
+  team_app:
+    title: Team app
+    owner: Other teams
+    items:
+      - built: REST API at /v1 through the proxy
+
+  proxy:
+    title: proxy
+    tag: ":8080"
+    owner: Pavlos
+    items:
+      - built: Caddy; the one published port
+      - built: / goes to the React app; /v1 and /docs go to the gateway
+
+  frontend:
+    title: frontend
+    owner: "Verness: Deployments, Jev · Jackson: Chaos mode"
+    items:
+      - built: React (Vite) build served by Caddy
+      - built: Chat (the Playground)
+      - built: "Health: per-model window, recent requests, usage, chaos walkthrough"
+      - todo: Deployments and Jev screens
+      - todo: Chaos mode screen
+
+  api_routes:
+    title: API routes
+    owner: Verness
+    items:
+      - built: "POST /v1/chat, GET /v1/requests/{id}, GET /v1/health (recent requests, usage), /docs"
+      - todo: /v1/metrics
+      - todo: Operator routes and operator token
+
+  router_client:
+    title: Router client
+    owner: Verness
+    items:
+      - simulated: Jev routing call with a 2 s timeout
+      - built: Rule router on Jev timeout or error
+      - todo: One route and intent call; circuit breaker
+
+  canary_splitter:
+    title: Canary splitter
+    owner: null
+    items:
+      - todo: Prompt and config version by traffic share
+      - todo: Release state from Postgres
+
+  backend_client:
+    title: Backend client
+    owner: "Verness · Yanzhen: vLLM client"
+    items:
+      - built: "Tries the other; both down: 503"
+      - simulated: Calls the in-process mock
+      - todo: 45 s request deadline, typed failures
+
+  format_validation:
+    title: Format validation
+    owner: "Verness · Yanzhen: constrained JSON"
+    items:
+      - built: Allowed label, reply present, no unfilled slots
+      - simulated: Schema check on mock replies
+      - todo: Label check against 78 labels
+
+  fault_hooks:
+    title: Fault injection hooks
+    owner: Pavlos
+    items:
+      - built: Outage and bad format, by Compose override
+      - todo: Label swap, bad prompt
+      - todo: POST /v1/faults with operator token
+
+  jev_intent:
+    title: Jev intent question
+    owner: Verness
+    items:
+      - todo: Assessment records for the monitor
+      - todo: In the routing call, 78 options
+
+  semantic_monitor:
+    title: Semantic monitor
+    owner: Sebastian
+    items:
+      - built: Format and failed-call rate
+      - todo: Scoring of Jev agreement
+      - todo: Disagreement rate vs. healthy baseline
+
+  controller:
+    title: Controller
+    owner: Sebastian
+    items:
+      - built: Windows, samples, cooldowns
+      - built: Disables a model, traffic moves
+      - todo: Roll back; Postgres log
+
+  prometheus:
+    title: prometheus
+    tag: ":9090"
+    owner: null
+    items:
+      - todo: Scrapes gateway, monitor and vLLM
+      - todo: Latency, errors, cost, quality signals
+
+  postgres:
+    title: postgres
+    tag: ":5432"
+    owner: null
+    items:
+      - todo: Requests, outputs, signals, controller state, release history
+      - simulated: "Today: held in memory, resets on restart"
+
+  configuration:
+    title: Configuration and versioned files
+    owner: "Verness: label file · Pavlos: secrets, URLs"
+    items:
+      - built: Pydantic Settings, private env file, thresholds; no secrets in Git or the image
+      - simulated: 10 intents and 10 policy cards
+      - todo: One 78-label file; replies only for the 10 carded intents
+      - todo: Jev API key, operator token and backend URLs
+      - todo: Prompt versions and rollback target; data/ splits and fresh set
+
+  vllm_small:
+    title: vllm-small · Qwen3-1.7B
+    tag: ":8001"
+    owner: "Yanzhen · Pavlos: serving"
+    items:
+      - simulated: Replaced by a keyword mock in the gateway
+      - todo: Real model, constrained JSON, /metrics
+
+  vllm_large:
+    title: vllm-large · Qwen3-4B
+    tag: ":8002"
+    owner: "Yanzhen · Pavlos: serving"
+    items:
+      - simulated: Replaced by a keyword mock in the gateway
+      - todo: Real model, constrained JSON, /metrics
+
+  model_volume:
+    title: Model volume
+    owner: Pavlos
+    items:
+      - todo: Qwen weights and tokenizers, pinned revisions
+
+  jev_api:
+    title: Jev API (external)
+    owner: "Verness · Pavlos: key"
+    items:
+      - simulated: Routing call is a local JSON mock
+      - todo: Real TypeSafe client over HTTPS; API key
+      - todo: Plain httpx, pinned jev-1.14.0
+
+  probe:
+    title: Probe (stretch, offline)
+    owner: "Jackson · gate date: Sebastian"
+    style: stretch
+    items:
+      - todo: Skeleton and gate check
+      - todo: Load Qwen3-1.7B outside vLLM; real activations
+      - todo: Gate date not set
+
+  ci:
+    title: CI smoke tests (GitHub Actions)
+    owner: null
+    items:
+      - built: pytest, ruff, mypy, frontend tests and Compose smoke on every push
+      - built: Routing, Jev failure, fallback, neither backend available
+      - built: Architecture diagram matches docs/architecture.yaml
+      - todo: Probe smoke test (stretch)
+
+  chaos:
+    title: Chaos scenarios (about 20)
+    owner: "Pavlos · Jackson: screen"
+    items:
+      - built: "Two faults by hand: outage and bad format, with a tester walkthrough"
+      - todo: Scenarios on command; detection and recovery times; false interventions
+      - todo: Demo owner not assigned
+
+  evaluation:
+    title: Offline evaluation harness
+    owner: "Pavlos: runner · Yanzhen: accuracy · everyone: data"
+    items:
+      - todo: Official test set primary; fresh set as a check
+      - todo: Baselines and the oracle router
+      - todo: 300 messages, 150 grades; split not agreed
+      - todo: "Banking77 development split: no owner"
+
+  reports:
+    title: Reports and artifacts
+    owner: null
+    items:
+      - todo: Pass/fail, routes, timings and version IDs saved by CI
+      - todo: Evaluation reports
+
+layout:
+  size: [2000, 1630]
+
+  # Dashed hosts, solid groups and the testing band, drawn behind the boxes.
+  areas:
+    - {at: [22, 1345, 1956, 270], style: band, title: Testing and evaluation, note: "Smoke tests prove the parts connect; correctness and probe accuracy need offline evaluation"}
+    - {at: [270, 150, 1075, 1170], style: host, title: Jetstream2 CPU instance, note: "Only proxy and gateway run today; 2 of 6 planned services · host: Pavlos"}
+    - {at: [1395, 150, 420, 640], style: host, title: Jetstream2 GPU instance, note: "Not set up · Pavlos"}
+    - {at: [605, 190, 715, 565], style: group, title: gateway, note: "FastAPI · :8000 · state in memory · owner: Verness"}
+    - {at: [605, 800, 715, 265], style: group, title: monitor, note: "Runs inside the gateway for now · owner: Sebastian"}
+
+  boxes:
+    browser: [30, 190, 215, 120]
+    team_app: [30, 340, 215, 110]
+    proxy: [300, 190, 270, 135]
+    frontend: [300, 345, 270, 285]
+    api_routes: [620, 240, 340, 175]
+    router_client: [965, 240, 340, 175]
+    canary_splitter: [620, 425, 340, 150]
+    backend_client: [965, 425, 340, 150]
+    format_validation: [620, 585, 340, 160]
+    fault_hooks: [965, 585, 340, 160]
+    jev_intent: [620, 850, 225, 205]
+    semantic_monitor: [855, 850, 225, 205]
+    controller: [1090, 850, 225, 205]
+    prometheus: [300, 690, 270, 190]
+    postgres: [300, 930, 270, 230]
+    configuration: [620, 1110, 685, 190]
+    vllm_small: [1420, 225, 370, 140]
+    vllm_large: [1420, 385, 370, 140]
+    model_volume: [1420, 545, 370, 105]
+    jev_api: [1420, 840, 370, 190]
+    probe: [1420, 1080, 370, 190]
+    ci: [45, 1395, 465, 200]
+    chaos: [530, 1395, 465, 200]
+    evaluation: [1015, 1395, 460, 200]
+    reports: [1495, 1395, 455, 200]
+
+  notes:
+    - {at: [1420, 672, 370], color: red, text: "One GPU host: once built, if it fails, both backends fail and the gateway returns 503."}
+
+  # kind: live (works today), planned, async, control or probe.
+  arrows:
+    - {kind: live, points: [[245, 235], [300, 235]]}
+    - {kind: live, points: [[245, 385], [280, 385], [280, 280], [300, 280]]}
+    - {kind: live, points: [[570, 245], [605, 245]]}
+    - {kind: live, points: [[435, 325], [435, 345]]}
+    - {kind: live, points: [[570, 480], [605, 480]]}
+    - {kind: planned, points: [[1320, 295], [1420, 295]], label: standard, label_at: [1370, 285]}
+    - {kind: planned, points: [[1320, 455], [1420, 455]], label: complex, label_at: [1370, 445]}
+    - {kind: planned, points: [[1320, 670], [1360, 670], [1360, 890], [1420, 890]], label: "route + intent, awaited", label_at: [1440, 815]}
+    - {kind: async, points: [[1320, 960], [1420, 960]], label: same call, label_at: [1370, 950]}
+    - {kind: control, points: [[1200, 800], [1200, 755]], label: "reroute · fall back · roll back", label_at: [1088, 783]}
+    - {kind: planned, points: [[605, 655], [435, 655], [435, 690]], label: scrape /metrics, label_at: [520, 645]}
+    - {kind: planned, points: [[605, 1020], [570, 1020]]}
+    - {kind: planned, points: [[605, 735], [587, 735], [587, 1020], [570, 1020]]}
+    - {kind: planned, points: [[980, 1110], [980, 1065]]}
+    - {kind: planned, points: [[1150, 1300], [1150, 1395]], label: datasets in data/, label_at: [1218, 1335]}
+    - {kind: planned, points: [[1790, 600], [1805, 600], [1805, 295], [1790, 295]]}
+    - {kind: planned, points: [[1805, 455], [1790, 455]]}
+    - {kind: probe, points: [[1790, 625], [1850, 625], [1850, 1175], [1790, 1175]], label: same weights, label_at: [1905, 900]}
