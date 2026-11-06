@@ -21,6 +21,7 @@ This plan covers only how the gateway calls the Qwen backends and records their 
 **Labels**
 
 - Add one label file with the 77 Banking77 intents and `unknown`, each with a short description. Jev’s `intent` question and Qwen’s intent enum both read it. `option_set_version` is derived from this file.
+- **Label spelling:** labels use lowercase letters, digits and underscores only. Banking77 spells two labels differently: `Refund_not_showing_up` (capital R) and `reverted_card_payment?` (question mark), on 40 test messages each. The label file uses `refund_not_showing_up` and `reverted_card_payment`, and keeps each original name in `banking77_name`. Map gold labels by looking up `banking77_name` in the label file, not by lowercasing, which would leave the `?`.
 - Keep `config/intents.json` and `config/policy_cards.json` at 10 intents. A card is needed only to reply, not to classify.
 - Change the gateway’s `unknown_label` check. Today it flags any intent without a card (`intent not in self.cards`), so a correct uncarded intent would count as a format failure. Check the intent against the 78 labels instead.
 - **Evaluation sheet:** keep each message’s original label from the 77 intents, plus `unknown` and `out_of_scope`. Scoring maps labels down to the option set in use; in this release, `out_of_scope` maps to `unknown`. Nothing needs relabelling if the option set changes later. Settle this before anyone writes evaluation messages.
