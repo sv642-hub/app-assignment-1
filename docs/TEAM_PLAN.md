@@ -39,4 +39,5 @@ The probe must beat the model's own token-probability confidence (AUROC on the d
 
 ## Diagrams
 
-The architecture diagrams still show Streamlit. Update the frontend box to "React (Vite), static build served by Caddy" before the final deliverable.
+- **Architecture status:** `docs/architecture.svg`, generated from `docs/architecture.yaml`. Every PR that changes what is built, simulated or owned updates the YAML (see `AGENTS.md`). Sebastian keeps the layout and reviews these changes.
+- The proposal's architecture diagrams still show Streamlit. Update the frontend box to "React (Vite), static build served by Caddy" before the final deliverable.
