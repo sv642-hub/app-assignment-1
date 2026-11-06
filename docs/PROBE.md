@@ -1,6 +1,6 @@
 # Linear probe
 
-The probe reads Qwen3-1.7B activations and estimates whether the model classified a message's intent correctly. It does not judge reply quality, which stays with the format checks and the judge. It has to beat the model's own token-probability confidence on the dev set (see "Probe gate" in `docs/TEAM_PLAN.md`). Until it does, it stays out of the live system.
+The probe reads Qwen3-1.7B activations and estimates whether the model's output is correct. Under the proposed label (see "Proposed decisions"), that means whether it classified the message's intent correctly, and reply quality would stay with the format checks and the judge. The probe has to beat the model's own token-probability confidence on the dev set (see "Probe gate" in `docs/TEAM_PLAN.md`). Until it does, it stays out of the live system.
 
 **Status: skeleton only.** `src/app_assignment_1/probe.py` runs end to end on mock activations. No real model has been probed, so there are no results yet. The gateway does not import this module.
 

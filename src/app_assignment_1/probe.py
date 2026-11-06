@@ -1,6 +1,6 @@
-"""Offline linear probe skeleton: do activations predict a correct intent?
+"""Offline linear probe skeleton: do activations predict a correct output?
 
-The probe scores each intent prediction from Qwen3-1.7B activations. The gate in
+The probe scores each model output from Qwen3-1.7B activations. The gate in
 docs/TEAM_PLAN.md compares that score with the model's own token-probability
 confidence by AUROC on the dev set. Nothing here runs in the gateway.
 
@@ -29,6 +29,8 @@ MIN_DEV_CLASS_SIZE = 20
 
 class ProbeExample(StrictModel):
     """One model output. `correct` is the label the probe learns to predict.
+
+    The proposed label is the predicted intent matching gold (docs/PROBE.md).
 
     `token_confidence` is a probability, so a mean log probability must be
     exponentiated first. That does not change the order of scores, or AUROC.
@@ -93,7 +95,7 @@ class LinearProbe:
     bias: float
 
     def score(self, features: Sequence[float]) -> float:
-        """Estimated probability that the predicted intent is correct."""
+        """Estimated probability that the output is correct."""
         logit = self.bias + sum(
             weight * value for weight, value in zip(self.weights, features, strict=True)
         )
