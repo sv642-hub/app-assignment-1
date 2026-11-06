@@ -28,7 +28,7 @@ The probe passes only if both of these hold:
 - A way to collect token confidence during the same offline pass.
 - A development split and loader. Banking77 has only train and test, so this has to be carved from its training data. The frozen evaluation set stays out of probe training and the gate, and is kept for one final report. The human grades are too few to train on, and are for checking the judge.
 - A faster trainer with regularization, such as scikit-learn, to replace `train_probe`.
-- A script that runs the gate and saves the report, including the controls below.
+- A script that runs the gate and saves the report, including the controls, routing analysis and escalation curve below.
 
 ## Proposed decisions
 
@@ -38,6 +38,8 @@ These are proposals for team review, fixed before any real run. Nothing here has
 - **Activations:** the last intent-label token is primary, and the end of the question is secondary, saved in the same pass. The layer is chosen by cross-validation on training data, never on dev. A live version would be cheap only if `intent` comes first in the JSON, which needs checking with Yanzhen.
 - **Token confidence:** fix a short list of candidates in advance: mean log probability and minimum probability over the label tokens, joint label probability, and mean over all output tokens. Choose the strongest on training data and use only that one on dev. Record whether it uses raw or constrained probabilities. `token_confidence` must be between 0 and 1, so a mean log probability is exponentiated first, which does not change AUROC.
 - **Controls:** the report adds a text-only classifier, a per-intent accuracy prior and AUROC within each intent. They do not change the pass rule. They decide what a pass may claim, because a text-only classifier can match a probe on in-distribution data (Moreno Cencerrado et al., 2025).
+- **Routing analysis:** alongside the gate, also score the cases where the small model is wrong and the large model is right, because escalating only helps there. This needs Qwen3-4B outputs on the same dev data. It does not change the pass rule.
+- **Escalation curve:** report the share of wrong outputs caught at each escalation rate, alongside AUROC. AUROC shows the ranking is good, but not what a threshold would do in a live system.
 - **Data split:** Jackson owns this. Use one fixed, seeded split, stratified by intent. The human grades draw from the same data, so agree it once with Sebastian and Yanzhen.
 
 ## Still open
