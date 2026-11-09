@@ -14,6 +14,7 @@ from pydantic import TypeAdapter
 from app_assignment_1.backends import Backend, MockBackend
 from app_assignment_1.config import Settings
 from app_assignment_1.intents import load_intents
+from app_assignment_1.labels import UNKNOWN, load_labels
 from app_assignment_1.monitor import Controller
 from app_assignment_1.router import Router, RuleRouter
 from app_assignment_1.schemas import (
@@ -29,6 +30,12 @@ from app_assignment_1.store import MemoryStore, Store
 
 logger = logging.getLogger(__name__)
 MAX_REPLY_LENGTH = 4000
+# For a recognized intent that has no policy card. The backend sends an empty
+# reply for these; the gateway never shows generated text for them.
+UNCARDED_REPLY = (
+    "I recognized your banking question, but this demo does not cover that "
+    "topic yet, so I can't give policy details. This is a fictional bank demo."
+)
 
 
 def check_reply(reply: str) -> list[str]:
@@ -56,6 +63,11 @@ class Gateway:
         clock: Callable[[], float] = time.monotonic,
         store: Store | None = None,
     ):
+        if settings.provider_mode == "real":
+            raise ValueError(
+                "APP_PROVIDER_MODE=real is not built yet; the Jev and Qwen clients "
+                "come in later PRs"
+            )
         self.router = router
         self.rule_router = RuleRouter(settings.rule_router_complex_min_words)
         self.jev_timeout = settings.jev_timeout_seconds
@@ -66,6 +78,9 @@ class Gateway:
         )
         if set(self.cards) != {item.intent for item in intents}:
             raise ValueError("Policy cards must match the configured intents exactly")
+        self.labels = load_labels(settings.labels_path)
+        if not set(self.cards) <= self.labels.names:
+            raise ValueError("Every intent with a policy card must be a label")
         if backends is None:
             configs = TypeAdapter(list[BackendConfig]).validate_json(
                 settings.backends_path.read_text()
@@ -125,6 +140,8 @@ class Gateway:
         return response
 
     async def _chat(self, message: str) -> ChatResponse:
+        # Created before any provider call, so later records can share it.
+        request_id = uuid4()
         start = perf_counter()
         reasons = []
         router_name: Literal["mock_jev", "rule_router"] = "mock_jev"
@@ -177,9 +194,23 @@ class Gateway:
         else:
             raise BackendUnavailable
         intent, reply, facts = generated.intent, generated.reply, generated.policy_facts
-        format_errors = check_reply(reply)
-        if intent != "unknown" and intent not in self.cards:
-            format_errors.append("unknown_label")
+        uncarded = (
+            intent in self.labels.names
+            and intent != UNKNOWN
+            and intent not in self.cards
+        )
+        if uncarded:
+            # The reply text is discarded, so it is not checked. Facts must be
+            # empty: there is no card to ground them.
+            format_errors = ["uncarded_policy_facts"] if facts else []
+            reply = UNCARDED_REPLY
+        else:
+            format_errors = check_reply(reply)
+            if intent not in self.labels.names:
+                format_errors.append("unknown_label")
+            elif intent == UNKNOWN and facts:
+                # No intent means no card, so there is nothing to ground facts.
+                format_errors.append("unknown_policy_facts")
         if format_errors:
             # Keep malformed generated content out of the UI and stored response.
             intent = "unknown"
@@ -196,7 +227,7 @@ class Gateway:
         )
 
         response = ChatResponse(
-            id=uuid4(),
+            id=request_id,
             intent=intent,
             reply=reply,
             policy_facts=facts,
@@ -209,7 +240,9 @@ class Gateway:
                     "format_fallback"
                     if format_errors
                     else "no_match"
-                    if intent == "unknown"
+                    if intent == UNKNOWN
+                    else "unsupported_topic"
+                    if uncarded
                     else "policy_template"
                 ),
                 confidence=decision.confidence,
