@@ -1,5 +1,7 @@
 """Prometheus metrics at the internal /metrics path."""
 
+import asyncio
+import fnmatch
 import json
 import re
 from pathlib import Path
@@ -154,6 +156,73 @@ def test_unavailable_requests_are_counted(settings):
         assert value(found, "gateway_chat_latency_seconds_count") == 1
 
 
+class Clock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
+def test_re_enable_after_cooldown_is_counted_on_scrape(settings):
+    with TestClient(create_app(settings)) as client:
+        gateway = client.app.state.gateway
+        clock = Clock()
+        gateway.controller.clock = clock
+        gateway.backends[0].config.fault_rate = 1
+        for _ in range(3):
+            client.post("/v1/chat", json={"message": "My card has not arrived"})
+        assert value(samples(client), "gateway_model_disabled", model="qwen3-1.7b")
+        clock.now = 30
+        # The scrape alone notices the cooldown has ended.
+        found = samples(client)
+        assert value(found, "gateway_model_disabled", model="qwen3-1.7b") == 0
+        assert value(found, "gateway_monitor_window_samples", model="qwen3-1.7b") == 0
+        for action in ["disabled", "re-enabled"]:
+            assert (
+                value(
+                    found,
+                    "gateway_controller_interventions_total",
+                    action=action,
+                    model="qwen3-1.7b",
+                )
+                == 1
+            )
+
+
+def test_kept_last_backend_is_counted(settings):
+    with TestClient(create_app(settings)) as client:
+        for backend in client.app.state.gateway.backends:
+            backend.config.fault_rate = 1
+        for _ in range(6):
+            client.post("/v1/chat", json={"message": "My card has not arrived"})
+        found = samples(client)
+        assert value(found, "gateway_model_disabled", model="qwen3-1.7b") == 1
+        assert value(found, "gateway_model_disabled", model="qwen3-4b") == 0
+        assert (
+            value(
+                found,
+                "gateway_controller_interventions_total",
+                action="kept_last_backend",
+                model="qwen3-4b",
+            )
+            == 1
+        )
+
+
+def test_jev_timeout_has_its_own_label(settings):
+    class SlowRouter:
+        async def route(self, message):
+            await asyncio.sleep(5)
+
+    settings.jev_timeout_seconds = 0.05
+    with TestClient(create_app(settings, SlowRouter())) as client:
+        client.post("/v1/chat", json={"message": "My card has not arrived"})
+        found = samples(client)
+        assert value(found, "gateway_jev_fallbacks_total", reason="jev_timeout") == 1
+        assert value(found, "gateway_jev_fallbacks_total", reason="jev_error") == 0
+
+
 def test_message_reply_and_id_never_appear_in_metrics(settings):
     message = "Zebraquokka 4111 my card has not arrived"
     with TestClient(create_app(settings)) as client:
@@ -171,9 +240,35 @@ def test_metrics_stay_out_of_v1_and_the_docs(settings):
         assert "/metrics" not in client.get("/openapi.json").json()["paths"]
 
 
+METRICS_PATHS = ["/metrics", "/metrics/", "/metrics/x", "/metric", "/METRICS"]
+
+
 def test_caddy_does_not_proxy_metrics():
     caddyfile = Path("Caddyfile").read_text()
+    # The only reverse_proxy is the @gateway handle, so its matcher decides
+    # what reaches the gateway.
+    assert caddyfile.count("reverse_proxy") == 1
     matcher = re.search(r"@gateway path (.+)", caddyfile)
     assert matcher, "Caddyfile no longer has the @gateway matcher"
-    assert "metrics" not in matcher.group(1)
-    assert "/metrics" not in caddyfile
+    patterns = matcher.group(1).split()
+    # Caddy path patterns use * wildcards and match case-insensitively.
+    proxied = [
+        (pattern, path)
+        for path in METRICS_PATHS
+        for pattern in patterns
+        if fnmatch.fnmatch(path.lower(), pattern.lower())
+    ]
+    assert proxied == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["/v1 /v1/* /metrics", "/v1 /v1/* /metric*", "/v1 /* /docs", "/v1 /M*"],
+)
+def test_caddy_check_catches_metrics_patterns(line):
+    patterns = line.split()
+    assert any(
+        fnmatch.fnmatch(path.lower(), pattern.lower())
+        for path in METRICS_PATHS
+        for pattern in patterns
+    )

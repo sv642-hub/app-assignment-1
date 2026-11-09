@@ -39,6 +39,3 @@ frontend/dist/
 
 # Personal Claude Code notes
 CLAUDE.local.md
-
-# Local-only Compose overrides, e.g. a 127.0.0.1 port for Prometheus
-compose.local.yml

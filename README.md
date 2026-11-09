@@ -106,16 +106,7 @@ docker compose exec prometheus wget -qO- http://127.0.0.1:9090/api/v1/targets
 docker compose exec prometheus wget -qO- 'http://127.0.0.1:9090/api/v1/query?query=sum%20by%20(model)%20(gateway_chat_requests_total)'
 ```
 
-To use the Prometheus web UI on your own machine, create `compose.local.yml` (Git ignores it, so it is never committed) with a port bound to `127.0.0.1` only:
-
-```yaml
-services:
-  prometheus:
-    ports:
-      - "127.0.0.1:9090:9090"
-```
-
-Then run `docker compose -f compose.yml -f compose.local.yml up -d --wait` and open `http://localhost:9090`. Do not do this on Jetstream2 or any shared host. On a remote host, use the `docker compose exec` commands above instead.
+Prometheus has no published port, including on your own machine. Use the `docker compose exec` commands above to read metrics and run queries.
 
 ## Configuration and env files
 
