@@ -179,12 +179,12 @@ components:
 
   probe:
     title: Probe (stretch, offline)
-    owner: "Jackson · gate date: Sebastian"
+    owner: Jackson
     style: stretch
     items:
       - todo: Skeleton and gate check
       - todo: Load Qwen3-1.7B outside vLLM; real activations
-      - todo: Gate date not set
+      - todo: Gate run due Friday, November 13
 
   ci:
     title: CI smoke tests (GitHub Actions)
