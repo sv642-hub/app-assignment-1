@@ -1,0 +1,392 @@
+[
+  {
+    "label": "activate_my_card",
+    "banking77_name": "activate_my_card",
+    "description": "Wants to activate a card they received."
+  },
+  {
+    "label": "age_limit",
+    "banking77_name": "age_limit",
+    "description": "Asks about the minimum age to open or use an account."
+  },
+  {
+    "label": "apple_pay_or_google_pay",
+    "banking77_name": "apple_pay_or_google_pay",
+    "description": "Asks about using Apple Pay or Google Pay, or a problem with them."
+  },
+  {
+    "label": "atm_support",
+    "banking77_name": "atm_support",
+    "description": "Asks which ATMs they can use or whether ATMs are supported."
+  },
+  {
+    "label": "automatic_top_up",
+    "banking77_name": "automatic_top_up",
+    "description": "Asks about setting up or how automatic top-ups work."
+  },
+  {
+    "label": "balance_not_updated_after_bank_transfer",
+    "banking77_name": "balance_not_updated_after_bank_transfer",
+    "description": "A bank transfer into the account has not shown up in the balance."
+  },
+  {
+    "label": "balance_not_updated_after_cheque_or_cash_deposit",
+    "banking77_name": "balance_not_updated_after_cheque_or_cash_deposit",
+    "description": "A cheque or cash deposit has not shown up in the balance."
+  },
+  {
+    "label": "beneficiary_not_allowed",
+    "banking77_name": "beneficiary_not_allowed",
+    "description": "Cannot add or pay a beneficiary or payee."
+  },
+  {
+    "label": "cancel_transfer",
+    "banking77_name": "cancel_transfer",
+    "description": "Wants to cancel or stop a transfer."
+  },
+  {
+    "label": "card_about_to_expire",
+    "banking77_name": "card_about_to_expire",
+    "description": "Their card is about to expire, or asks how to replace an expiring card."
+  },
+  {
+    "label": "card_acceptance",
+    "banking77_name": "card_acceptance",
+    "description": "Asks where the card is accepted, or why a merchant would not take it."
+  },
+  {
+    "label": "card_arrival",
+    "banking77_name": "card_arrival",
+    "description": "Their new card has not arrived, or asks where it is."
+  },
+  {
+    "label": "card_delivery_estimate",
+    "banking77_name": "card_delivery_estimate",
+    "description": "Asks how long card delivery takes."
+  },
+  {
+    "label": "card_linking",
+    "banking77_name": "card_linking",
+    "description": "Wants to link a card to the account or app."
+  },
+  {
+    "label": "card_not_working",
+    "banking77_name": "card_not_working",
+    "description": "Their card does not work, without saying it was declined at a payment."
+  },
+  {
+    "label": "card_payment_fee_charged",
+    "banking77_name": "card_payment_fee_charged",
+    "description": "Was charged a fee for a card payment."
+  },
+  {
+    "label": "card_payment_not_recognised",
+    "banking77_name": "card_payment_not_recognised",
+    "description": "Sees a card payment they do not recognise."
+  },
+  {
+    "label": "card_payment_wrong_exchange_rate",
+    "banking77_name": "card_payment_wrong_exchange_rate",
+    "description": "A card payment used the wrong exchange rate."
+  },
+  {
+    "label": "card_swallowed",
+    "banking77_name": "card_swallowed",
+    "description": "An ATM kept (swallowed) their card."
+  },
+  {
+    "label": "cash_withdrawal_charge",
+    "banking77_name": "cash_withdrawal_charge",
+    "description": "Was charged a fee for a cash withdrawal."
+  },
+  {
+    "label": "cash_withdrawal_not_recognised",
+    "banking77_name": "cash_withdrawal_not_recognised",
+    "description": "Sees a cash withdrawal they do not recognise."
+  },
+  {
+    "label": "change_pin",
+    "banking77_name": "change_pin",
+    "description": "Wants to change their PIN."
+  },
+  {
+    "label": "compromised_card",
+    "banking77_name": "compromised_card",
+    "description": "Thinks their card details were stolen or the card is compromised."
+  },
+  {
+    "label": "contactless_not_working",
+    "banking77_name": "contactless_not_working",
+    "description": "Contactless payments are not working."
+  },
+  {
+    "label": "country_support",
+    "banking77_name": "country_support",
+    "description": "Asks which countries the service is available in."
+  },
+  {
+    "label": "declined_card_payment",
+    "banking77_name": "declined_card_payment",
+    "description": "A card payment was declined."
+  },
+  {
+    "label": "declined_cash_withdrawal",
+    "banking77_name": "declined_cash_withdrawal",
+    "description": "A cash withdrawal was declined."
+  },
+  {
+    "label": "declined_transfer",
+    "banking77_name": "declined_transfer",
+    "description": "A transfer was declined."
+  },
+  {
+    "label": "direct_debit_payment_not_recognised",
+    "banking77_name": "direct_debit_payment_not_recognised",
+    "description": "Sees a direct debit they do not recognise."
+  },
+  {
+    "label": "disposable_card_limits",
+    "banking77_name": "disposable_card_limits",
+    "description": "Asks about limits on disposable virtual cards."
+  },
+  {
+    "label": "edit_personal_details",
+    "banking77_name": "edit_personal_details",
+    "description": "Wants to change personal details such as name or address."
+  },
+  {
+    "label": "exchange_charge",
+    "banking77_name": "exchange_charge",
+    "description": "Asks about fees for exchanging currency."
+  },
+  {
+    "label": "exchange_rate",
+    "banking77_name": "exchange_rate",
+    "description": "Asks what exchange rate is used."
+  },
+  {
+    "label": "exchange_via_app",
+    "banking77_name": "exchange_via_app",
+    "description": "Wants to exchange currency in the app."
+  },
+  {
+    "label": "extra_charge_on_statement",
+    "banking77_name": "extra_charge_on_statement",
+    "description": "Sees an unexpected extra charge on their statement."
+  },
+  {
+    "label": "failed_transfer",
+    "banking77_name": "failed_transfer",
+    "description": "A transfer failed."
+  },
+  {
+    "label": "fiat_currency_support",
+    "banking77_name": "fiat_currency_support",
+    "description": "Asks which currencies can be held or exchanged."
+  },
+  {
+    "label": "get_disposable_virtual_card",
+    "banking77_name": "get_disposable_virtual_card",
+    "description": "Wants to get a disposable virtual card."
+  },
+  {
+    "label": "get_physical_card",
+    "banking77_name": "get_physical_card",
+    "description": "Wants a physical card."
+  },
+  {
+    "label": "getting_spare_card",
+    "banking77_name": "getting_spare_card",
+    "description": "Wants an extra or spare card."
+  },
+  {
+    "label": "getting_virtual_card",
+    "banking77_name": "getting_virtual_card",
+    "description": "Wants a virtual card."
+  },
+  {
+    "label": "lost_or_stolen_card",
+    "banking77_name": "lost_or_stolen_card",
+    "description": "Their card was lost or stolen."
+  },
+  {
+    "label": "lost_or_stolen_phone",
+    "banking77_name": "lost_or_stolen_phone",
+    "description": "Their phone was lost or stolen."
+  },
+  {
+    "label": "order_physical_card",
+    "banking77_name": "order_physical_card",
+    "description": "Wants to order a physical card."
+  },
+  {
+    "label": "passcode_forgotten",
+    "banking77_name": "passcode_forgotten",
+    "description": "Forgot their app passcode."
+  },
+  {
+    "label": "pending_card_payment",
+    "banking77_name": "pending_card_payment",
+    "description": "A card payment is still pending."
+  },
+  {
+    "label": "pending_cash_withdrawal",
+    "banking77_name": "pending_cash_withdrawal",
+    "description": "A cash withdrawal is still pending."
+  },
+  {
+    "label": "pending_top_up",
+    "banking77_name": "pending_top_up",
+    "description": "A top-up is still pending."
+  },
+  {
+    "label": "pending_transfer",
+    "banking77_name": "pending_transfer",
+    "description": "A transfer is still pending."
+  },
+  {
+    "label": "pin_blocked",
+    "banking77_name": "pin_blocked",
+    "description": "Their PIN is blocked."
+  },
+  {
+    "label": "receiving_money",
+    "banking77_name": "receiving_money",
+    "description": "Asks how to receive money into the account."
+  },
+  {
+    "label": "refund_not_showing_up",
+    "banking77_name": "Refund_not_showing_up",
+    "description": "A refund has not shown up in the account."
+  },
+  {
+    "label": "request_refund",
+    "banking77_name": "request_refund",
+    "description": "Wants to request a refund."
+  },
+  {
+    "label": "reverted_card_payment",
+    "banking77_name": "reverted_card_payment?",
+    "description": "A card payment was reverted or reversed."
+  },
+  {
+    "label": "supported_cards_and_currencies",
+    "banking77_name": "supported_cards_and_currencies",
+    "description": "Asks which cards and currencies are supported for top-ups or payments."
+  },
+  {
+    "label": "terminate_account",
+    "banking77_name": "terminate_account",
+    "description": "Wants to close their account."
+  },
+  {
+    "label": "top_up_by_bank_transfer_charge",
+    "banking77_name": "top_up_by_bank_transfer_charge",
+    "description": "Asks about fees for topping up by bank transfer."
+  },
+  {
+    "label": "top_up_by_card_charge",
+    "banking77_name": "top_up_by_card_charge",
+    "description": "Asks about fees for topping up by card."
+  },
+  {
+    "label": "top_up_by_cash_or_cheque",
+    "banking77_name": "top_up_by_cash_or_cheque",
+    "description": "Wants to top up with cash or a cheque."
+  },
+  {
+    "label": "top_up_failed",
+    "banking77_name": "top_up_failed",
+    "description": "A top-up failed."
+  },
+  {
+    "label": "top_up_limits",
+    "banking77_name": "top_up_limits",
+    "description": "Asks about top-up limits."
+  },
+  {
+    "label": "top_up_reverted",
+    "banking77_name": "top_up_reverted",
+    "description": "A top-up was reverted or reversed."
+  },
+  {
+    "label": "topping_up_by_card",
+    "banking77_name": "topping_up_by_card",
+    "description": "Asks how to top up with a card."
+  },
+  {
+    "label": "transaction_charged_twice",
+    "banking77_name": "transaction_charged_twice",
+    "description": "Was charged twice for one transaction."
+  },
+  {
+    "label": "transfer_fee_charged",
+    "banking77_name": "transfer_fee_charged",
+    "description": "Was charged a fee for a transfer."
+  },
+  {
+    "label": "transfer_into_account",
+    "banking77_name": "transfer_into_account",
+    "description": "Wants to transfer money into the account."
+  },
+  {
+    "label": "transfer_not_received_by_recipient",
+    "banking77_name": "transfer_not_received_by_recipient",
+    "description": "The recipient has not received a transfer."
+  },
+  {
+    "label": "transfer_timing",
+    "banking77_name": "transfer_timing",
+    "description": "Asks how long a transfer takes."
+  },
+  {
+    "label": "unable_to_verify_identity",
+    "banking77_name": "unable_to_verify_identity",
+    "description": "Cannot complete identity verification."
+  },
+  {
+    "label": "verify_my_identity",
+    "banking77_name": "verify_my_identity",
+    "description": "Asks how to verify their identity."
+  },
+  {
+    "label": "verify_source_of_funds",
+    "banking77_name": "verify_source_of_funds",
+    "description": "Asks about proving the source of their funds."
+  },
+  {
+    "label": "verify_top_up",
+    "banking77_name": "verify_top_up",
+    "description": "Asks about verifying a top-up."
+  },
+  {
+    "label": "virtual_card_not_working",
+    "banking77_name": "virtual_card_not_working",
+    "description": "Their virtual card does not work."
+  },
+  {
+    "label": "visa_or_mastercard",
+    "banking77_name": "visa_or_mastercard",
+    "description": "Asks whether the card is Visa or Mastercard."
+  },
+  {
+    "label": "why_verify_identity",
+    "banking77_name": "why_verify_identity",
+    "description": "Asks why identity verification is needed."
+  },
+  {
+    "label": "wrong_amount_of_cash_received",
+    "banking77_name": "wrong_amount_of_cash_received",
+    "description": "An ATM gave them the wrong amount of cash."
+  },
+  {
+    "label": "wrong_exchange_rate_for_cash_withdrawal",
+    "banking77_name": "wrong_exchange_rate_for_cash_withdrawal",
+    "description": "A cash withdrawal used the wrong exchange rate."
+  },
+  {
+    "label": "unknown",
+    "banking77_name": null,
+    "description": "Not about any banking topic above, or too vague to tell which one."
+  }
+]
