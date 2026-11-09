@@ -108,7 +108,7 @@ describe("Health", () => {
 
     expect(await screen.findByText("All systems normal")).toBeInTheDocument();
     expect(screen.getAllByText("Serving")).toHaveLength(2);
-    expect(screen.getByText("No interventions since the gateway started.")).toBeInTheDocument();
+    expect(screen.getByText("No interventions recorded.")).toBeInTheDocument();
     expect(screen.getByText("last 20 calls per model")).toBeInTheDocument();
     expect(window.location.hash).toBe("#/health");
   });

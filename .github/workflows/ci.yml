@@ -8,6 +8,21 @@ jobs:
   ci:
     runs-on: ubuntu-latest
 
+    # Throwaway database for the Postgres store tests. It lives only for this
+    # job on the runner; the password is not used anywhere else.
+    services:
+      postgres:
+        image: postgres:18.6-alpine@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
+        env:
+          POSTGRES_PASSWORD: ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
@@ -30,8 +45,10 @@ jobs:
       - name: Type-check (mypy)
         run: uv run mypy src/
 
-      - name: Tests (pytest)
+      - name: Tests (pytest, Postgres store tests included)
         run: uv run pytest
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:ci-only@localhost:5432/postgres
 
   frontend:
     runs-on: ubuntu-latest
