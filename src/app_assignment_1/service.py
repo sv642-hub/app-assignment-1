@@ -73,6 +73,10 @@ class Gateway:
         self.rule_router = RuleRouter(settings.rule_router_complex_min_words)
         self.jev_timeout = settings.jev_timeout_seconds
         self.store = store or MemoryStore(settings.request_store_limit)
+        # Each store write waits at most this long, so a database outage
+        # delays a reply by seconds, not by the pool's 30-second default.
+        self.store_timeout = settings.store_timeout_seconds
+        self.save_lock = asyncio.Lock()
         intents = load_intents(settings.intents_path)
         self.cards = TypeAdapter(dict[str, PolicyCard]).validate_json(
             settings.policy_cards_path.read_text()
@@ -117,16 +121,23 @@ class Gateway:
         return any(self.usable(b) for b in self.backends if b is not backend)
 
     async def save_interventions(self) -> None:
-        """Move the controller's new interventions to the store."""
-        items, self.controller.unsaved = self.controller.unsaved, []
-        if not items:
+        """Move the controller's new interventions to the store, in order."""
+        if not self.controller.unsaved:
             return
-        try:
-            await self.store.save_interventions(items)
-        except Exception as exc:
-            # Keep them for the next attempt; the controller itself is unaffected.
-            self.controller.unsaved = items + self.controller.unsaved
-            logger.warning("Could not save interventions (%s)", type(exc).__name__)
+        # One save at a time: a failed batch goes back in front of newer ones,
+        # so the store keeps the controller's order.
+        async with self.save_lock:
+            items, self.controller.unsaved = self.controller.unsaved, []
+            if not items:
+                return
+            try:
+                await asyncio.wait_for(
+                    self.store.save_interventions(items), self.store_timeout
+                )
+            except Exception as exc:
+                # Keep them for the next attempt; the controller is unaffected.
+                self.controller.unsaved = items + self.controller.unsaved
+                logger.warning("Could not save interventions (%s)", type(exc).__name__)
 
     async def chat(self, message: str) -> ChatResponse:
         try:
@@ -135,7 +146,9 @@ class Gateway:
             # Interventions also happen on requests that end in a 503.
             await self.save_interventions()
         try:
-            await self.store.save_request(response)
+            await asyncio.wait_for(
+                self.store.save_request(response), self.store_timeout
+            )
         except Exception as exc:
             # The customer still gets the reply; it just cannot be looked up later.
             logger.warning("Could not save request (%s)", type(exc).__name__)

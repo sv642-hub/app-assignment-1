@@ -88,11 +88,13 @@ There are two stores, chosen with `APP_STORE`:
 - `memory` (the default, and what the tests use): process memory, lost when the gateway restarts.
 - `postgres`: a Postgres database at `APP_DATABASE_URL`. Compose uses this. If `APP_STORE=postgres` and the URL is missing, the gateway refuses to start with a clear error.
 
-If a write to the store fails, the customer still gets the reply and the gateway logs a warning with the error type only; that reply then cannot be looked up by id. Interventions that fail to save are retried on the next request or health check. If Postgres is unreachable, `GET /v1/health` returns an error.
+If a write to the store fails or takes longer than `APP_STORE_TIMEOUT_SECONDS` (default 2), the customer still gets the reply and the gateway logs a warning with the error type only; that reply then cannot be looked up by id. A request makes at most two writes (interventions, then the request), so a database outage delays a reply by at most about twice that limit. Interventions that fail to save are retried on the next request, health check or shutdown, in their original order. If Postgres is unreachable, `GET /v1/health` and `GET /v1/requests/{id}` return an error.
+
+The database URL holds the password, so the gateway keeps it out of its logs and error messages: psycopg's own connection warnings are turned off, a malformed URL fails startup without being quoted, and settings errors do not print input values.
 
 **Driver and schema.** The Postgres store uses [psycopg 3](https://www.psycopg.org/psycopg3/) with its connection pool and plain SQL. The schema lives in numbered SQL files in [`src/app_assignment_1/migrations/`](src/app_assignment_1/migrations/). At startup the gateway applies any file not yet listed in the `schema_migrations` table, each in one transaction, under a lock so two processes cannot apply the same file. To change the schema, add the next numbered file (for example `002_monitor_records.sql`); never edit a file that has already run.
 
-**Password.** [`env/compose.defaults.env`](env/compose.defaults.env) holds a throwaway password so `docker compose up` and the CI smoke test work with no private files. **It is public and not for deployment.** The database port is not published, so only containers on the Compose network can reach it. Before deploying, set your own password in two private files that Git ignores. Do this before the first start: Postgres reads the password only when its volume is first created.
+**Password.** [`env/compose.defaults.env`](env/compose.defaults.env) holds a throwaway password so `docker compose up` and the CI smoke test work with no private files. **It is public and not for deployment.** The gateway logs a warning when it uses it, and refuses to start with it when `APP_ENVIRONMENT` is `staging` or `production`. The database port is not published, so only containers on the Compose network can reach it. Before deploying, set your own password in two private files that Git ignores. Do this before the first start: Postgres reads the password only when its volume is first created.
 
 ```bash
 PW=$(openssl rand -hex 24)
@@ -176,6 +178,7 @@ Pydantic Settings reads `.env` then `env/.env` in native local runs. Process env
 | `APP_CONTROLLER_COOLDOWN_SECONDS` | `60` | How long a disabled backend stays out |
 | `APP_STORE` | `memory` | `memory` (lost on restart) or `postgres`; Compose sets `postgres` |
 | `APP_DATABASE_URL` | none | Postgres URL, required when `APP_STORE=postgres`; a secret, hidden in logs and settings output |
+| `APP_STORE_TIMEOUT_SECONDS` | `2` | Longest wait for one store write before the reply goes out without it |
 | `APP_PROVIDER_MODE` | `mock` | `mock` or `real`. Real mode needs `APP_JEV_API_KEY` and an `https` `APP_JEV_BASE_URL`, and is rejected at startup until the real clients exist |
 | `APP_JEV_BASE_URL` | `https://api.typesafe.ai` | TypeSafe API for real Jev calls (not used yet) |
 | `APP_JEV_API_KEY` | unset | Server-side TypeSafe key; set only in the real env file |

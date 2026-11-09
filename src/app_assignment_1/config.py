@@ -4,8 +4,13 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from psycopg.conninfo import conninfo_to_dict
 from pydantic import AnyHttpUrl, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# The throwaway password in env/compose.defaults.env. It is public, so a
+# staging or production gateway refuses to start with it.
+PUBLIC_DATABASE_PASSWORD = "smoke-test-only-not-for-deployment"
 
 
 class Settings(BaseSettings):
@@ -14,6 +19,8 @@ class Settings(BaseSettings):
         env_file=(".env", "env/.env"),
         env_file_encoding="utf-8",
         extra="forbid",
+        # Validation errors must not print secrets such as APP_DATABASE_URL.
+        hide_input_in_errors=True,
     )
     environment: Literal["local", "staging", "production"] = "local"
     intents_path: Path = Path("config/intents.json")
@@ -30,6 +37,8 @@ class Settings(BaseSettings):
     # memory: process memory, lost on restart. postgres: needs database_url.
     store: Literal["memory", "postgres"] = "memory"
     database_url: SecretStr | None = None
+    # Longest wait for one store write before the reply goes out without it.
+    store_timeout_seconds: float = Field(default=2, gt=0, le=30)
 
     # Real providers (docs/JEV_QWEN_INTEGRATION_PLAN.md). Mock is the default;
     # real mode is rejected at startup until the clients exist.
@@ -60,6 +69,22 @@ class Settings(BaseSettings):
                 "APP_DATABASE_URL is required when APP_STORE=postgres "
                 "(for example postgresql://USER:PASSWORD@HOST:5432/DB)"
             )
+        if self.database_url is not None:
+            url = self.database_url.get_secret_value()
+            try:
+                conninfo_to_dict(url)
+            except Exception:
+                # The parser's message quotes the URL, password included.
+                raise ValueError(
+                    "APP_DATABASE_URL is not a valid Postgres URL "
+                    "(for example postgresql://USER:PASSWORD@HOST:5432/DB)"
+                ) from None
+            if self.environment != "local" and PUBLIC_DATABASE_PASSWORD in url:
+                raise ValueError(
+                    "APP_DATABASE_URL uses the public password from "
+                    "env/compose.defaults.env; set your own in env/.env and "
+                    "env/postgres.env (README, Storage)"
+                )
         return self
 
     @model_validator(mode="after")

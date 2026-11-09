@@ -38,6 +38,9 @@ def create_app(
         try:
             yield
         finally:
+            # Save anything noticed since the last request, such as a re-enable
+            # seen by a /metrics scrape.
+            await gateway.save_interventions()
             await opened.close()
 
     app = FastAPI(

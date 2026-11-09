@@ -18,7 +18,7 @@ from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
-from app_assignment_1.config import Settings
+from app_assignment_1.config import PUBLIC_DATABASE_PASSWORD, Settings
 from app_assignment_1.schemas import ChatResponse, Intervention
 
 logger = logging.getLogger(__name__)
@@ -96,14 +96,24 @@ class PostgresStore:
     intervention log is kept in full; it grows by a few rows per cooldown.
     """
 
-    def __init__(self, url: str, limit: int, connect_timeout: float = 30):
+    def __init__(
+        self,
+        url: str,
+        limit: int,
+        connect_timeout: float = 30,
+        timeout: float = 2,
+    ):
         self.limit = limit
         self.connect_timeout = connect_timeout
+        # psycopg_pool logs libpq's connection errors at WARNING, and those can
+        # quote the whole URL, password included. Callers log the error type.
+        logging.getLogger("psycopg").setLevel(logging.ERROR)
         self.pool = AsyncConnectionPool(
             url,
             open=False,
             min_size=1,
             max_size=4,
+            timeout=timeout,
             check=AsyncConnectionPool.check_connection,
         )
 
@@ -226,7 +236,13 @@ def create_store(settings: Settings) -> Store:
     if settings.store == "postgres":
         if settings.database_url is None:  # Settings already rejects this.
             raise ValueError("APP_DATABASE_URL is required when APP_STORE=postgres")
+        url = settings.database_url.get_secret_value()
+        if PUBLIC_DATABASE_PASSWORD in url:
+            logger.warning(
+                "Using the public database password from env/compose.defaults.env;"
+                " not for deployment"
+            )
         return PostgresStore(
-            settings.database_url.get_secret_value(), settings.request_store_limit
+            url, settings.request_store_limit, timeout=settings.store_timeout_seconds
         )
     return MemoryStore(settings.request_store_limit)

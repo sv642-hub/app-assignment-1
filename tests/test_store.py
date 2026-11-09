@@ -12,8 +12,10 @@ database's existing tables are not touched. Example for a local run:
 import asyncio
 import logging
 import os
+import time
 from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import uuid4
 
 import psycopg
@@ -23,8 +25,10 @@ from psycopg import sql
 from pydantic import ValidationError
 
 from app_assignment_1.api import create_app
-from app_assignment_1.config import Settings
+from app_assignment_1.config import PUBLIC_DATABASE_PASSWORD, Settings
+from app_assignment_1.router import MockJevRouter
 from app_assignment_1.schemas import ChatResponse, Intervention, Trace
+from app_assignment_1.service import Gateway
 from app_assignment_1.store import (
     MemoryStore,
     PostgresStore,
@@ -266,3 +270,151 @@ def test_store_failure_still_returns_the_reply(
         health = client.get("/v1/health").json()
         assert [i["action"] for i in health["interventions"]] == ["disabled"]
     assert "database is down" not in caplog.text
+
+
+# Review fixes (PR 72): bounded waits, no secrets in logs or errors, order.
+
+SECRET_URL = "postgresql://gw:Hunter2Pass@127.0.0.1:1/gw"
+
+
+class HangingStore(MemoryStore):
+    async def save_request(self, response: ChatResponse) -> None:
+        await asyncio.sleep(60)
+
+    async def save_interventions(self, items: object) -> None:
+        await asyncio.sleep(60)
+
+
+def chaos_settings(**overrides: object) -> Settings:
+    values: dict[str, object] = {
+        "backends_path": "config/backends.chaos.json",
+        "monitor_min_samples": 1,
+        "monitor_window": 1,
+    } | overrides
+    return Settings(_env_file=None, **values)  # type: ignore[arg-type]
+
+
+def test_a_hanging_store_delays_the_reply_by_the_timeout_only(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING)
+    settings = chaos_settings(store_timeout_seconds=0.2)
+    with TestClient(create_app(settings, store=HangingStore(10))) as client:
+        start = time.perf_counter()
+        chat = client.post("/v1/chat", json={"message": "card arrival"})
+        elapsed = time.perf_counter() - start
+    assert chat.status_code == 200
+    # One intervention save and one request save, each cut off at 0.2 s.
+    assert elapsed < 1.5
+    assert "Could not save interventions (TimeoutError)" in caplog.text
+    assert "Could not save request (TimeoutError)" in caplog.text
+
+
+def test_unreachable_postgres_is_quick_and_keeps_the_url_out_of_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    settings = Settings(_env_file=None)
+
+    async def main() -> float:
+        store = PostgresStore(SECRET_URL, 10, timeout=0.3)
+        await store.pool.open(wait=False)
+        gateway = Gateway(settings, MockJevRouter(settings.intents_path), store=store)
+        try:
+            start = time.perf_counter()
+            await gateway.chat("card arrival")
+            await asyncio.sleep(0.5)  # let the pool log its connection attempts
+            return time.perf_counter() - start - 0.5
+        finally:
+            await store.close()
+
+    assert asyncio.run(main()) < 2
+    assert "Could not save request" in caplog.text
+    assert "Hunter2Pass" not in caplog.text
+    assert "127.0.0.1" not in caplog.text
+
+
+def test_a_malformed_url_fails_without_quoting_it() -> None:
+    with pytest.raises(ValidationError, match="not a valid Postgres URL") as exc:
+        Settings(
+            _env_file=None,
+            store="postgres",
+            database_url="postgresq://gw:Hunter2Pass@db:5432/gw",
+        )
+    assert "Hunter2Pass" not in str(exc.value)
+
+
+def test_settings_errors_do_not_print_secrets() -> None:
+    with pytest.raises(ValidationError) as exc:
+        Settings(
+            _env_file=None,
+            monitor_min_samples=30,
+            store="postgres",
+            database_url=SECRET_URL,
+            jev_api_key="sk-Hunter2Key",
+        )
+    assert "Hunter2Pass" not in str(exc.value)
+    assert "Hunter2Key" not in str(exc.value)
+
+
+def test_the_public_password_is_refused_outside_local_runs() -> None:
+    defaults = Path("env/compose.defaults.env").read_text()
+    assert f":{PUBLIC_DATABASE_PASSWORD}@" in defaults
+    assert f"POSTGRES_PASSWORD={PUBLIC_DATABASE_PASSWORD}" in defaults
+    url = f"postgresql://gateway:{PUBLIC_DATABASE_PASSWORD}@postgres:5432/gateway"
+    Settings(_env_file=None, store="postgres", database_url=url)
+    for environment in ("staging", "production"):
+        with pytest.raises(ValidationError, match="public password"):
+            Settings(
+                _env_file=None,
+                environment=environment,
+                store="postgres",
+                database_url=url,
+            )
+
+
+def test_postgres_env_template_does_not_set_a_password() -> None:
+    lines = Path("env/postgres.env.example").read_text().splitlines()
+    assert not [line for line in lines if line.startswith("POSTGRES_PASSWORD")]
+
+
+def test_a_failed_save_keeps_interventions_in_order() -> None:
+    """A retried batch must not land after a newer one saved meanwhile."""
+
+    class FirstSaveFails(MemoryStore):
+        def __init__(self) -> None:
+            super().__init__(10)
+            self.release = asyncio.Event()
+            self.calls = 0
+
+        async def save_interventions(self, items: object) -> None:
+            self.calls += 1
+            if self.calls == 1:
+                await self.release.wait()
+                raise ConnectionError("database is down")
+            await super().save_interventions(items)  # type: ignore[arg-type]
+
+    settings = Settings(_env_file=None)
+
+    async def main() -> list[Intervention]:
+        store = FirstSaveFails()
+        gateway = Gateway(settings, MockJevRouter(settings.intents_path), store=store)
+        gateway.controller.unsaved.append(intervention(0))
+        first = asyncio.create_task(gateway.save_interventions())
+        await asyncio.sleep(0)
+        gateway.controller.unsaved.append(intervention(1))
+        second = asyncio.create_task(gateway.save_interventions())
+        await asyncio.sleep(0)
+        store.release.set()
+        await asyncio.gather(first, second)
+        return await store.recent_interventions(10)
+
+    assert asyncio.run(main()) == [intervention(0), intervention(1)]
+
+
+def test_shutdown_saves_pending_interventions() -> None:
+    store = MemoryStore(10)
+    with TestClient(create_app(Settings(_env_file=None), store=store)) as client:
+        # As if a /metrics scrape had noticed a re-enable after the last request.
+        client.app.state.gateway.controller.unsaved.append(intervention(0))
+    assert list(store.interventions) == [intervention(0)]

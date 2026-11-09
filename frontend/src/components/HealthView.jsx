@@ -176,8 +176,9 @@ function HealthBody({ health }) {
       </section>
       <section className="card">
         <h2>Interventions</h2>
+        <p className="muted small">With Postgres, as in Compose, this log is kept across gateway restarts. A restart puts every model back in service, so an entry may say disabled for a model that is serving now.</p>
         {log.length === 0 ? (
-          <p className="muted small">No interventions since the gateway started.</p>
+          <p className="muted small">No interventions recorded.</p>
         ) : (
           <div className="table-scroll">
             <table className="log" aria-label="Interventions">
