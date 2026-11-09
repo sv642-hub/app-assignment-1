@@ -15,6 +15,7 @@ from pydantic import TypeAdapter
 from app_assignment_1.backends import Backend, MockBackend
 from app_assignment_1.config import Settings
 from app_assignment_1.intents import load_intents
+from app_assignment_1.metrics import GatewayMetrics
 from app_assignment_1.monitor import Controller
 from app_assignment_1.router import Router, RuleRouter
 from app_assignment_1.schemas import (
@@ -89,6 +90,7 @@ class Gateway:
         self.controller = Controller(
             (b.config.name for b in self.backends), settings, clock
         )
+        self.metrics = GatewayMetrics(self)
 
     def usable(self, backend: Backend) -> bool:
         """Configured available and not disabled by the controller."""
@@ -115,7 +117,9 @@ class Gateway:
                 "Jev routing failed; using rule router (%s)", type(exc).__name__
             )
             timed_out = isinstance(exc, TimeoutError)
-            reasons.append("jev_timeout" if timed_out else "jev_error")
+            reason = "jev_timeout" if timed_out else "jev_error"
+            reasons.append(reason)
+            self.metrics.jev_fallbacks.labels(reason).inc()
             decision = await self.rule_router.route(message)
             router_name = "rule_router"
             jev_choice = None
@@ -150,6 +154,8 @@ class Gateway:
                 if backend is selected:
                     reasons.append("selected_backend_error")
         else:
+            self.metrics.chat_unavailable.inc()
+            self.metrics.chat_latency.observe(perf_counter() - start)
             raise BackendUnavailable
         intent, reply, facts = generated.intent, generated.reply, generated.policy_facts
         format_errors = check_reply(reply)
@@ -196,6 +202,11 @@ class Gateway:
                 controller_action=action,
             ),
         )
+        trace = response.trace
+        self.metrics.chat_requests.labels(
+            trace.route, trace.model, trace.reply_source, trace.format_check
+        ).inc()
+        self.metrics.chat_latency.observe(perf_counter() - start)
         self.requests[response.id] = response
         if len(self.requests) > self.limit:
             self.requests.popitem(last=False)
