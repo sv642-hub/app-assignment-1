@@ -4,7 +4,7 @@ State lives in the gateway process and resets on restart.
 """
 
 import time
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -47,6 +47,8 @@ class Controller:
         self.disabled_until: dict[BackendName, float] = {}
         self.warned: set[BackendName] = set()
         self.log: deque[Intervention] = deque(maxlen=50)
+        # Every intervention since start; the log above keeps only the latest.
+        self.action_counts: Counter[tuple[str, BackendName]] = Counter()
 
     def _note(
         self,
@@ -57,6 +59,7 @@ class Controller:
     ) -> None:
         at = datetime.now(UTC) - timedelta(seconds=ago)
         self.log.append(Intervention(at=at, backend=name, action=action, reason=reason))
+        self.action_counts[(action, name)] += 1
 
     def is_disabled(self, name: BackendName) -> bool:
         until = self.disabled_until.get(name)
