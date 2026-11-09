@@ -11,11 +11,11 @@ A mocked banking-support gateway for DSAN 6700 Deliverable 2, with a React chat 
 1. The React app sends the message over HTTP to the FastAPI gateway.
 2. `MockJevRouter` stands in for Jev's combined call, which answers two questions: the route (`standard` or `complex`) and the intent. It uses the configured complexity and intent of the best keyword match; unmatched messages go to `standard` with intent `unknown`. The gateway uses only the route answer. Jev's intent is an assessment for the monitor and never replaces the backend's intent. Nothing records it yet.
 3. Standard selects mock `qwen3-1.7b`. Complex selects mock `qwen3-4b`. The selected mock backend waits for its simulated delay, detects the intent by matching complete keyword phrases (longer/more matches score higher; config order breaks ties), and fills the reply template with fictional policy facts. Both mock backends share this classifier.
-4. Reply checks reject blank text, replies over 4,000 characters, unfilled `{placeholder}` tokens and intent labels outside the configured list. Pydantic validates the result. The chat shows the reply and its route; **Show details** opens the intent, policy facts and trace.
+4. Reply checks reject blank text, replies over 4,000 characters, unfilled `{placeholder}` tokens and intent labels outside `config/labels.json`. Pydantic validates the result. The chat shows the reply and its route; **Show details** opens the intent, policy facts and trace.
 
 If Jev fails or does not answer within `APP_JEV_TIMEOUT_SECONDS`, the rule router chooses the route instead: messages of `APP_RULE_ROUTER_COMPLEX_MIN_WORDS` words or more go to `complex`, shorter ones to `standard`. The request still goes to a backend. The trace shows `router: "rule_router"`, `jev_choice: null`, `confidence: null` and `fallback_reason` `jev_timeout` or `jev_error`. Jev's answers are checked one at a time: an invalid route answer also uses the rule router, with `fallback_reason: "jev_invalid_route"`, while an invalid intent answer still uses Jev's route.
 
-If the backend detects no intent, it returns intent `unknown` with a reply asking the customer to describe their banking problem (`reply_source: "no_match"`). A real backend must keep this behaviour. Vague and off-topic messages currently get the same reply. If the selected backend is marked unavailable, the other is used only when available (`selected_backend_unavailable`). When both are unavailable, every message returns HTTP 503. When Jev fails and the backend falls back, `fallback_reason` lists both reasons.
+If the backend detects no intent, it returns intent `unknown` with a reply asking the customer to describe their banking problem (`reply_source: "no_match"`). A real backend must keep this behaviour. Vague and off-topic messages currently get the same reply. If a backend returns one of the 67 Banking77 intents that has no policy card, it must send an empty reply and no policy facts. The gateway then replies that the demo does not cover that topic (`reply_source: "unsupported_topic"`). The mock backends only match the 10 carded intents, so they never take this path. If the selected backend is marked unavailable, the other is used only when available (`selected_backend_unavailable`). When both are unavailable, every message returns HTTP 503. When Jev fails and the backend falls back, `fallback_reason` lists both reasons.
 
 If the selected backend's call raises an error, or returns a reply that does not match the backend reply schema, the request is tried once on the other usable backend (`selected_backend_error`). Both cases count as failed calls (`call_errors`), not format failures. When no backend can answer, the message returns HTTP 503. The log records the backend and error type, not the message or the provider's error text. The gateway sets no time limit on a backend call yet, so a call that hangs is not treated as a failure; the real client must time out and raise.
 
@@ -62,7 +62,7 @@ docker compose up -d --build --wait
 
 Open [the chat](http://localhost:8080) and click an example or type your own message, then press Enter. The **Health** screen is in the sidebar. [API documentation](http://localhost:8080/docs) and the [health endpoint](http://localhost:8080/v1/health) use the same port.
 
-The stack has two services. `proxy` is Caddy (pinned to 2.11.7 and the tested multi-platform image digest) with the built React app baked in: [`frontend/Dockerfile`](frontend/Dockerfile) builds it with Node, then copies only the static files into the Caddy image. Caddy serves the app at `/` and proxies `/v1/*`, `/docs`, `/redoc` and `/openapi.json` to `gateway`. Only Caddy publishes a host port (`8080`); gateway port `8000` stays inside the Compose network. Both services restart unless stopped, and the proxy starts once the gateway is healthy.
+The stack runs `proxy` and `gateway` for the app. `proxy` is Caddy (pinned to 2.11.7 and the tested multi-platform image digest) with the built React app baked in: [`frontend/Dockerfile`](frontend/Dockerfile) builds it with Node, then copies only the static files into the Caddy image. Caddy serves the app at `/` and proxies `/v1/*`, `/docs`, `/redoc` and `/openapi.json` to `gateway`. Only Caddy publishes a host port (`8080`); gateway port `8000` stays inside the Compose network. Both services restart unless stopped, and the proxy starts once the gateway is healthy. A third service, `prometheus`, collects gateway metrics; see [Metrics and Prometheus](#metrics-and-prometheus).
 
 ```bash
 docker compose ps
@@ -73,6 +73,40 @@ docker compose down
 ```
 
 Request history is in memory, bounded to the most recent 1,000 successful requests by default. It is lost when the gateway restarts. Run one gateway worker. No database or model volume is needed for this prototype. JSON configuration persists in the repository and is mounted read-only.
+
+## Metrics and Prometheus
+
+The gateway serves Prometheus metrics at `GET /metrics` on port 8000. This path is internal: it is not under `/v1`, it is not in the API docs, and Caddy does not proxy it, so `http://localhost:8080/metrics` returns the React app. The smoke test checks this.
+
+The `prometheus` service (Prometheus 3.15.1, config in [`prometheus/prometheus.yml`](prometheus/prometheus.yml)) scrapes `gateway:8000/metrics` every 15 seconds over the Compose network. It publishes no port. Its data is kept in the `prometheus-data` volume until you run `docker compose down -v`.
+
+| Metric | Labels | Meaning |
+| --- | --- | --- |
+| `gateway_chat_requests_total` | `route`, `model`, `reply_source`, `format_check` | Chat requests that got a reply |
+| `gateway_chat_unavailable_total` | none | Chat requests that got a 503 |
+| `gateway_chat_latency_seconds` | none | Histogram of time spent in the gateway per chat request, including 503s |
+| `gateway_backend_calls_attempted_total`, `_completed_total`, `_failed_total` | `model` | Backend calls, the same numbers as `usage` in `/v1/health` |
+| `gateway_jev_fallbacks_total` | `reason` (`jev_timeout`, `jev_error`, `jev_invalid_route`) | Requests routed by the rule router because Jev failed or its route answer was invalid |
+| `gateway_model_disabled` | `model` | 1 while the controller has the model disabled |
+| `gateway_monitor_failure_rate`, `gateway_monitor_window_samples` | `model` | Failure rate and number of calls in the monitor window (rate is 0 when the window is empty) |
+| `gateway_controller_interventions_total` | `action`, `model` | Controller actions: `disabled`, `re-enabled`, `kept_last_backend` |
+
+Labels only take values from fixed lists. Message text, replies and request IDs are never labels; a test checks this. All values are in memory and reset when the gateway restarts. A re-enable is counted when the gateway next checks the model (a request, `/v1/health` or a scrape), not at the exact end of the cooldown. With the mock backends, latency includes the simulated delay and says nothing about real model speed. There are no token, cost or quality metrics yet, and Prometheus does not scrape vLLM or a separate monitor because neither exists yet.
+
+To look at metrics without publishing a port:
+
+```bash
+# Raw gateway metrics
+docker compose exec gateway python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/metrics').read().decode())"
+
+# Is Prometheus scraping the gateway? Look for "health":"up".
+docker compose exec prometheus wget -qO- http://127.0.0.1:9090/api/v1/targets
+
+# Query Prometheus, e.g. chat requests per model
+docker compose exec prometheus wget -qO- 'http://127.0.0.1:9090/api/v1/query?query=sum%20by%20(model)%20(gateway_chat_requests_total)'
+```
+
+Prometheus has no published port, including on your own machine. Use the `docker compose exec` commands above to read metrics and run queries.
 
 ## Configuration and env files
 
@@ -92,6 +126,7 @@ Pydantic Settings reads `.env` then `env/.env` in native local runs. Process env
 | --- | --- | --- |
 | `APP_ENVIRONMENT` | `local` | `local`, `staging` or `production` |
 | `APP_INTENTS_PATH` | `config/intents.json` | Intent keywords and mock complexity |
+| `APP_LABELS_PATH` | `config/labels.json` | The 77 Banking77 intents plus `unknown` that Jev and Qwen classify into; every intent with a policy card must be one of them |
 | `APP_POLICY_CARDS_PATH` | `config/policy_cards.json` | Fictional facts and `{facts}` reply templates |
 | `APP_BACKENDS_PATH` | `config/backends.json` | Backend names, routes, delay and availability |
 | `APP_REQUEST_STORE_LIMIT` | `1000` | Number of successful requests retained |
@@ -101,6 +136,15 @@ Pydantic Settings reads `.env` then `env/.env` in native local runs. Process env
 | `APP_MONITOR_MIN_SAMPLES` | `5` | Calls needed before the controller may act; at most the window |
 | `APP_MONITOR_FAILURE_THRESHOLD` | `0.5` | Failure rate (failed format checks plus failed calls) that disables a backend |
 | `APP_CONTROLLER_COOLDOWN_SECONDS` | `60` | How long a disabled backend stays out |
+| `APP_PROVIDER_MODE` | `mock` | `mock` or `real`. Real mode needs `APP_JEV_API_KEY` and an `https` `APP_JEV_BASE_URL`, and is rejected at startup until the real clients exist |
+| `APP_JEV_BASE_URL` | `https://api.typesafe.ai` | TypeSafe API for real Jev calls (not used yet) |
+| `APP_JEV_API_KEY` | unset | Server-side TypeSafe key; set only in the real env file |
+| `APP_JEV_MODEL` | `jev-1.14.0` | Pinned Jev version, not an alias such as `jev-latest` |
+| `APP_JEV_INPUT_PRICE_PER_MILLION_USD` | unset | Jev input token price for cost estimates; Jev does not charge for output tokens. Cost stays null while unset |
+| `APP_JEV_BREAKER_FAILURES` | `5` | Consecutive Jev failures before the circuit breaker skips Jev (not used yet) |
+| `APP_JEV_BREAKER_COOLDOWN_SECONDS` | `30` | How long the breaker skips Jev (not used yet) |
+| `APP_REQUEST_DEADLINE_SECONDS` | `45` | Total time for one chat request (not used yet) |
+| `APP_ALTERNATE_RESERVE_SECONDS` | `15` | Part of the deadline kept for the alternate backend (not used yet); with the Jev timeout, must stay below the deadline |
 
 Paths are relative to the working directory: run native commands from the repo root. In Docker the working directory is `/app`; use paths under the mounted `config/` directory. The gateway validates JSON and matching intent/policy-card coverage at startup. Both mock backends must be configured. Set `available` to `false` in `config/backends.json` to try fallback.
 
@@ -278,12 +322,12 @@ uv run pytest
 cd frontend && npm test
 ```
 
-CI runs these checks, the frontend tests and build, and a Compose smoke test through port 8080. Frontend tests (Vitest and Testing Library, with `fetch` stubbed) cover the chat round trip, the details panel, error messages, and the Health screen in healthy and degraded states. Tests cover all ten intents, unknown messages, Jev failure and timeout, the rule router, backend fallback, label checks, the monitor and controller rules, request validation, policy grounding, settings overrides, bounded history and health responsiveness during simulated inference.
+CI runs these checks, the frontend tests and build, a Compose smoke test through port 8080, and a check that Prometheus reports the gateway target as up. Frontend tests (Vitest and Testing Library, with `fetch` stubbed) cover the chat round trip, the details panel, error messages, and the Health screen in healthy and degraded states. Tests cover all ten intents, unknown messages, Jev failure and timeout, the rule router, backend fallback, label checks, the monitor and controller rules, request validation, policy grounding, settings overrides, bounded history, health responsiveness during simulated inference, and the Prometheus metrics (values after requests, no message text, not served through Caddy).
 
-- `src/app_assignment_1/`: settings, API contracts, routing interface, mock service, and the monitor and controller.
+- `src/app_assignment_1/`: settings, API contracts, routing interface, mock service, the monitor and controller, and Prometheus metrics.
 - `frontend/`: the React + Vite app (`src/components/ChatView.jsx`, `HealthView.jsx`, `Sidebar.jsx`) and its Dockerfile. Jev and Dashboard screens are listed as coming soon.
 - `config/`: validated mock behavior, editable without Python changes.
-- `Dockerfile` (gateway), `frontend/Dockerfile` (proxy and app), `compose.yml`, `Caddyfile`: deployment with one published port.
+- `Dockerfile` (gateway), `frontend/Dockerfile` (proxy and app), `compose.yml`, `Caddyfile`, `prometheus/prometheus.yml`: deployment with one published port.
 - `tests/`: unit and API tests. `scripts/smoke_compose.py`: public-proxy smoke test.
 - `discussion.md`, `problem2-local-run.md`, benchmark results: historical Assignment 2 records. The original SmolLM2 implementation and measurement scripts remain in Git history before this prototype.
 

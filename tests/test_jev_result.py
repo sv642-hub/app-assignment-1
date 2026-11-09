@@ -154,3 +154,12 @@ def test_malformed_result_is_a_jev_error(settings: Settings, value: Any) -> None
     trace = chat(settings, value)["trace"]
     assert trace["router"] == "rule_router"
     assert trace["fallback_reason"] == "jev_error"
+
+
+def test_invalid_route_answer_is_counted_in_metrics(settings: Settings) -> None:
+    router = FixedRouter(JevResult(**result(route=INVALID)))
+    with TestClient(create_app(settings, router)) as client:
+        client.post("/v1/chat", json={"message": "card arrival"})
+        metrics = client.get("/metrics").text
+    assert 'gateway_jev_fallbacks_total{reason="jev_invalid_route"} 1.0' in metrics
+    assert 'gateway_jev_fallbacks_total{reason="jev_error"} 0.0' in metrics
