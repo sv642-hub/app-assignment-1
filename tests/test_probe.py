@@ -2,18 +2,21 @@
 
 import math
 import random
+import unicodedata
 
 import pytest
 from pydantic import ValidationError
 
 from app_assignment_1.probe import (
     MIN_DEV_CLASS_SIZE,
+    GateReport,
     GateRunInfo,
     LinearProbe,
     MockActivationExtractor,
     ProbeExample,
     auroc,
     auroc_difference_interval,
+    normalize_prompt,
     run_gate,
     train_probe,
 )
@@ -38,6 +41,15 @@ class LabelLeakExtractor:
 
 class MockLabelLeakExtractor(LabelLeakExtractor):
     mocked = True
+
+
+class ConstantExtractor:
+    """Test double: a broken extractor that returns the same vector each time."""
+
+    mocked = False
+
+    def extract(self, prompt: str, reply: str) -> list[float]:
+        return [0.0, 0.0]
 
 
 def example(prompt: str, correct: bool, token_confidence: float) -> ProbeExample:
@@ -233,6 +245,7 @@ def test_gate_passes_when_probe_beats_token_confidence() -> None:
     report = run_gate(train, dev, LabelLeakExtractor(), RUN_INFO)
 
     assert report.probe_auroc == 1.0
+    assert report.probe_auroc_low == report.probe_auroc_high == 1.0
     assert report.token_auroc == 0.5
     assert report.passed
     assert report.difference_low == report.difference_high == 0.5
@@ -343,3 +356,133 @@ def test_run_info_rejects_missing_values(change: dict[str, object]) -> None:
 def test_example_rejects_confidence_outside_zero_to_one() -> None:
     with pytest.raises(ValidationError):
         example("good", True, 1.5)
+
+
+def test_gate_fails_a_probe_with_no_information() -> None:
+    # Token confidence ranks worse than chance, so the probe "leads" by 0.5.
+    dev = dev_examples(0.1, 0.9)
+
+    report = run_gate(examples(0.5, 0.5), dev, ConstantExtractor(), RUN_INFO)
+
+    assert report.probe_auroc == 0.5
+    assert report.token_auroc == 0.0
+    assert report.difference_low > 0
+    assert report.probe_auroc_low == report.probe_auroc_high == 0.5
+    assert not report.passed
+
+
+def test_probe_interval_brackets_chance_for_a_noisy_probe() -> None:
+    dev = [
+        *[example(f"good right {i}", True, 0.5) for i in range(12)],
+        *[example(f"bad right {i}", True, 0.5) for i in range(8)],
+        *[example(f"good wrong {i}", False, 0.5) for i in range(8)],
+        *[example(f"bad wrong {i}", False, 0.5) for i in range(12)],
+    ]
+
+    report = run_gate(examples(0.5, 0.5), dev, LabelLeakExtractor(), RUN_INFO)
+
+    assert report.probe_auroc_low <= 0.5 < report.probe_auroc < report.probe_auroc_high
+
+
+def test_gate_rejects_repeated_dev_prompts() -> None:
+    dev = dev_examples(0.5, 0.5)
+    wrong = next(item for item in dev if not item.correct)
+    dev = [item for item in dev if item.correct] + [wrong] * MIN_DEV_CLASS_SIZE
+
+    with pytest.raises(ValueError, match="dev set repeats"):
+        run_gate(examples(0.5, 0.5), dev, LabelLeakExtractor(), RUN_INFO)
+
+
+def test_gate_rejects_repeated_train_prompts() -> None:
+    train = examples(0.5, 0.5) + [example("Good  TRAIN 1", True, 0.5)]
+
+    with pytest.raises(ValueError, match="train set repeats"):
+        run_gate(train, dev_examples(0.5, 0.5), LabelLeakExtractor(), RUN_INFO)
+
+
+def test_gate_rejects_repeats_that_differ_only_in_reply() -> None:
+    dev = dev_examples(0.5, 0.5)
+    dev.append(dev[0].model_copy(update={"reply": "another reply"}))
+
+    with pytest.raises(ValueError, match="dev set repeats"):
+        run_gate(examples(0.5, 0.5), dev, LabelLeakExtractor(), RUN_INFO)
+
+
+HIDDEN_VARIANTS = {
+    "zero-width space": "good\u200b train 1",
+    "word joiner": "good train\u2060 1",
+    "byte order mark": "\ufeffgood train 1",
+    "soft hyphen": "go\u00adod train 1",
+    "non-breaking space": "good\u00a0train 1",
+    "fullwidth letters": "\uff47\uff4f\uff4f\uff44 train 1",
+}
+
+
+@pytest.mark.parametrize("prompt", HIDDEN_VARIANTS.values(), ids=HIDDEN_VARIANTS)
+def test_gate_catches_overlap_hidden_by_unicode(prompt: str) -> None:
+    dev = dev_examples(0.5, 0.5)
+    dev[0] = example(prompt, True, 0.5)
+
+    with pytest.raises(ValueError, match="share prompts"):
+        run_gate(examples(0.5, 0.5), dev, LabelLeakExtractor(), RUN_INFO)
+
+
+def test_normalize_prompt_merges_composed_and_decomposed_accents() -> None:
+    composed = unicodedata.normalize("NFC", "Café card")
+    decomposed = unicodedata.normalize("NFD", "café  CARD")
+
+    assert composed != decomposed
+    assert normalize_prompt(composed) == normalize_prompt(decomposed) == "café card"
+
+
+def test_normalize_prompt_keeps_different_words_apart() -> None:
+    assert normalize_prompt("top up card") != normalize_prompt("top-up card")
+
+
+def valid_report(**change: object) -> dict[str, object]:
+    report = {
+        "probe_auroc": 0.8,
+        "probe_auroc_low": 0.7,
+        "probe_auroc_high": 0.9,
+        "token_auroc": 0.6,
+        "difference_low": 0.05,
+        "difference_high": 0.3,
+        "train_examples": 100,
+        "dev_examples": 40,
+        "passed": True,
+        "mocked": False,
+        "run_info": RUN_INFO.model_dump(),
+    }
+    return report | change
+
+
+def test_report_accepts_a_consistent_result() -> None:
+    report = GateReport.model_validate(valid_report())
+
+    assert GateReport.model_validate_json(report.model_dump_json()) == report
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"mocked": True},
+        {"difference_low": -0.01},
+        {"difference_low": 0.0},
+        {"probe_auroc_low": 0.5},
+        {"passed": False},
+        {"difference_low": 0.4, "difference_high": 0.3},
+        {"probe_auroc_low": 0.95, "probe_auroc_high": 0.9},
+    ],
+)
+def test_report_rejects_a_contradictory_result(change: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        GateReport.model_validate(valid_report(**change))
+
+
+def test_saved_report_with_a_contradiction_fails_to_load() -> None:
+    saved = GateReport.model_validate(valid_report()).model_dump_json()
+    tampered = saved.replace('"mocked":false', '"mocked":true')
+
+    assert tampered != saved
+    with pytest.raises(ValidationError):
+        GateReport.model_validate_json(tampered)

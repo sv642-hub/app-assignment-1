@@ -11,11 +11,13 @@ about the real model. See docs/PROBE.md for what is still to build.
 import hashlib
 import math
 import random
+import unicodedata
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from app_assignment_1.schemas import StrictModel
 
@@ -25,6 +27,8 @@ BOOTSTRAP_TAIL = 0.025  # 2.5% in each tail gives a 95% interval.
 
 # Below this, the interval is overconfident. See docs/PROBE.md.
 MIN_DEV_CLASS_SIZE = 20
+
+CHANCE_AUROC = 0.5
 
 
 class ProbeExample(StrictModel):
@@ -52,8 +56,19 @@ class GateRunInfo(StrictModel):
     dataset_version: str = Field(min_length=1)
 
 
+def gate_passes(mocked: bool, difference_low: float, probe_auroc_low: float) -> bool:
+    """The pass rule: real activations, a lead over token confidence, and
+    a probe that beats chance on its own. See docs/PROBE.md."""
+    return not mocked and difference_low > 0 and probe_auroc_low > CHANCE_AUROC
+
+
 class GateReport(StrictModel):
+    """A gate result. It rejects values that contradict the pass rule, so a
+    saved report loaded with `model_validate_json` is consistent too."""
+
     probe_auroc: float = Field(ge=0, le=1)
+    probe_auroc_low: float = Field(ge=0, le=1)
+    probe_auroc_high: float = Field(ge=0, le=1)
     token_auroc: float = Field(ge=0, le=1)
     difference_low: float = Field(ge=-1, le=1)
     difference_high: float = Field(ge=-1, le=1)
@@ -62,6 +77,20 @@ class GateReport(StrictModel):
     passed: bool
     mocked: bool
     run_info: GateRunInfo
+
+    @model_validator(mode="after")
+    def _check_consistency(self) -> Self:
+        if self.difference_low > self.difference_high:
+            raise ValueError("difference_low must not exceed difference_high.")
+        if self.probe_auroc_low > self.probe_auroc_high:
+            raise ValueError("probe_auroc_low must not exceed probe_auroc_high.")
+        expected = gate_passes(self.mocked, self.difference_low, self.probe_auroc_low)
+        if self.passed != expected:
+            raise ValueError(
+                "passed must equal: not mocked, difference_low > 0 and "
+                f"probe_auroc_low > {CHANCE_AUROC}."
+            )
+        return self
 
 
 class ActivationExtractor(Protocol):
@@ -208,8 +237,29 @@ def auroc_difference_interval(
     return differences[tail], differences[-tail - 1]
 
 
-def _normalized_prompt(prompt: str) -> str:
-    return " ".join(prompt.casefold().split())
+def normalize_prompt(prompt: str) -> str:
+    """The form used to compare prompts, here and in the dev split.
+
+    NFKC merges composed and decomposed accents and fullwidth letters.
+    Format characters (Unicode category Cf: zero-width space, word joiner,
+    byte order mark, soft hyphen) are dropped. Then case and whitespace are
+    ignored. Paraphrases still count as different prompts.
+    """
+    text = unicodedata.normalize("NFKC", prompt)
+    text = "".join(char for char in text if unicodedata.category(char) != "Cf")
+    text = unicodedata.normalize("NFKC", text.casefold())
+    return " ".join(text.split())
+
+
+def _check_no_repeats(examples: Sequence[ProbeExample], name: str) -> set[str]:
+    counts = Counter(normalize_prompt(example.prompt) for example in examples)
+    repeated = sorted(prompt for prompt, count in counts.items() if count > 1)
+    if repeated:
+        raise ValueError(
+            f"The {name} set repeats {len(repeated)} prompt(s), for example "
+            f"{repeated[0]!r}. Copies would count as independent examples."
+        )
+    return set(counts)
 
 
 def run_gate(
@@ -220,14 +270,18 @@ def run_gate(
 ) -> GateReport:
     """Train on `train`, then compare both scores on `dev`.
 
-    The probe passes only if the 95% interval on its AUROC lead stays above
-    zero and its activations are real. A prompt in both sets is an error,
-    ignoring case and whitespace, because it would inflate the probe's score.
-    Paraphrases are not detected. So is a dev set with too few examples of
-    either class, because the interval is then overconfident.
+    The probe passes only if its activations are real, the 95% interval on its
+    AUROC lead over token confidence stays above zero, and the 95% interval
+    on its own AUROC stays above chance (see `gate_passes`).
+
+    Prompts are compared after `normalize_prompt`. A prompt in both sets is
+    an error, because it would inflate the probe's score. A prompt repeated
+    within either set is an error, because the bootstrap and the class-size
+    check would treat the copies as independent. So is a dev set with too
+    few examples of either class, because the interval is then overconfident.
     """
-    train_prompts = {_normalized_prompt(example.prompt) for example in train}
-    dev_prompts = {_normalized_prompt(example.prompt) for example in dev}
+    train_prompts = _check_no_repeats(train, "train")
+    dev_prompts = _check_no_repeats(dev, "dev")
     if train_prompts & dev_prompts:
         raise ValueError("Train and dev sets must not share prompts.")
     labels = [example.correct for example in dev]
@@ -247,14 +301,22 @@ def run_gate(
     difference_low, difference_high = auroc_difference_interval(
         probe_scores, token_scores, labels
     )
+    # Every constant score has AUROC 0.5, so the same paired bootstrap against
+    # one gives the interval on AUROC(probe) - 0.5.
+    chance_low, chance_high = auroc_difference_interval(
+        probe_scores, [CHANCE_AUROC] * len(dev), labels
+    )
+    probe_auroc_low = CHANCE_AUROC + chance_low
     return GateReport(
         probe_auroc=auroc(probe_scores, labels),
+        probe_auroc_low=probe_auroc_low,
+        probe_auroc_high=CHANCE_AUROC + chance_high,
         token_auroc=auroc(token_scores, labels),
         difference_low=difference_low,
         difference_high=difference_high,
         train_examples=len(train),
         dev_examples=len(dev),
-        passed=not extractor.mocked and difference_low > 0,
+        passed=gate_passes(extractor.mocked, difference_low, probe_auroc_low),
         mocked=extractor.mocked,
         run_info=run_info,
     )

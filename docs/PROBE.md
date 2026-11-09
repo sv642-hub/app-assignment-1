@@ -9,16 +9,24 @@ The probe reads Qwen3-1.7B activations and estimates whether the model's output 
 1. `ProbeExample` holds a prompt, a reply, a correct/wrong label and the token confidence.
 2. An `ActivationExtractor` turns each prompt and reply into one vector. `MockActivationExtractor` uses hashes, so it carries no signal.
 3. `train_probe` fits a logistic regression, giving a `LinearProbe`.
-4. `run_gate` compares both scores on the dev set with `auroc`. It returns a `GateReport` that includes a `GateRunInfo`: the model, layer, pooling, token confidence method and dataset version.
+4. `run_gate` compares both scores on the dev set with `auroc`. It returns a `GateReport` with both AUROCs, the interval on their difference, the interval on the probe's own AUROC, and a `GateRunInfo`: the model, layer, pooling, token confidence method and dataset version.
 
 ## Pass rule
 
-The probe passes only if both of these hold:
+The probe passes only if all three of these hold (`gate_passes`):
 
 - The activations are real, so a mock run can never pass. `mocked` is true for any report built on mock activations.
 - The 95% interval on the AUROC difference (probe minus token confidence) stays above zero. `auroc_difference_interval` gets this from a paired bootstrap: 2,000 resamples with a fixed seed, using the same examples for both scores and resampling each class on its own.
+- The 95% interval on the probe's own AUROC stays above 0.5 (`probe_auroc_low` > 0.5). Without this, a broken extractor that returns the same vector every time scores exactly 0.5 and would pass whenever token confidence ranks worse than chance. The interval comes from the same bootstrap, run against a constant score, whose AUROC is always 0.5.
 
-`run_gate` raises an error if a prompt appears in both sets, ignoring case and whitespace, but it does not catch paraphrases. `train_probe` raises an error if the training set has only one class.
+`GateReport` checks itself against this rule: it rejects a report where `passed` disagrees with the rule, or where an interval's low end is above its high end. This also applies to a saved report loaded with `model_validate_json`.
+
+Before comparing prompts, `normalize_prompt` applies Unicode NFKC, drops format characters (such as zero-width spaces, word joiners, byte order marks and soft hyphens), ignores case and collapses whitespace. The dev split should use the same function. Paraphrases are not caught. After normalizing, `run_gate` raises an error if:
+
+- a prompt appears in both sets, because it would inflate the probe's score;
+- a prompt appears twice in the same set, because the bootstrap and the 20-per-class check would count the copies as independent examples. In the no-signal runs from the review of #62, one wrong prompt copied 20 times passed the old gate in 37.4% of runs.
+
+`train_probe` raises an error if the training set has only one class.
 
 `run_gate` also raises an error if the dev set has fewer than 20 correct or 20 wrong examples. In synthetic runs with no signal, the interval passed far too often on small or lopsided dev sets: 10.0% of runs with 100 correct and 3 wrong, and 3.0% with 100 and 20, against about 2.5% if it behaves. The number 20 comes from those runs, not from a published threshold.
 
