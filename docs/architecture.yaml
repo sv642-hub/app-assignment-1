@@ -63,9 +63,9 @@ components:
     title: Router client
     owner: Verness
     items:
-      - simulated: Jev routing call with a 2 s timeout
-      - built: Rule router on Jev timeout or error
-      - todo: One route and intent call; circuit breaker
+      - simulated: One route and intent call, 2 s timeout
+      - built: Rule router on Jev timeout, error or invalid route
+      - todo: Real Jev client; circuit breaker
 
   canary_splitter:
     title: Canary splitter
@@ -103,8 +103,8 @@ components:
     owner: Verness
     items:
       - built: Assessment record schema and test sink
-      - todo: Gateway writes the assessment records
-      - todo: In the routing call, 78 options
+      - simulated: Intent in the routing call, 11 options
+      - todo: 78 options; gateway writes records
 
   semantic_monitor:
     title: Semantic monitor
