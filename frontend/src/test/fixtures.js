@@ -1,8 +1,8 @@
 // Responses shaped like the gateway's Pydantic models.
 
 const BACKENDS = [
-  { name: "qwen3-1.7b", route: "standard", latency_ms: 120, available: true, fault_rate: 0 },
-  { name: "qwen3-4b", route: "complex", latency_ms: 350, available: true, fault_rate: 0 },
+  { name: "qwen3-1.7b", route: "standard", latency_ms: 120, available: true, fault_rate: 0, error_rate: 0 },
+  { name: "qwen3-4b", route: "complex", latency_ms: 350, available: true, fault_rate: 0, error_rate: 0 },
 ];
 const RULES = { window: 20, min_samples: 5, failure_threshold: 0.5, cooldown_seconds: 60 };
 
@@ -12,23 +12,43 @@ export const healthyHealth = {
   router: "mock_jev",
   backends: BACKENDS,
   monitor: [
-    { name: "qwen3-1.7b", samples: 20, format_failures: 0, failure_rate: 0, disabled_by_controller: false, disabled_for_seconds: null },
-    { name: "qwen3-4b", samples: 14, format_failures: 1, failure_rate: 0.07, disabled_by_controller: false, disabled_for_seconds: null },
+    { name: "qwen3-1.7b", samples: 20, format_failures: 0, call_errors: 0, failure_rate: 0, disabled_by_controller: false, disabled_for_seconds: null },
+    { name: "qwen3-4b", samples: 14, format_failures: 1, call_errors: 0, failure_rate: 0.07, disabled_by_controller: false, disabled_for_seconds: null },
   ],
   interventions: [],
   controller: RULES,
+  recent_requests: [
+    { completed_at: "2026-10-30T14:33:02Z", route: "standard", model: "qwen3-1.7b", fallback_reason: null, format_check: "failed" },
+    { completed_at: "2026-10-30T14:32:51Z", route: "complex", model: "qwen3-4b", fallback_reason: "selected_backend_error", format_check: "passed" },
+  ],
+  usage: [
+    { name: "qwen3-1.7b", attempted_calls: 7, completed_calls: 2, failed_calls: 5, input_tokens: null, output_tokens: null, estimated_cost_usd: null },
+    { name: "qwen3-4b", attempted_calls: 9, completed_calls: 9, failed_calls: 0, input_tokens: null, output_tokens: null, estimated_cost_usd: null },
+  ],
 };
 
 export const degradedHealth = {
   ...healthyHealth,
   status: "degraded",
   monitor: [
-    { name: "qwen3-1.7b", samples: 5, format_failures: 5, failure_rate: 1, disabled_by_controller: true, disabled_for_seconds: 41.2 },
-    { name: "qwen3-4b", samples: 12, format_failures: 0, failure_rate: 0, disabled_by_controller: false, disabled_for_seconds: null },
+    { name: "qwen3-1.7b", samples: 5, format_failures: 5, call_errors: 0, failure_rate: 1, disabled_by_controller: true, disabled_for_seconds: 41.2 },
+    { name: "qwen3-4b", samples: 12, format_failures: 0, call_errors: 0, failure_rate: 0, disabled_by_controller: false, disabled_for_seconds: null },
   ],
   interventions: [
-    { at: "2026-10-30T14:19:51Z", backend: "qwen3-1.7b", action: "disabled", reason: "format failure rate 60% over last 5 responses" },
-    { at: "2026-10-30T14:32:08Z", backend: "qwen3-1.7b", action: "disabled", reason: "format failure rate 100% over last 5 responses" },
+    { at: "2026-10-30T14:19:51Z", backend: "qwen3-1.7b", action: "disabled", reason: "format failure rate 60% over last 5 calls" },
+    { at: "2026-10-30T14:32:08Z", backend: "qwen3-1.7b", action: "disabled", reason: "format failure rate 100% over last 5 calls" },
+  ],
+};
+
+export const outageHealth = {
+  ...healthyHealth,
+  status: "degraded",
+  monitor: [
+    { name: "qwen3-1.7b", samples: 5, format_failures: 1, call_errors: 4, failure_rate: 1, disabled_by_controller: true, disabled_for_seconds: 41.2 },
+    { name: "qwen3-4b", samples: 12, format_failures: 0, call_errors: 0, failure_rate: 0, disabled_by_controller: false, disabled_for_seconds: null },
+  ],
+  interventions: [
+    { at: "2026-10-30T14:32:08Z", backend: "qwen3-1.7b", action: "disabled", reason: "failure rate 100% over last 5 calls" },
   ],
 };
 

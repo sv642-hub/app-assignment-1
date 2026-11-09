@@ -1,6 +1,6 @@
 """Validated API contracts and on-disk mock configuration."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
@@ -56,6 +56,7 @@ class Trace(StrictModel):
 
 
 class ChatResponse(StrictModel):
+    completed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     id: UUID
     intent: str
     reply: str = Field(min_length=1)
@@ -97,12 +98,15 @@ class BackendConfig(StrictModel):
     available: bool = True
     # Share of mock replies corrupted on purpose, to exercise the controller.
     fault_rate: float = Field(default=0, ge=0, le=1)
+    # Share of mock calls that raise on purpose, to simulate an outage.
+    error_rate: float = Field(default=0, ge=0, le=1)
 
 
 class BackendMonitor(StrictModel):
     name: BackendName
     samples: int = Field(ge=0)
     format_failures: int = Field(ge=0)
+    call_errors: int = Field(ge=0)
     failure_rate: float | None = Field(ge=0, le=1)
     disabled_by_controller: bool
     disabled_for_seconds: float | None = Field(default=None, ge=0)
@@ -122,7 +126,29 @@ class ControllerRules(StrictModel):
     cooldown_seconds: float = Field(gt=0)
 
 
+class RecentRequest(StrictModel):
+    # No request id: /v1/requests/{id} has no login, so listing ids would expose
+    # other customers' replies.
+    completed_at: datetime
+    route: Route
+    model: BackendName
+    fallback_reason: str | None
+    format_check: Literal["passed", "failed"]
+
+
+class ModelUsage(StrictModel):
+    name: BackendName
+    attempted_calls: int = Field(ge=0)
+    completed_calls: int = Field(ge=0)
+    failed_calls: int = Field(ge=0)
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    estimated_cost_usd: float | None = None
+
+
 class HealthResponse(StrictModel):
+    recent_requests: list[RecentRequest] = Field(default_factory=list)
+    usage: list[ModelUsage] = Field(default_factory=list)
     status: Literal["ok", "degraded"]
     mode: Literal["mock"] = "mock"
     router: Literal["mock_jev"] = "mock_jev"

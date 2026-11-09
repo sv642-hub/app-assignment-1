@@ -16,7 +16,7 @@ Final project for DSAN 6700. This file records who owns what. Owners decide and 
 ## Interfaces to agree first
 
 - **Yanzhen + Pavlos:** vLLM URLs for both models and the request/response format. Yanzhen builds against a local stub until the GPU host is ready.
-- **Verness + Sebastian:** the Jev assessment record (routing call and async intent call) that the monitor reads.
+- **Verness + Sebastian:** the Jev assessment records (one combined routing and intent call per request) that the monitor reads.
 - **Yanzhen + Sebastian:** the backend response record (intent, reply, format check, latency, version ID) that the monitor scores.
 
 ## Evaluation set (shared)
@@ -39,4 +39,5 @@ The probe must beat the model's own token-probability confidence (AUROC on the d
 
 ## Diagrams
 
-The architecture diagrams still show Streamlit. Update the frontend box to "React (Vite), static build served by Caddy" before the final deliverable.
+- **Architecture status:** `docs/architecture.svg`, generated from `docs/architecture.yaml`. Every PR that changes what is built, simulated or owned updates the YAML (see `AGENTS.md`). Sebastian keeps the layout and reviews these changes.
+- The proposal's architecture diagrams still show Streamlit. Update the frontend box to "React (Vite), static build served by Caddy" before the final deliverable.

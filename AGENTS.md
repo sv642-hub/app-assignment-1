@@ -13,18 +13,20 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 - `src/app_assignment_1/router.py`: `Router` interface, `MockJevRouter`, and the fallback `RuleRouter`.
 - `src/app_assignment_1/backends.py`: `Backend` interface and `MockBackend` (the mock Qwen backends).
 - `src/app_assignment_1/intents.py`: keyword matching over the configured intents, shared by the mocks.
-- `src/app_assignment_1/monitor.py`: in-memory format-failure monitor and `Controller`.
+- `src/app_assignment_1/monitor.py`: in-memory failure monitor (format failures and failed calls) and `Controller`.
 - `src/app_assignment_1/schemas.py`: Pydantic API contracts and config models.
 - `src/app_assignment_1/config.py`: cached Pydantic Settings.
 - `src/app_assignment_1/__init__.py`: package version.
 - `frontend/`: React (Vite) app with Chat and Health screens; `frontend/Dockerfile` builds it into the Caddy image.
-- `config/`: `intents.json`, `policy_cards.json`, `backends.json`, and `backends.chaos.json` for chaos mode.
+- `config/`: `intents.json`, `policy_cards.json`, `backends.json`, plus `backends.chaos.json` and `backends.outage.json` for simulated faults.
 - `tests/`: pytest suite. Frontend tests are in `frontend/src/App.test.jsx`.
 - `scripts/smoke_compose.py`: smoke test against the public proxy.
+- `scripts/render_architecture.py`: draws `docs/architecture.svg` from `docs/architecture.yaml`; `--check` fails if they differ.
 - `env/`: `.env.example` and `.env.production.example` templates. A real `env/.env` is optional and ignored by git.
-- `compose.yml`: `gateway` and `proxy` services. `compose.chaos.yml`: override that makes the small model corrupt every reply.
+- `compose.yml`: `gateway` and `proxy` services. `compose.chaos.yml`: override that makes the small model corrupt every reply. `compose.outage.yml`: override that makes every call to the small model raise an error.
 - `Caddyfile`: serves the React app on port 8080 and proxies `/v1`, `/docs`, `/redoc` and `/openapi.json` to the gateway.
 - `docs/TEAM_PLAN.md`: who owns what. `USER_BRIEF.md`: guide for beta testers.
+- `docs/architecture.yaml`: what is built, simulated or planned in each part of the architecture, and who owns it. `docs/architecture.svg` is generated from it.
 
 ## Commands
 
@@ -56,11 +58,15 @@ cd ..
 # Run the stack
 docker compose up -d --build --wait
 
+# Redraw the architecture diagram after editing docs/architecture.yaml
+uv run python scripts/render_architecture.py
+
 # Smoke test the running stack
 python3 scripts/smoke_compose.py http://localhost:8080
 
-# Chaos mode, then back to normal
+# Chaos mode or a simulated outage, then back to normal
 docker compose -f compose.yml -f compose.chaos.yml up -d --build --wait
+docker compose -f compose.yml -f compose.outage.yml up -d --build --wait
 docker compose up -d --wait
 
 # Stop the stack
@@ -77,3 +83,4 @@ docker compose down
 - Do not edit the frozen evaluation set or human grades once they exist.
 - Docs use plain language. Do not claim results that have not been measured.
 - Check docs/TEAM_PLAN.md for who owns an area before making large changes there; mention the owner in the PR.
+- If a PR changes what is built, simulated or owned, update `docs/architecture.yaml` in the same PR and run `scripts/render_architecture.py`. Mark what is true on main after the PR merges, not plans from other open PRs. Commit the YAML and the SVG together; CI fails if they differ.

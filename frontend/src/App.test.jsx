@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import App, { HEALTH_POLL_MS } from "./App.jsx";
-import { degradedHealth, fakeGateway, healthyHealth } from "./test/fixtures.js";
+import { degradedHealth, fakeGateway, healthyHealth, outageHealth } from "./test/fixtures.js";
 
 function renderWith(gateway) {
   vi.spyOn(globalThis, "fetch").mockImplementation(gateway.fetch);
@@ -109,7 +109,7 @@ describe("Health", () => {
     expect(await screen.findByText("All systems normal")).toBeInTheDocument();
     expect(screen.getAllByText("Serving")).toHaveLength(2);
     expect(screen.getByText("No interventions since the gateway started.")).toBeInTheDocument();
-    expect(screen.getByText("last 20 replies")).toBeInTheDocument();
+    expect(screen.getByText("last 20 calls per model")).toBeInTheDocument();
     expect(window.location.hash).toBe("#/health");
   });
 
@@ -130,9 +130,21 @@ describe("Health", () => {
     expect(within(large).getByText("standard (rerouted)")).toBeInTheDocument();
 
     // Newest intervention first.
-    const rows = within(screen.getByRole("table")).getAllByRole("row");
+    const rows = within(screen.getByRole("table", { name: "Interventions" })).getAllByRole("row");
     expect(rows[1]).toHaveTextContent("100% over last 5");
     expect(screen.getByText("Gateway degraded")).toBeInTheDocument();
+  });
+
+  it("counts failed calls as failures and explains the mix", async () => {
+    const user = renderWith(fakeGateway({ health: outageHealth }));
+
+    await user.click(screen.getByRole("button", { name: /Health/ }));
+
+    const small = await screen.findByRole("region", { name: "qwen3-1.7b" });
+    expect(within(small).getByText("100% (5 of 5)")).toBeInTheDocument();
+    expect(within(small).getByText("Failed calls: 4. Format failures: 1.")).toBeInTheDocument();
+    const large = screen.getByRole("region", { name: "qwen3-4b" });
+    expect(within(large).queryByText(/Failed calls/)).not.toBeInTheDocument();
   });
 
   it("opens on the Health screen from its link", async () => {
@@ -140,5 +152,52 @@ describe("Health", () => {
     renderWith(fakeGateway());
 
     expect(await screen.findByRole("heading", { name: "Health" })).toBeInTheDocument();
+  });
+});
+
+
+describe("Issue 30", () => {
+  it("explains recent completed requests on Health", async () => {
+    const user = renderWith(fakeGateway());
+    await user.click(screen.getByRole("button", { name: "Health" }));
+    expect(await screen.findByRole("heading", { name: "Recent completed requests" })).toBeInTheDocument();
+    expect(screen.getByText(/Actual model/)).toBeInTheDocument();
+    const rows = within(screen.getByRole("table", { name: "Recent completed requests" })).getAllByRole("row");
+    expect(rows).toHaveLength(3);
+    expect(rows[1]).toHaveTextContent(/qwen3-1\.7b.*none.*failed/);
+    expect(rows[2]).toHaveTextContent(/qwen3-4b.*selected_backend_error.*passed/);
+  });
+
+  it("replaces the recent requests table with a message when there are none", async () => {
+    const user = renderWith(fakeGateway({ health: { ...healthyHealth, recent_requests: [] } }));
+    await user.click(screen.getByRole("button", { name: "Health" }));
+    expect(await screen.findByText("No retained completed requests.")).toBeInTheDocument();
+    expect(screen.queryByRole("table", { name: "Recent completed requests" })).not.toBeInTheDocument();
+  });
+});
+
+describe("Issue 31", () => {
+  it("explains usage since gateway startup on Health", async () => {
+    const user = renderWith(fakeGateway());
+    await user.click(screen.getByRole("button", { name: "Health" }));
+    expect(await screen.findByRole("heading", { name: "Usage since gateway startup" })).toBeInTheDocument();
+    expect(screen.getByText(/Mock mode: token usage/)).toBeInTheDocument();
+    const rows = within(screen.getByRole("table", { name: "Usage since gateway startup" })).getAllByRole("row");
+    expect(rows).toHaveLength(3);
+    // Columns: model, attempted, completed, failed.
+    expect(within(rows[1]).getAllByRole("cell").map((c) => c.textContent)).toEqual(["qwen3-1.7b", "7", "2", "5"]);
+    expect(within(rows[2]).getAllByRole("cell").map((c) => c.textContent)).toEqual(["qwen3-4b", "9", "9", "0"]);
+  });
+});
+
+describe("Issue 32", () => {
+  it("explains how to try a simulated failure on Health", async () => {
+    const user = renderWith(fakeGateway());
+    await user.click(screen.getByRole("button", { name: "Health" }));
+    expect(await screen.findByRole("heading", { name: "Try a simulated failure" })).toBeInTheDocument();
+    expect(screen.getByText(/The team runs this as a demo, on a host testers do not use/)).toBeInTheDocument();
+    // Numbers come from the controller rules in the fixture.
+    expect(screen.getByText(/After 5 failed replies, the controller disables qwen3-1\.7b/)).toBeInTheDocument();
+    expect(screen.getByText(/Finish within 60 s/)).toBeInTheDocument();
   });
 });

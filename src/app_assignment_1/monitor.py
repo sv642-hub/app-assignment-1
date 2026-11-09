@@ -1,4 +1,4 @@
-"""In-memory format-failure monitor and controller for the backends.
+"""In-memory failure monitor and controller for the backends.
 
 State lives in the gateway process and resets on restart.
 """
@@ -17,9 +17,13 @@ from app_assignment_1.schemas import (
     Intervention,
 )
 
+Outcome = Literal["ok", "format_failure", "call_error"]
+
 
 class Controller:
-    """Disables a backend whose recent format-failure rate crosses a threshold.
+    """Disables a backend whose recent failure rate crosses a threshold.
+
+    A failure is a reply that fails the format check or a call that raises.
 
     Rules: a sliding window per backend, a minimum sample count before acting,
     a cooldown after which the backend is re-enabled with a fresh window, and an
@@ -32,7 +36,7 @@ class Controller:
         settings: Settings,
         clock: Callable[[], float] = time.monotonic,
     ):
-        self.windows: dict[BackendName, deque[bool]] = {
+        self.windows: dict[BackendName, deque[Outcome]] = {
             name: deque(maxlen=settings.monitor_window) for name in names
         }
         self.window = settings.monitor_window
@@ -68,16 +72,35 @@ class Controller:
         return False
 
     def record(self, name: BackendName, failed: bool, can_disable: bool) -> str | None:
-        """Record one response; return the action taken, if any."""
+        """Record one reply's format check; return the action taken, if any."""
+        outcome: Outcome = "format_failure" if failed else "ok"
+        return self._record(name, outcome, can_disable)
+
+    def record_error(self, name: BackendName, can_disable: bool) -> str | None:
+        """Record one call that raised; return the action taken, if any."""
+        return self._record(name, "call_error", can_disable)
+
+    def _record(
+        self, name: BackendName, outcome: Outcome, can_disable: bool
+    ) -> str | None:
         window = self.windows[name]
-        window.append(failed)
-        rate = sum(window) / len(window)
+        window.append(outcome)
+        failures = sum(item != "ok" for item in window)
+        rate = failures / len(window)
         if len(window) < self.min_samples or rate < self.threshold:
             self.warned.discard(name)
             return None
         if name in self.disabled_until:
             return None
-        reason = f"format failure rate {rate:.0%} over last {len(window)} responses"
+        errors = window.count("call_error")
+        kind = (
+            "format failure"
+            if not errors
+            else "call error"
+            if errors == failures
+            else "failure"
+        )
+        reason = f"{kind} rate {rate:.0%} over last {len(window)} calls"
         if not can_disable:
             # Log once per run above the threshold, not on every failing request.
             if name not in self.warned:
@@ -101,12 +124,15 @@ class Controller:
         result = []
         for name, window in self.windows.items():
             disabled = self.is_disabled(name)
-            failures = sum(window)
+            format_failures = window.count("format_failure")
+            call_errors = window.count("call_error")
+            failures = format_failures + call_errors
             result.append(
                 BackendMonitor(
                     name=name,
                     samples=len(window),
-                    format_failures=failures,
+                    format_failures=format_failures,
+                    call_errors=call_errors,
                     failure_rate=round(failures / len(window), 2) if window else None,
                     disabled_by_controller=disabled,
                     disabled_for_seconds=(
