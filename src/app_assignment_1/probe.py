@@ -17,7 +17,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol, Self
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from app_assignment_1.schemas import StrictModel
 
@@ -64,7 +64,10 @@ def gate_passes(mocked: bool, difference_low: float, probe_auroc_low: float) -> 
 
 class GateReport(StrictModel):
     """A gate result. It rejects values that contradict the pass rule, so a
-    saved report loaded with `model_validate_json` is consistent too."""
+    saved report loaded with `model_validate_json` is consistent too. It is
+    frozen, so a field cannot be changed after the check runs."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     probe_auroc: float = Field(ge=0, le=1)
     probe_auroc_low: float = Field(ge=0, le=1)
@@ -237,16 +240,36 @@ def auroc_difference_interval(
     return differences[tail], differences[-tail - 1]
 
 
+# Characters that change a string without changing how it reads. After NFKC:
+# combining grapheme joiner, variation selectors, Mongolian free variation
+# selectors, Hangul fillers and the blank braille pattern.
+_INVISIBLE = frozenset(
+    {0x034F, 0x115F, 0x1160, 0x180B, 0x180C, 0x180D, 0x180F, 0x2800}
+    | set(range(0xFE00, 0xFE10))
+    | set(range(0xE0100, 0xE01F0))
+)
+
+
+def _is_invisible(char: str) -> bool:
+    category = unicodedata.category(char)
+    if category == "Cf" or ord(char) in _INVISIBLE:
+        return True
+    # Control characters, except tabs and newlines, which separate words.
+    return category == "Cc" and not char.isspace()
+
+
 def normalize_prompt(prompt: str) -> str:
-    """The form used to compare prompts, here and in the dev split.
+    """The form `run_gate` uses to compare prompts.
 
     NFKC merges composed and decomposed accents and fullwidth letters.
-    Format characters (Unicode category Cf: zero-width space, word joiner,
-    byte order mark, soft hyphen) are dropped. Then case and whitespace are
-    ignored. Paraphrases still count as different prompts.
+    Invisible characters are dropped: format characters (category Cf, such
+    as zero-width spaces and byte order marks), control characters other
+    than whitespace, and the characters in `_INVISIBLE`. Then case and
+    whitespace are ignored. This list is not complete, and look-alike
+    letters from other scripts and paraphrases still count as different.
     """
     text = unicodedata.normalize("NFKC", prompt)
-    text = "".join(char for char in text if unicodedata.category(char) != "Cf")
+    text = "".join(char for char in text if not _is_invisible(char))
     text = unicodedata.normalize("NFKC", text.casefold())
     return " ".join(text.split())
 

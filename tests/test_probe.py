@@ -413,8 +413,14 @@ HIDDEN_VARIANTS = {
     "word joiner": "good train\u2060 1",
     "byte order mark": "\ufeffgood train 1",
     "soft hyphen": "go\u00adod train 1",
-    "non-breaking space": "good\u00a0train 1",
     "fullwidth letters": "\uff47\uff4f\uff4f\uff44 train 1",
+    "null character": "good\x00 train 1",
+    "control character": "good\x01 train 1",
+    "combining grapheme joiner": "good\u034f train 1",
+    "variation selector": "good\ufe0f train 1",
+    "Hangul filler": "good\u3164 train 1",
+    "halfwidth Hangul filler": "good train\uffa0 1",
+    "blank braille pattern": "good\u2800 train 1",
 }
 
 
@@ -437,6 +443,16 @@ def test_normalize_prompt_merges_composed_and_decomposed_accents() -> None:
 
 def test_normalize_prompt_keeps_different_words_apart() -> None:
     assert normalize_prompt("top up card") != normalize_prompt("top-up card")
+
+
+@pytest.mark.parametrize("separator", ["\t", "\n", "\r\n", "\u00a0"])
+def test_normalize_prompt_treats_whitespace_controls_as_spaces(separator: str) -> None:
+    assert normalize_prompt(f"good{separator}train") == "good train"
+
+
+def test_normalize_prompt_does_not_merge_look_alike_letters() -> None:
+    # Documented limit: Cyrillic "о" looks like Latin "o" but stays different.
+    assert normalize_prompt("g\u043e\u043ed") != normalize_prompt("good")
 
 
 def valid_report(**change: object) -> dict[str, object]:
@@ -477,6 +493,17 @@ def test_report_accepts_a_consistent_result() -> None:
 def test_report_rejects_a_contradictory_result(change: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
         GateReport.model_validate(valid_report(**change))
+
+
+def test_report_cannot_be_changed_after_it_is_built() -> None:
+    report = run_gate(
+        examples(0.5, 0.5), dev_examples(0.5, 0.5), MockLabelLeakExtractor(), RUN_INFO
+    )
+
+    assert not report.passed
+    with pytest.raises(ValidationError):
+        report.passed = True  # type: ignore[misc]
+    assert not report.passed
 
 
 def test_saved_report_with_a_contradiction_fails_to_load() -> None:

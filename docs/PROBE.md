@@ -19,12 +19,12 @@ The probe passes only if all three of these hold (`gate_passes`):
 - The 95% interval on the AUROC difference (probe minus token confidence) stays above zero. `auroc_difference_interval` gets this from a paired bootstrap: 2,000 resamples with a fixed seed, using the same examples for both scores and resampling each class on its own.
 - The 95% interval on the probe's own AUROC stays above 0.5 (`probe_auroc_low` > 0.5). Without this, a broken extractor that returns the same vector every time scores exactly 0.5 and would pass whenever token confidence ranks worse than chance. The interval comes from the same bootstrap, run against a constant score, whose AUROC is always 0.5.
 
-`GateReport` checks itself against this rule: it rejects a report where `passed` disagrees with the rule, or where an interval's low end is above its high end. This also applies to a saved report loaded with `model_validate_json`.
+`GateReport` checks this rule when a report is built or loaded with `model_validate_json`: it rejects a report where `passed` disagrees with the rule, or where an interval's low end is above its high end. The report is frozen, so its fields cannot be changed afterwards. `model_construct` skips all checks, so do not use it for reports.
 
-Before comparing prompts, `normalize_prompt` applies Unicode NFKC, drops format characters (such as zero-width spaces, word joiners, byte order marks and soft hyphens), ignores case and collapses whitespace. The dev split should use the same function. Paraphrases are not caught. After normalizing, `run_gate` raises an error if:
+`run_gate` compares prompts after `normalize_prompt`, so it does not depend on how the dev split was cleaned. `normalize_prompt` applies Unicode NFKC, drops invisible characters, ignores case and collapses whitespace. The invisible characters it drops are format characters (such as zero-width spaces, byte order marks and soft hyphens), control characters other than whitespace, variation selectors, the combining grapheme joiner, Hangul fillers and the blank braille pattern. This list covers known cases, not every possible one. Look-alike letters from other scripts (such as Cyrillic "о" for Latin "o") and paraphrases are not caught. After normalizing, `run_gate` raises an error if:
 
 - a prompt appears in both sets, because it would inflate the probe's score;
-- a prompt appears twice in the same set, because the bootstrap and the 20-per-class check would count the copies as independent examples. In the no-signal runs from the review of #62, one wrong prompt copied 20 times passed the old gate in 37.4% of runs.
+- a prompt appears twice in the same set, because the bootstrap and the 20-per-class check would count the copies as independent examples. In synthetic no-signal runs reported in the review of #62 (not rerun here), one wrong prompt copied 20 times passed the old gate in 37.4% of runs.
 
 `train_probe` raises an error if the training set has only one class.
 
