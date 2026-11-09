@@ -9,10 +9,9 @@ from typing import Protocol
 from pydantic import Field, model_validator
 
 from app_assignment_1.intents import load_intents, match_intent, words
+from app_assignment_1.labels import UNKNOWN
 from app_assignment_1.records import ROUTE_OPTIONS, check_probabilities
 from app_assignment_1.schemas import RoutingDecision, StrictModel
-
-UNKNOWN = "unknown"
 
 
 class JevAnswer(StrictModel):
