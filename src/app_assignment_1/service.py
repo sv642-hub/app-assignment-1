@@ -183,6 +183,9 @@ class Gateway:
             format_errors = check_reply(reply)
             if intent not in self.labels.names:
                 format_errors.append("unknown_label")
+            elif intent == UNKNOWN and facts:
+                # No intent means no card, so there is nothing to ground facts.
+                format_errors.append("unknown_policy_facts")
         if format_errors:
             # Keep malformed generated content out of the UI and stored response.
             intent = "unknown"

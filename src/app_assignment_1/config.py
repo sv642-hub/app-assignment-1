@@ -34,9 +34,9 @@ class Settings(BaseSettings):
     jev_base_url: AnyHttpUrl = AnyHttpUrl("https://api.typesafe.ai")
     jev_api_key: SecretStr | None = None
     jev_model: str = Field(default="jev-1.14.0", min_length=1)
-    # USD per million tokens; leave unset when unknown, and cost stays null.
+    # USD per million input tokens; Jev does not charge for output tokens.
+    # Leave unset when unknown, and cost stays null.
     jev_input_price_per_million_usd: float | None = Field(default=None, ge=0)
-    jev_output_price_per_million_usd: float | None = Field(default=None, ge=0)
     jev_breaker_failures: int = Field(default=5, ge=1, le=1000)
     jev_breaker_cooldown_seconds: float = Field(default=30, gt=0, le=3600)
     request_deadline_seconds: float = Field(default=45, gt=0, le=600)
@@ -66,6 +66,13 @@ class Settings(BaseSettings):
             self.jev_api_key is None or not self.jev_api_key.get_secret_value()
         ):
             raise ValueError("provider_mode 'real' needs APP_JEV_API_KEY")
+        return self
+
+    @model_validator(mode="after")
+    def real_mode_needs_https(self) -> "Settings":
+        # The client sends the API key with every request.
+        if self.provider_mode == "real" and self.jev_base_url.scheme != "https":
+            raise ValueError("provider_mode 'real' needs an https APP_JEV_BASE_URL")
         return self
 
 

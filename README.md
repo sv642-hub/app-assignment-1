@@ -102,11 +102,11 @@ Pydantic Settings reads `.env` then `env/.env` in native local runs. Process env
 | `APP_MONITOR_MIN_SAMPLES` | `5` | Calls needed before the controller may act; at most the window |
 | `APP_MONITOR_FAILURE_THRESHOLD` | `0.5` | Failure rate (failed format checks plus failed calls) that disables a backend |
 | `APP_CONTROLLER_COOLDOWN_SECONDS` | `60` | How long a disabled backend stays out |
-| `APP_PROVIDER_MODE` | `mock` | `mock` or `real`. Real mode needs `APP_JEV_API_KEY` and is rejected at startup until the real clients exist |
+| `APP_PROVIDER_MODE` | `mock` | `mock` or `real`. Real mode needs `APP_JEV_API_KEY` and an `https` `APP_JEV_BASE_URL`, and is rejected at startup until the real clients exist |
 | `APP_JEV_BASE_URL` | `https://api.typesafe.ai` | TypeSafe API for real Jev calls (not used yet) |
 | `APP_JEV_API_KEY` | unset | Server-side TypeSafe key; set only in the real env file |
 | `APP_JEV_MODEL` | `jev-1.14.0` | Pinned Jev version, not an alias such as `jev-latest` |
-| `APP_JEV_INPUT_PRICE_PER_MILLION_USD`, `APP_JEV_OUTPUT_PRICE_PER_MILLION_USD` | unset | Jev token prices for cost estimates; cost stays null while unset |
+| `APP_JEV_INPUT_PRICE_PER_MILLION_USD` | unset | Jev input token price for cost estimates; Jev does not charge for output tokens. Cost stays null while unset |
 | `APP_JEV_BREAKER_FAILURES` | `5` | Consecutive Jev failures before the circuit breaker skips Jev (not used yet) |
 | `APP_JEV_BREAKER_COOLDOWN_SECONDS` | `30` | How long the breaker skips Jev (not used yet) |
 | `APP_REQUEST_DEADLINE_SECONDS` | `45` | Total time for one chat request (not used yet) |

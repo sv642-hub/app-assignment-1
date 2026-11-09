@@ -106,6 +106,27 @@ def test_uncarded_intent_with_policy_facts_fails_format_check():
     assert result.trace.format_errors == ["uncarded_policy_facts"]
 
 
+def test_unknown_with_policy_facts_fails_format_check():
+    result = chat_with(
+        BackendReply(
+            intent=UNKNOWN, reply="Please describe it.", policy_facts=["Invented."]
+        )
+    )
+    assert result.policy_facts == []
+    assert result.reply.startswith("Sorry,")
+    assert result.trace.reply_source == "format_fallback"
+    assert result.trace.format_errors == ["unknown_policy_facts"]
+
+
+def test_unknown_without_policy_facts_still_passes():
+    result = chat_with(
+        BackendReply(intent=UNKNOWN, reply="Please describe it.", policy_facts=[])
+    )
+    assert result.reply == "Please describe it."
+    assert result.trace.reply_source == "no_match"
+    assert result.trace.format_check == "passed"
+
+
 def test_empty_reply_for_a_carded_intent_still_fails():
     result = chat_with(BackendReply(intent="card_arrival", reply="", policy_facts=[]))
     assert result.trace.format_errors == ["empty_reply"]
@@ -124,6 +145,23 @@ def test_real_mode_needs_a_key():
         Settings(_env_file=None, provider_mode="real")
     with pytest.raises(ValidationError, match="APP_JEV_API_KEY"):
         Settings(_env_file=None, provider_mode="real", jev_api_key="")
+
+
+def test_real_mode_needs_an_https_jev_url():
+    with pytest.raises(ValidationError, match="https APP_JEV_BASE_URL"):
+        Settings(
+            _env_file=None,
+            provider_mode="real",
+            jev_api_key="test-key",
+            jev_base_url="http://api.example.com",
+        )
+    # Mock mode sends nothing, so the URL is not checked there.
+    Settings(_env_file=None, jev_base_url="http://localhost:9000")
+
+
+def test_jev_output_price_is_not_a_setting():
+    with pytest.raises(ValidationError, match="jev_output_price_per_million_usd"):
+        Settings(_env_file=None, jev_output_price_per_million_usd=1)
 
 
 def test_real_mode_is_rejected_until_the_clients_exist():
