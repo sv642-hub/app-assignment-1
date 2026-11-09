@@ -62,7 +62,7 @@ docker compose up -d --build --wait
 
 Open [the chat](http://localhost:8080) and click an example or type your own message, then press Enter. The **Health** screen is in the sidebar. [API documentation](http://localhost:8080/docs) and the [health endpoint](http://localhost:8080/v1/health) use the same port.
 
-The stack has two services. `proxy` is Caddy (pinned to 2.11.7 and the tested multi-platform image digest) with the built React app baked in: [`frontend/Dockerfile`](frontend/Dockerfile) builds it with Node, then copies only the static files into the Caddy image. Caddy serves the app at `/` and proxies `/v1/*`, `/docs`, `/redoc` and `/openapi.json` to `gateway`. Only Caddy publishes a host port (`8080`); gateway port `8000` stays inside the Compose network. Both services restart unless stopped, and the proxy starts once the gateway is healthy.
+The stack runs `proxy` and `gateway` for the app. `proxy` is Caddy (pinned to 2.11.7 and the tested multi-platform image digest) with the built React app baked in: [`frontend/Dockerfile`](frontend/Dockerfile) builds it with Node, then copies only the static files into the Caddy image. Caddy serves the app at `/` and proxies `/v1/*`, `/docs`, `/redoc` and `/openapi.json` to `gateway`. Only Caddy publishes a host port (`8080`); gateway port `8000` stays inside the Compose network. Both services restart unless stopped, and the proxy starts once the gateway is healthy. A third service, `prometheus`, collects gateway metrics; see [Metrics and Prometheus](#metrics-and-prometheus).
 
 ```bash
 docker compose ps
@@ -73,6 +73,40 @@ docker compose down
 ```
 
 Request history is in memory, bounded to the most recent 1,000 successful requests by default. It is lost when the gateway restarts. Run one gateway worker. No database or model volume is needed for this prototype. JSON configuration persists in the repository and is mounted read-only.
+
+## Metrics and Prometheus
+
+The gateway serves Prometheus metrics at `GET /metrics` on port 8000. This path is internal: it is not under `/v1`, it is not in the API docs, and Caddy does not proxy it, so `http://localhost:8080/metrics` returns the React app. The smoke test checks this.
+
+The `prometheus` service (Prometheus 3.15.1, config in [`prometheus/prometheus.yml`](prometheus/prometheus.yml)) scrapes `gateway:8000/metrics` every 15 seconds over the Compose network. It publishes no port. Its data is kept in the `prometheus-data` volume until you run `docker compose down -v`.
+
+| Metric | Labels | Meaning |
+| --- | --- | --- |
+| `gateway_chat_requests_total` | `route`, `model`, `reply_source`, `format_check` | Chat requests that got a reply |
+| `gateway_chat_unavailable_total` | none | Chat requests that got a 503 |
+| `gateway_chat_latency_seconds` | none | Histogram of time spent in the gateway per chat request, including 503s |
+| `gateway_backend_calls_attempted_total`, `_completed_total`, `_failed_total` | `model` | Backend calls, the same numbers as `usage` in `/v1/health` |
+| `gateway_jev_fallbacks_total` | `reason` (`jev_timeout`, `jev_error`) | Requests routed by the rule router because Jev failed |
+| `gateway_model_disabled` | `model` | 1 while the controller has the model disabled |
+| `gateway_monitor_failure_rate`, `gateway_monitor_window_samples` | `model` | Failure rate and number of calls in the monitor window (rate is 0 when the window is empty) |
+| `gateway_controller_interventions_total` | `action`, `model` | Controller actions: `disabled`, `re-enabled`, `kept_last_backend` |
+
+Labels only take values from fixed lists. Message text, replies and request IDs are never labels; a test checks this. All values are in memory and reset when the gateway restarts. A re-enable is counted when the gateway next checks the model (a request, `/v1/health` or a scrape), not at the exact end of the cooldown. With the mock backends, latency includes the simulated delay and says nothing about real model speed. There are no token, cost or quality metrics yet, and Prometheus does not scrape vLLM or a separate monitor because neither exists yet.
+
+To look at metrics without publishing a port:
+
+```bash
+# Raw gateway metrics
+docker compose exec gateway python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/metrics').read().decode())"
+
+# Is Prometheus scraping the gateway? Look for "health":"up".
+docker compose exec prometheus wget -qO- http://127.0.0.1:9090/api/v1/targets
+
+# Query Prometheus, e.g. chat requests per model
+docker compose exec prometheus wget -qO- 'http://127.0.0.1:9090/api/v1/query?query=sum%20by%20(model)%20(gateway_chat_requests_total)'
+```
+
+Prometheus has no published port, including on your own machine. Use the `docker compose exec` commands above to read metrics and run queries.
 
 ## Configuration and env files
 
@@ -288,12 +322,12 @@ uv run pytest
 cd frontend && npm test
 ```
 
-CI runs these checks, the frontend tests and build, and a Compose smoke test through port 8080. Frontend tests (Vitest and Testing Library, with `fetch` stubbed) cover the chat round trip, the details panel, error messages, and the Health screen in healthy and degraded states. Tests cover all ten intents, unknown messages, Jev failure and timeout, the rule router, backend fallback, label checks, the monitor and controller rules, request validation, policy grounding, settings overrides, bounded history and health responsiveness during simulated inference.
+CI runs these checks, the frontend tests and build, a Compose smoke test through port 8080, and a check that Prometheus reports the gateway target as up. Frontend tests (Vitest and Testing Library, with `fetch` stubbed) cover the chat round trip, the details panel, error messages, and the Health screen in healthy and degraded states. Tests cover all ten intents, unknown messages, Jev failure and timeout, the rule router, backend fallback, label checks, the monitor and controller rules, request validation, policy grounding, settings overrides, bounded history, health responsiveness during simulated inference, and the Prometheus metrics (values after requests, no message text, not served through Caddy).
 
-- `src/app_assignment_1/`: settings, API contracts, routing interface, mock service, and the monitor and controller.
+- `src/app_assignment_1/`: settings, API contracts, routing interface, mock service, the monitor and controller, and Prometheus metrics.
 - `frontend/`: the React + Vite app (`src/components/ChatView.jsx`, `HealthView.jsx`, `Sidebar.jsx`) and its Dockerfile. Jev and Dashboard screens are listed as coming soon.
 - `config/`: validated mock behavior, editable without Python changes.
-- `Dockerfile` (gateway), `frontend/Dockerfile` (proxy and app), `compose.yml`, `Caddyfile`: deployment with one published port.
+- `Dockerfile` (gateway), `frontend/Dockerfile` (proxy and app), `compose.yml`, `Caddyfile`, `prometheus/prometheus.yml`: deployment with one published port.
 - `tests/`: unit and API tests. `scripts/smoke_compose.py`: public-proxy smoke test.
 - `discussion.md`, `problem2-local-run.md`, benchmark results: historical Assignment 2 records. The original SmolLM2 implementation and measurement scripts remain in Git history before this prototype.
 
