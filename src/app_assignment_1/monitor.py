@@ -6,7 +6,7 @@ Postgres; `unsaved` holds the ones it has not saved yet.
 """
 
 import time
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -49,6 +49,8 @@ class Controller:
         self.disabled_until: dict[BackendName, float] = {}
         self.warned: set[BackendName] = set()
         self.log: deque[Intervention] = deque(maxlen=50)
+        # Every intervention since start; the log above keeps only the latest.
+        self.action_counts: Counter[tuple[str, BackendName]] = Counter()
         self.unsaved: list[Intervention] = []
 
     def _note(
@@ -62,6 +64,7 @@ class Controller:
         item = Intervention(at=at, backend=name, action=action, reason=reason)
         self.log.append(item)
         self.unsaved.append(item)
+        self.action_counts[(action, name)] += 1
 
     def is_disabled(self, name: BackendName) -> bool:
         until = self.disabled_until.get(name)

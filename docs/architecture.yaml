@@ -56,7 +56,7 @@ components:
     owner: Verness
     items:
       - built: "POST /v1/chat, GET /v1/requests/{id}, GET /v1/health (recent requests, usage), /docs"
-      - todo: /v1/metrics
+      - built: GET /metrics, internal (not via Caddy)
       - todo: Operator routes and operator token
 
   router_client:
@@ -125,10 +125,12 @@ components:
   prometheus:
     title: prometheus
     tag: ":9090"
-    owner: null
+    owner: Sebastian
     items:
-      - todo: Scrapes gateway, monitor and vLLM
-      - todo: Latency, errors, cost, quality signals
+      - built: Scrapes the gateway; no published port
+      - built: Requests, latency, errors, Jev fallbacks, controller
+      - todo: vLLM and monitor targets
+      - todo: Cost and quality signals
 
   postgres:
     title: postgres
@@ -196,6 +198,7 @@ components:
       - built: pytest, ruff, mypy, frontend tests and Compose smoke on every push
       - built: Routing, Jev failure, fallback, neither backend available
       - built: Architecture diagram matches docs/architecture.yaml
+      - built: Prometheus reports the gateway target up
       - todo: Probe smoke test (stretch)
 
   chaos:
@@ -228,7 +231,7 @@ layout:
   # Dashed hosts, solid groups and the testing band, drawn behind the boxes.
   areas:
     - {at: [22, 1345, 1956, 270], style: band, title: Testing and evaluation, note: "Smoke tests prove the parts connect; correctness and probe accuracy need offline evaluation"}
-    - {at: [270, 150, 1075, 1170], style: host, title: Jetstream2 CPU instance, note: "Proxy, gateway and postgres run today; 3 of 6 planned services · host: Pavlos"}
+    - {at: [270, 150, 1075, 1170], style: host, title: Jetstream2 CPU instance, note: "Compose runs proxy, gateway, postgres and prometheus: 4 of 6 planned services · host: Pavlos"}
     - {at: [1395, 150, 420, 640], style: host, title: Jetstream2 GPU instance, note: "Not set up · Pavlos"}
     - {at: [605, 190, 715, 565], style: group, title: gateway, note: "FastAPI · :8000 · monitor state in memory · owner: Verness"}
     - {at: [605, 800, 715, 265], style: group, title: monitor, note: "Runs inside the gateway for now · owner: Sebastian"}
@@ -255,7 +258,7 @@ layout:
     model_volume: [1420, 545, 370, 105]
     jev_api: [1420, 840, 370, 190]
     probe: [1420, 1080, 370, 190]
-    ci: [45, 1395, 465, 200]
+    ci: [45, 1395, 465, 205]
     chaos: [530, 1395, 465, 200]
     evaluation: [1015, 1395, 460, 200]
     reports: [1495, 1395, 455, 200]
@@ -275,7 +278,7 @@ layout:
     - {kind: planned, points: [[1320, 670], [1360, 670], [1360, 890], [1420, 890]], label: "route + intent, awaited", label_at: [1440, 815]}
     - {kind: async, points: [[1320, 960], [1420, 960]], label: same call, label_at: [1370, 950]}
     - {kind: control, points: [[1200, 800], [1200, 755]], label: "reroute · fall back · roll back", label_at: [1088, 783]}
-    - {kind: planned, points: [[605, 655], [435, 655], [435, 690]], label: scrape /metrics, label_at: [520, 645]}
+    - {kind: live, points: [[605, 655], [435, 655], [435, 690]], label: scrape /metrics, label_at: [520, 645]}
     - {kind: live, points: [[605, 1020], [570, 1020]]}
     - {kind: live, points: [[605, 735], [587, 735], [587, 1020], [570, 1020]]}
     - {kind: planned, points: [[980, 1110], [980, 1065]]}

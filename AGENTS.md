@@ -8,7 +8,7 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 
 ## Layout
 
-- `src/app_assignment_1/api.py`: FastAPI app and the `/v1/chat`, `/v1/requests/{id}` and `/v1/health` routes.
+- `src/app_assignment_1/api.py`: FastAPI app, the `/v1/chat`, `/v1/requests/{id}` and `/v1/health` routes, and the internal `/metrics` route.
 - `src/app_assignment_1/service.py`: gateway flow and reply format checks; saves requests and interventions to the store.
 - `src/app_assignment_1/store.py`: `Store` interface, `MemoryStore` (default) and `PostgresStore` (psycopg 3, plain SQL), plus the migration runner.
 - `src/app_assignment_1/migrations/`: numbered SQL files applied once at startup. Add a new file for schema changes; never edit one that has run.
@@ -17,6 +17,7 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 - `src/app_assignment_1/intents.py`: keyword matching over the configured intents, shared by the mocks.
 - `src/app_assignment_1/labels.py`: loads the shared labels (77 Banking77 intents plus `unknown`) and derives `option_set_version`.
 - `src/app_assignment_1/monitor.py`: in-memory failure monitor (format failures and failed calls) and `Controller`; new interventions wait in `unsaved` until the gateway stores them.
+- `src/app_assignment_1/metrics.py`: Prometheus metrics for the gateway, served at the internal `/metrics` path (not proxied by Caddy).
 - `src/app_assignment_1/schemas.py`: Pydantic API contracts and config models.
 - `src/app_assignment_1/config.py`: cached Pydantic Settings.
 - `src/app_assignment_1/__init__.py`: package version.
@@ -26,8 +27,9 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 - `scripts/smoke_compose.py`: smoke test against the public proxy.
 - `scripts/render_architecture.py`: draws `docs/architecture.svg` from `docs/architecture.yaml`; `--check` fails if they differ.
 - `env/`: `.env.example`, `.env.production.example` and `postgres.env.example` templates. Real `env/.env` and `env/postgres.env` are optional and ignored by git. `compose.defaults.env` holds public throwaway values (store and database password) so Compose and CI start without private files; never use it for a deployment.
-- `compose.yml`: `gateway`, `postgres` (named volume `postgres-data`, no published port) and `proxy` services. `compose.chaos.yml`: override that makes the small model corrupt every reply. `compose.outage.yml`: override that makes every call to the small model raise an error.
-- `Caddyfile`: serves the React app on port 8080 and proxies `/v1`, `/docs`, `/redoc` and `/openapi.json` to the gateway.
+- `compose.yml`: `gateway`, `postgres` (named volume `postgres-data`), `proxy` and `prometheus` services; only `proxy` publishes a port. `compose.chaos.yml`: override that makes the small model corrupt every reply. `compose.outage.yml`: override that makes every call to the small model raise an error.
+- `Caddyfile`: serves the React app on port 8080 and proxies `/v1`, `/docs`, `/redoc` and `/openapi.json` to the gateway. Never add `/metrics`.
+- `prometheus/prometheus.yml`: Prometheus scrape config; scrapes `gateway:8000/metrics` on the Compose network.
 - `docs/TEAM_PLAN.md`: who owns what. `USER_BRIEF.md`: guide for beta testers.
 - `docs/architecture.yaml`: what is built, simulated or planned in each part of the architecture, and who owns it. `docs/architecture.svg` is generated from it.
 

@@ -22,6 +22,10 @@ with urlopen(base + "/", timeout=15) as page:
 for path in ["/docs", "/openapi.json", "/v1/health"]:
     assert fetch(path), path
 assert "controller" in json.loads(fetch("/v1/health"))
+# /metrics is internal: through the proxy it must be the React app, not metrics.
+metrics_page = fetch("/metrics")
+assert b"# TYPE" not in metrics_page and b"gateway_" not in metrics_page, "/metrics"
+assert b'id="root"' in metrics_page, "/metrics should fall back to the React app"
 for message, intent, model in [
     ("My card has not arrived", "card_arrival", "qwen3-1.7b"),
     ("I lost my card", "lost_or_stolen_card", "qwen3-4b"),
