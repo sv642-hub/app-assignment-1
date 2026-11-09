@@ -1,14 +1,13 @@
-"""Gateway flow and bounded, process-local request history."""
+"""Gateway flow; request history and interventions go to a Store."""
 
 import asyncio
 import logging
 import re
 import time
-from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from time import perf_counter
 from typing import Literal
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from pydantic import TypeAdapter
 
@@ -26,6 +25,7 @@ from app_assignment_1.schemas import (
     RoutingDecision,
     Trace,
 )
+from app_assignment_1.store import MemoryStore, Store
 
 logger = logging.getLogger(__name__)
 MAX_REPLY_LENGTH = 4000
@@ -54,11 +54,12 @@ class Gateway:
         router: Router,
         backends: Sequence[Backend] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        store: Store | None = None,
     ):
         self.router = router
         self.rule_router = RuleRouter(settings.rule_router_complex_min_words)
         self.jev_timeout = settings.jev_timeout_seconds
-        self.limit = settings.request_store_limit
+        self.store = store or MemoryStore(settings.request_store_limit)
         intents = load_intents(settings.intents_path)
         self.cards = TypeAdapter(dict[str, PolicyCard]).validate_json(
             settings.policy_cards_path.read_text()
@@ -85,7 +86,6 @@ class Gateway:
             raise ValueError(
                 "Configure exactly one standard 1.7b and one complex 4b backend"
             )
-        self.requests: OrderedDict[UUID, ChatResponse] = OrderedDict()
         self.controller = Controller(
             (b.config.name for b in self.backends), settings, clock
         )
@@ -99,7 +99,32 @@ class Gateway:
     def others_usable(self, backend: Backend) -> bool:
         return any(self.usable(b) for b in self.backends if b is not backend)
 
+    async def save_interventions(self) -> None:
+        """Move the controller's new interventions to the store."""
+        items, self.controller.unsaved = self.controller.unsaved, []
+        if not items:
+            return
+        try:
+            await self.store.save_interventions(items)
+        except Exception as exc:
+            # Keep them for the next attempt; the controller itself is unaffected.
+            self.controller.unsaved = items + self.controller.unsaved
+            logger.warning("Could not save interventions (%s)", type(exc).__name__)
+
     async def chat(self, message: str) -> ChatResponse:
+        try:
+            response = await self._chat(message)
+        finally:
+            # Interventions also happen on requests that end in a 503.
+            await self.save_interventions()
+        try:
+            await self.store.save_request(response)
+        except Exception as exc:
+            # The customer still gets the reply; it just cannot be looked up later.
+            logger.warning("Could not save request (%s)", type(exc).__name__)
+        return response
+
+    async def _chat(self, message: str) -> ChatResponse:
         start = perf_counter()
         reasons = []
         router_name: Literal["mock_jev", "rule_router"] = "mock_jev"
@@ -196,7 +221,4 @@ class Gateway:
                 controller_action=action,
             ),
         )
-        self.requests[response.id] = response
-        if len(self.requests) > self.limit:
-            self.requests.popitem(last=False)
         return response

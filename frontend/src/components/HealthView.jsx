@@ -144,7 +144,7 @@ function HealthBody({ health }) {
 
       <section className="card">
         <h2>Recent completed requests</h2>
-        <p className="muted small">Up to 20 retained requests that got a reply, newest first, including replies that failed the format check. Requests that got no reply (HTTP 503) are not listed. Resets on restart.</p>
+        <p className="muted small">Up to 20 retained requests that got a reply, newest first, including replies that failed the format check. Requests that got no reply (HTTP 503) are not listed. Kept across gateway restarts when it uses Postgres, as in Compose.</p>
         {!health.recent_requests?.length ? (
           <p className="muted small">No retained completed requests.</p>
         ) : (
