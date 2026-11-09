@@ -14,6 +14,8 @@ class Settings(BaseSettings):
         env_file=(".env", "env/.env"),
         env_file_encoding="utf-8",
         extra="forbid",
+        # Keep raw values, such as the Jev API key, out of printed startup errors.
+        hide_input_in_errors=True,
     )
     environment: Literal["local", "staging", "production"] = "local"
     intents_path: Path = Path("config/intents.json")

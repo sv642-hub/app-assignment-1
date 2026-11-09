@@ -44,3 +44,24 @@ def test_cache_requires_clear(monkeypatch, tmp_path):
 def test_invalid_settings(field, value):
     with pytest.raises(ValidationError):
         Settings(_env_file=None, **{field: value})
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"APP_MONITOR_MIN_SAMPLES": "30"},  # more than the window of 20
+        {"APP_REQUEST_DEADLINE_SECONDS": "10"},  # less than timeout + reserve
+        {"APP_JEV_TIMEOUT_SECONDS": "0"},  # a single field out of range
+    ],
+)
+def test_failed_settings_error_does_not_show_the_jev_key(monkeypatch, bad):
+    # Short, so Pydantic's shortened input would still include it if shown.
+    key = "tsk-Hunter2"
+    monkeypatch.setenv("APP_JEV_API_KEY", key)
+    for name, value in bad.items():
+        monkeypatch.setenv(name, value)
+    with pytest.raises(ValidationError) as caught:
+        Settings(_env_file=None)
+    message = str(caught.value)
+    assert key not in message
+    assert "input_value" not in message
