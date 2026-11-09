@@ -184,7 +184,7 @@ components:
     items:
       - todo: Skeleton and gate check
       - todo: Load Qwen3-1.7B outside vLLM; real activations
-      - todo: Gate run due Friday, November 13
+      - todo: Gate run due Friday, November 20
 
   ci:
     title: CI smoke tests (GitHub Actions)

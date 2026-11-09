@@ -35,7 +35,7 @@ Final project for DSAN 6700. This file records who owns what. Owners decide and 
 
 ## Probe gate
 
-The probe must beat the model's own token-probability confidence (AUROC on the dev set) by **Friday, November 13, 2026**. If it does not, it is reported as an offline result and stays out of the live system.
+The probe must beat the model's own token-probability confidence (AUROC on the dev set) by **Friday, November 20, 2026**. If it does not, it is reported as an offline result and stays out of the live system.
 
 ## Diagrams
 
