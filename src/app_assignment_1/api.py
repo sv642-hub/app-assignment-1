@@ -16,18 +16,32 @@ from app_assignment_1.schemas import (
     RecentRequest,
 )
 from app_assignment_1.service import BackendUnavailable, Gateway
+from app_assignment_1.store import Store, create_store
 
 
 def create_app(
-    settings: Settings | None = None, router: Router | None = None
+    settings: Settings | None = None,
+    router: Router | None = None,
+    store: Store | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         configured = settings or get_settings()
-        app.state.gateway = Gateway(
-            configured, router or MockJevRouter(configured.intents_path)
+        opened = store or create_store(configured)
+        gateway = Gateway(
+            configured,
+            router or MockJevRouter(configured.intents_path),
+            store=opened,
         )
-        yield
+        await opened.open()
+        app.state.gateway = gateway
+        try:
+            yield
+        finally:
+            # Save anything noticed since the last request, such as a re-enable
+            # seen by a /metrics scrape.
+            await gateway.save_interventions()
+            await opened.close()
 
     app = FastAPI(
         title="Smart AI Gateway (mock prototype)",
@@ -51,7 +65,7 @@ def create_app(
     @app.get("/v1/requests/{request_id}", response_model=ChatResponse)
     async def get_request(request_id: UUID, request: Request) -> ChatResponse:
         gateway: Gateway = request.app.state.gateway
-        result = gateway.requests.get(request_id)
+        result = await gateway.store.get_request(request_id)
         if result is None:
             raise HTTPException(404, "Request not found or no longer retained")
         return result
@@ -59,10 +73,12 @@ def create_app(
     @app.get("/v1/health", response_model=HealthResponse)
     async def health(request: Request) -> HealthResponse:
         gateway: Gateway = request.app.state.gateway
+        healthy = all(gateway.usable(b) for b in gateway.backends)
+        monitor = gateway.controller.stats()
+        # stats() may log a re-enable; save it before reading the log back.
+        await gateway.save_interventions()
         return HealthResponse(
-            status="ok"
-            if all(gateway.usable(b) for b in gateway.backends)
-            else "degraded",
+            status="ok" if healthy else "degraded",
             recent_requests=[
                 RecentRequest(
                     completed_at=r.completed_at,
@@ -71,12 +87,12 @@ def create_app(
                     fallback_reason=r.trace.fallback_reason,
                     format_check=r.trace.format_check,
                 )
-                for r in list(gateway.requests.values())[-20:][::-1]
+                for r in await gateway.store.recent_requests(20)
             ],
             usage=list(gateway.usage.values()),
             backends=[b.config for b in gateway.backends],
-            monitor=gateway.controller.stats(),
-            interventions=list(gateway.controller.log),
+            monitor=monitor,
+            interventions=await gateway.store.recent_interventions(50),
             controller=gateway.controller.rules(),
         )
 

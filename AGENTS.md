@@ -4,17 +4,19 @@ Instructions for coding agents (Claude Code, Codex, Cursor) and for anyone pasti
 
 ## Project
 
-Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes banking-support messages to a small or large Qwen model, monitors reply quality, and recovers on its own. Jev and the Qwen backends are currently mocked by JSON files in config/; real clients replace them behind the same interfaces.
+Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes banking-support messages to a small or large Qwen model, monitors reply quality, and recovers on its own. Jev and the Qwen backends are currently mocked by JSON files in config/; real clients replace them behind the same interfaces. Request history and controller interventions go through a `Store`: in memory by default and in tests, Postgres in Compose.
 
 ## Layout
 
 - `src/app_assignment_1/api.py`: FastAPI app, the `/v1/chat`, `/v1/requests/{id}` and `/v1/health` routes, and the internal `/metrics` route.
-- `src/app_assignment_1/service.py`: gateway flow, reply format checks, in-memory request history.
+- `src/app_assignment_1/service.py`: gateway flow and reply format checks; saves requests and interventions to the store.
+- `src/app_assignment_1/store.py`: `Store` interface, `MemoryStore` (default) and `PostgresStore` (psycopg 3, plain SQL), plus the migration runner.
+- `src/app_assignment_1/migrations/`: numbered SQL files applied once at startup. Add a new file for schema changes; never edit one that has run.
 - `src/app_assignment_1/router.py`: `Router` interface, `MockJevRouter`, and the fallback `RuleRouter`.
 - `src/app_assignment_1/backends.py`: `Backend` interface and `MockBackend` (the mock Qwen backends).
 - `src/app_assignment_1/intents.py`: keyword matching over the configured intents, shared by the mocks.
 - `src/app_assignment_1/labels.py`: loads the shared labels (77 Banking77 intents plus `unknown`) and derives `option_set_version`.
-- `src/app_assignment_1/monitor.py`: in-memory failure monitor (format failures and failed calls) and `Controller`.
+- `src/app_assignment_1/monitor.py`: in-memory failure monitor (format failures and failed calls) and `Controller`; new interventions wait in `unsaved` until the gateway stores them.
 - `src/app_assignment_1/metrics.py`: Prometheus metrics for the gateway, served at the internal `/metrics` path (not proxied by Caddy).
 - `src/app_assignment_1/schemas.py`: Pydantic API contracts and config models.
 - `src/app_assignment_1/config.py`: cached Pydantic Settings.
@@ -24,8 +26,8 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 - `tests/`: pytest suite. Frontend tests are in `frontend/src/App.test.jsx`.
 - `scripts/smoke_compose.py`: smoke test against the public proxy.
 - `scripts/render_architecture.py`: draws `docs/architecture.svg` from `docs/architecture.yaml`; `--check` fails if they differ.
-- `env/`: `.env.example` and `.env.production.example` templates. A real `env/.env` is optional and ignored by git.
-- `compose.yml`: `gateway`, `proxy` and `prometheus` services. `compose.chaos.yml`: override that makes the small model corrupt every reply. `compose.outage.yml`: override that makes every call to the small model raise an error.
+- `env/`: `.env.example`, `.env.production.example` and `postgres.env.example` templates. Real `env/.env` and `env/postgres.env` are optional and ignored by git. `compose.defaults.env` holds public throwaway values (store and database password) so Compose and CI start without private files; never use it for a deployment.
+- `compose.yml`: `gateway`, `postgres` (named volume `postgres-data`), `proxy` and `prometheus` services; only `proxy` publishes a port. `compose.chaos.yml`: override that makes the small model corrupt every reply. `compose.outage.yml`: override that makes every call to the small model raise an error.
 - `Caddyfile`: serves the React app on port 8080 and proxies `/v1`, `/docs`, `/redoc` and `/openapi.json` to the gateway. Never add `/metrics`.
 - `prometheus/prometheus.yml`: Prometheus scrape config; scrapes `gateway:8000/metrics` on the Compose network.
 - `docs/TEAM_PLAN.md`: who owns what. `USER_BRIEF.md`: guide for beta testers.
@@ -39,8 +41,9 @@ Run from the repo root unless noted. CI uses Python 3.13 and Node 22.
 # Install
 uv sync --extra dev --frozen
 
-# Python tests
+# Python tests (Postgres store tests are skipped unless TEST_DATABASE_URL is set)
 uv run pytest
+TEST_DATABASE_URL=postgresql://postgres:test@127.0.0.1:55432/postgres uv run pytest
 
 # Lint and type check
 uv run ruff check
@@ -81,7 +84,8 @@ docker compose down
 - Work on a branch and open a pull request; never push to main.
 - Run the tests and pre-commit before committing; keep CI green.
 - Only port 8080 (Caddy) is published. Never publish gateway, database, Prometheus or vLLM ports.
-- Settings come from Pydantic Settings and env/ files. Never commit secrets or a real .env.
+- Settings come from Pydantic Settings and env/ files. Never commit secrets or a real .env. Only `APP_` keys belong in `env/.env`; the Postgres container's password goes in `env/postgres.env`.
+- Never store the customer's message text. `ChatResponse` has no message field; keep it that way.
 - Mocks sit behind interfaces (router, backends). Replace them by adding a real implementation, not by editing callers.
 - Do not edit the frozen evaluation set or human grades once they exist.
 - Docs use plain language. Do not claim results that have not been measured.
