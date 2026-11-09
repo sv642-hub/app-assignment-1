@@ -4,7 +4,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from uuid import UUID
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
+from prometheus_client import CONTENT_TYPE_LATEST
 
 from app_assignment_1.config import Settings, get_settings
 from app_assignment_1.router import MockJevRouter, Router
@@ -78,6 +79,13 @@ def create_app(
             interventions=list(gateway.controller.log),
             controller=gateway.controller.rules(),
         )
+
+    # Internal only: Caddy does not proxy /metrics, and it stays out of /v1 and
+    # the OpenAPI docs. Prometheus scrapes it on the Compose network.
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics(request: Request) -> Response:
+        gateway: Gateway = request.app.state.gateway
+        return Response(gateway.metrics.render(), media_type=CONTENT_TYPE_LATEST)
 
     return app
 

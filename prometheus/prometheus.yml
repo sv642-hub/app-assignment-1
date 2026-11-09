@@ -1,0 +1,11 @@
+# Prometheus config for the Compose stack. Prometheus has no published port;
+# it reaches the gateway by service name on the internal Compose network.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: gateway
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["gateway:8000"]

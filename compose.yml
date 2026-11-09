@@ -25,3 +25,23 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+
+  # Scrapes the gateway's internal /metrics on the Compose network. No port is
+  # published; see the README for how to look at it locally.
+  prometheus:
+    image: prom/prometheus:v3.15.1
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
