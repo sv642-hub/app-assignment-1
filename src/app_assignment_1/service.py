@@ -16,7 +16,7 @@ from app_assignment_1.backends import Backend, MockBackend
 from app_assignment_1.config import Settings
 from app_assignment_1.intents import load_intents
 from app_assignment_1.monitor import Controller
-from app_assignment_1.router import Router, RuleRouter
+from app_assignment_1.router import JevResult, Router, RuleRouter
 from app_assignment_1.schemas import (
     BackendConfig,
     BackendReply,
@@ -103,11 +103,11 @@ class Gateway:
         start = perf_counter()
         reasons = []
         router_name: Literal["mock_jev", "rule_router"] = "mock_jev"
+        decision: RoutingDecision | None = None
         try:
-            decision = RoutingDecision.model_validate(
+            result = JevResult.model_validate(
                 await asyncio.wait_for(self.router.route(message), self.jev_timeout)
             )
-            jev_choice = decision.route
         except Exception as exc:
             # Only isolate the replaceable router call. Cancellation still propagates.
             # Do not log input text, credentials or provider exception messages.
@@ -116,9 +116,28 @@ class Gateway:
             )
             timed_out = isinstance(exc, TimeoutError)
             reasons.append("jev_timeout" if timed_out else "jev_error")
+        else:
+            # Each answer stands on its own: an invalid intent answer does not
+            # stop Jev's route from being used.
+            if result.route.error_type is None:
+                decision = RoutingDecision.model_validate(
+                    {
+                        "route": result.route.choice,
+                        "confidence": result.route.confidence,
+                    }
+                )
+            else:
+                logger.warning(
+                    "Jev route answer was invalid; using rule router (%s)",
+                    result.route.error_type,
+                )
+                reasons.append("jev_invalid_route")
+        if decision is None:
             decision = await self.rule_router.route(message)
             router_name = "rule_router"
             jev_choice = None
+        else:
+            jev_choice = decision.route
         selected = next(b for b in self.backends if b.config.route == decision.route)
         action = None
         for backend in (selected, *(b for b in self.backends if b is not selected)):

@@ -10,7 +10,7 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 
 - `src/app_assignment_1/api.py`: FastAPI app and the `/v1/chat`, `/v1/requests/{id}` and `/v1/health` routes.
 - `src/app_assignment_1/service.py`: gateway flow, reply format checks, in-memory request history.
-- `src/app_assignment_1/router.py`: `Router` interface, `MockJevRouter`, and the fallback `RuleRouter`.
+- `src/app_assignment_1/router.py`: `Router` interface returning a `JevResult` (route and intent answers), `MockJevRouter`, and the fallback `RuleRouter`.
 - `src/app_assignment_1/backends.py`: `Backend` interface and `MockBackend` (the mock Qwen backends).
 - `src/app_assignment_1/intents.py`: keyword matching over the configured intents, shared by the mocks.
 - `src/app_assignment_1/monitor.py`: in-memory failure monitor (format failures and failed calls) and `Controller`.
