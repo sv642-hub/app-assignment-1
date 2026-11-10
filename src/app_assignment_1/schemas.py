@@ -158,6 +158,16 @@ class ModelUsage(StrictModel):
     estimated_cost_usd: float | None = None
 
 
+class JevBreakerStatus(StrictModel):
+    """The Jev circuit breaker. While it is not closed, the rule router routes
+    most or all messages."""
+
+    state: Literal["closed", "open", "half_open"]
+    consecutive_failures: int = Field(ge=0)
+    failure_limit: int = Field(ge=1)
+    cooldown_seconds: float = Field(gt=0)
+
+
 class HealthResponse(StrictModel):
     recent_requests: list[RecentRequest] = Field(default_factory=list)
     usage: list[ModelUsage] = Field(default_factory=list)
@@ -168,3 +178,4 @@ class HealthResponse(StrictModel):
     monitor: list[BackendMonitor]
     interventions: list[Intervention]
     controller: ControllerRules
+    jev_breaker: JevBreakerStatus

@@ -74,7 +74,7 @@ The gateway awaits this call inside the existing **2-second routing deadline**. 
 
 - After 5 consecutive whole-call failures, skip Jev for 30 seconds and use the rule router. Both limits are configurable starting values.
 - While the breaker is open, record both questions as `skipped` with `skip_reason` set to `circuit_open`. After the 30 seconds, the next message tries Jev again.
-- Report the breaker state in `/v1/health`, so the Health screen can show that routing is degraded.
+- Report the breaker state in `/v1/health` as `jev_breaker`, so the Health screen can show that Jev is skipped. The breaker does not change `status`, which stays about the backends.
 
 **Other rules:**
 

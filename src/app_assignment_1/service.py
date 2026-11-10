@@ -1,23 +1,26 @@
-"""Gateway flow; request history and interventions go to a Store."""
+"""Gateway flow; requests, their Jev assessments and interventions go to a Store."""
 
 import asyncio
 import logging
 import re
 import time
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from time import perf_counter
-from typing import Literal
-from uuid import uuid4
+from typing import Any, Literal
+from uuid import UUID, uuid4
 
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from app_assignment_1.backends import Backend, MockBackend
+from app_assignment_1.breaker import CircuitBreaker
 from app_assignment_1.config import Settings
 from app_assignment_1.intents import load_intents
 from app_assignment_1.labels import UNKNOWN, load_labels
 from app_assignment_1.metrics import GatewayMetrics
 from app_assignment_1.monitor import Controller
-from app_assignment_1.router import JevResult, Router, RuleRouter
+from app_assignment_1.records import JevAssessment, check_call
+from app_assignment_1.router import JevAnswer, JevResult, Router, RuleRouter
 from app_assignment_1.schemas import (
     BackendConfig,
     BackendReply,
@@ -30,6 +33,7 @@ from app_assignment_1.schemas import (
 from app_assignment_1.store import MemoryStore, Store
 
 logger = logging.getLogger(__name__)
+QUESTIONS: tuple[Literal["route", "intent"], ...] = ("route", "intent")
 MAX_REPLY_LENGTH = 4000
 # For a recognized intent that has no policy card. The backend sends an empty
 # reply for these; the gateway never shows generated text for them.
@@ -55,6 +59,35 @@ class BackendUnavailable(Exception):
     """No configured backend is available or able to answer."""
 
 
+def _jev_error_type(exc: Exception) -> str:
+    """A short code for a failed Jev call. Never the exception's message."""
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    code = getattr(exc, "error_type", None)
+    if isinstance(code, str) and code:
+        return code
+    if isinstance(exc, ValidationError):
+        return "invalid_result"
+    return "router_error"
+
+
+def _assessment(
+    call: dict[str, Any], question: Literal["route", "intent"], answer: JevAnswer
+) -> JevAssessment:
+    if answer.error_type is not None:
+        return JevAssessment(
+            **call, question=question, status="error", error_type=answer.error_type
+        )
+    return JevAssessment(
+        **call,
+        question=question,
+        status="ok",
+        choice=answer.choice,
+        confidence=answer.confidence,
+        probabilities=answer.probabilities,
+    )
+
+
 class Gateway:
     def __init__(
         self,
@@ -70,6 +103,14 @@ class Gateway:
                 "come in later PRs"
             )
         self.router = router
+        # Test doubles may leave these out; both real routers set them.
+        self.jev_mocked: bool = getattr(router, "mocked", True)
+        self.jev_option_set_version: str = getattr(
+            router, "option_set_version", "unspecified"
+        )
+        self.jev_breaker = CircuitBreaker(
+            settings.jev_breaker_failures, settings.jev_breaker_cooldown_seconds, clock
+        )
         self.rule_router = RuleRouter(settings.rule_router_complex_min_words)
         self.jev_timeout = settings.jev_timeout_seconds
         self.store = store or MemoryStore(settings.request_store_limit)
@@ -141,41 +182,132 @@ class Gateway:
 
     async def chat(self, message: str) -> ChatResponse:
         try:
-            response = await self._chat(message)
+            response, jev = await self._chat(message)
         finally:
             # Interventions also happen on requests that end in a 503.
             await self.save_interventions()
         try:
+            # The Jev assessments are saved with their request or not at all, so
+            # every saved assessment has a request to join to. A request that
+            # ends in a 503 or is cancelled saves neither.
             await asyncio.wait_for(
-                self.store.save_request(response), self.store_timeout
+                self.store.save_request(response, jev), self.store_timeout
             )
         except Exception as exc:
             # The customer still gets the reply; it just cannot be looked up later.
             logger.warning("Could not save request (%s)", type(exc).__name__)
         return response
 
-    async def _chat(self, message: str) -> ChatResponse:
-        # Created before any provider call, so later records can share it.
-        request_id = uuid4()
+    async def _call_jev(
+        self, request_id: UUID, message: str, reasons: list[str]
+    ) -> tuple[JevResult | None, list[JevAssessment]]:
+        """Call Jev once and build both assessments. A None result means use
+        the rule router; the reason is added to `reasons`."""
+        call_id = uuid4()
+        if not self.jev_breaker.allow():
+            reasons.append("jev_circuit_open")
+            self.metrics.jev_fallbacks.labels("jev_circuit_open").inc()
+            return None, self._jev_records(
+                request_id, call_id, status="skipped", skip_reason="circuit_open"
+            )
         start = perf_counter()
-        reasons = []
-        router_name: Literal["mock_jev", "rule_router"] = "mock_jev"
-        decision: RoutingDecision | None = None
         try:
             result = JevResult.model_validate(
                 await asyncio.wait_for(self.router.route(message), self.jev_timeout)
             )
+        except asyncio.CancelledError:
+            # The request was cancelled, for example by a client disconnect.
+            # Jev neither passed nor failed, and no record is written: the
+            # monitor would count it as a Jev outage.
+            self.jev_breaker.abandoned()
+            raise
         except Exception as exc:
             # Only isolate the replaceable router call. Cancellation still propagates.
             # Do not log input text, credentials or provider exception messages.
-            logger.warning(
-                "Jev routing failed; using rule router (%s)", type(exc).__name__
-            )
+            error_type = _jev_error_type(exc)
+            logger.warning("Jev routing failed; using rule router (%s)", error_type)
             timed_out = isinstance(exc, TimeoutError)
             reason = "jev_timeout" if timed_out else "jev_error"
             reasons.append(reason)
             self.metrics.jev_fallbacks.labels(reason).inc()
-        else:
+            self.jev_breaker.failed()
+            return None, self._jev_records(
+                request_id,
+                call_id,
+                status="timeout" if timed_out else "error",
+                error_type=error_type,
+                start=start,
+            )
+        self.jev_breaker.succeeded()
+        return result, self._jev_records(
+            request_id, call_id, start=start, result=result
+        )
+
+    def _jev_records(
+        self,
+        request_id: UUID,
+        call_id: UUID,
+        *,
+        # Used only when there is no result.
+        status: Literal["timeout", "error", "skipped"] = "error",
+        error_type: str | None = None,
+        skip_reason: Literal["circuit_open"] | None = None,
+        start: float | None = None,
+        result: JevResult | None = None,
+    ) -> list[JevAssessment]:
+        """Build and check both assessments for one call.
+
+        A record problem is logged, returns no records and never fails the
+        customer's request.
+        """
+        call: dict[str, Any] = {
+            "request_id": request_id,
+            "call_id": call_id,
+            "finished_at": datetime.now(UTC),
+            "mocked": self.jev_mocked,
+            "option_set_version": self.jev_option_set_version,
+            "latency_ms": None if start is None else (perf_counter() - start) * 1000,
+        }
+        try:
+            if result is None:
+                records = [
+                    JevAssessment(
+                        **call,
+                        question=question,
+                        status=status,
+                        error_type=error_type,
+                        skip_reason=skip_reason,
+                    )
+                    for question in QUESTIONS
+                ]
+            else:
+                call |= {
+                    "mocked": result.mocked,
+                    "jev_model": result.jev_model,
+                    "provider_request_id": result.provider_request_id,
+                    "input_tokens": result.input_tokens,
+                    "output_tokens": result.output_tokens,
+                }
+                records = [
+                    _assessment(call, "route", result.route),
+                    _assessment(call, "intent", result.intent),
+                ]
+            check_call(records)
+        except ValueError as exc:
+            # ValidationError is a ValueError. Its text can hold Jev's answer.
+            logger.warning("Could not build Jev records (%s)", type(exc).__name__)
+            return []
+        return records
+
+    async def _chat(self, message: str) -> tuple[ChatResponse, list[JevAssessment]]:
+        # Created before any provider call, so later records can share it.
+        request_id = uuid4()
+        start = perf_counter()
+        reasons: list[str] = []
+        router_name: Literal["mock_jev", "rule_router"] = "mock_jev"
+        decision: RoutingDecision | None = None
+        result, jev = await self._call_jev(request_id, message, reasons)
+        if result is not None:
             # Each answer stands on its own: an invalid intent answer does not
             # stop Jev's route from being used.
             if result.route.error_type is None:
@@ -298,4 +430,4 @@ class Gateway:
             trace.route, trace.model, trace.reply_source, trace.format_check
         ).inc()
         self.metrics.chat_latency.observe(perf_counter() - start)
-        return response
+        return response, jev

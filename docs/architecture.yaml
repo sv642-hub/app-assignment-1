@@ -65,7 +65,8 @@ components:
     items:
       - simulated: One route and intent call, 2 s timeout
       - built: Rule router on Jev timeout, error or invalid route
-      - todo: Real Jev client; circuit breaker
+      - built: Circuit breaker, 5 failures, 30 s
+      - todo: Real Jev client in the app
 
   canary_splitter:
     title: Canary splitter
@@ -102,9 +103,9 @@ components:
     title: Jev intent question
     owner: Verness
     items:
-      - built: Assessment record schema
+      - built: Gateway saves both records
       - simulated: Intent in the routing call, 11 options
-      - todo: 78 options; gateway writes records
+      - todo: 78 options in the routing call
 
   semantic_monitor:
     title: Semantic monitor

@@ -1,4 +1,5 @@
-"""Where the gateway keeps completed requests and controller interventions.
+"""Where the gateway keeps completed requests, their Jev assessments and
+controller interventions.
 
 `MemoryStore` keeps them in process memory; they are lost on restart. It is the
 default and what the tests use. `PostgresStore` keeps the same records in
@@ -19,6 +20,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 from app_assignment_1.config import PUBLIC_DATABASE_PASSWORD, Settings
+from app_assignment_1.records import JevAssessment
 from app_assignment_1.schemas import ChatResponse, Intervention
 
 logger = logging.getLogger(__name__)
@@ -29,19 +31,23 @@ MIGRATION_LOCK = 670001
 
 
 class Store(Protocol):
-    """Request history and the controller's intervention log.
+    """Request history, Jev assessments and the controller's intervention log.
 
-    The monitor's records (Jev assessments and backend responses, drafted in
-    docs/MONITOR_RECORDS.md) will get their own methods here and their own
-    migration file once that schema is agreed.
+    The semantic monitor will add the methods that read Jev assessments. The
+    backend response records will get their own methods and migration once
+    their schema is agreed.
     """
 
     async def open(self) -> None: ...
 
     async def close(self) -> None: ...
 
-    async def save_request(self, response: ChatResponse) -> None:
-        """Keep a completed request; drop the oldest beyond the retention limit."""
+    async def save_request(
+        self, response: ChatResponse, jev: Sequence[JevAssessment] = ()
+    ) -> None:
+        """Keep a completed request and its Jev assessments in one write; drop
+        the oldest request beyond the retention limit. Assessments are kept
+        for the monitor even after their request is dropped."""
         ...
 
     async def get_request(self, request_id: UUID) -> ChatResponse | None: ...
@@ -64,6 +70,8 @@ class MemoryStore:
         self.limit = limit
         self.requests: OrderedDict[UUID, ChatResponse] = OrderedDict()
         self.interventions: deque[Intervention] = deque(maxlen=intervention_limit)
+        # Two per request, so this keeps about as many calls as requests.
+        self.jev_assessments: deque[JevAssessment] = deque(maxlen=2 * limit)
 
     async def open(self) -> None:
         pass
@@ -71,8 +79,11 @@ class MemoryStore:
     async def close(self) -> None:
         pass
 
-    async def save_request(self, response: ChatResponse) -> None:
+    async def save_request(
+        self, response: ChatResponse, jev: Sequence[JevAssessment] = ()
+    ) -> None:
         self.requests[response.id] = response
+        self.jev_assessments.extend(jev)
         while len(self.requests) > self.limit:
             self.requests.popitem(last=False)
 
@@ -93,7 +104,8 @@ class PostgresStore:
     """Requests and interventions in Postgres, through psycopg 3 and plain SQL.
 
     Requests are bounded by the same retention limit as the memory store. The
-    intervention log is kept in full; it grows by a few rows per cooldown.
+    intervention log is kept in full; it grows by a few rows per cooldown. Jev
+    assessments are kept in full for the monitor: two rows per request.
     """
 
     def __init__(
@@ -125,7 +137,11 @@ class PostgresStore:
     async def close(self) -> None:
         await self.pool.close()
 
-    async def save_request(self, response: ChatResponse) -> None:
+    async def save_request(
+        self, response: ChatResponse, jev: Sequence[JevAssessment] = ()
+    ) -> None:
+        # The pool commits once when the block ends, so the request and its
+        # assessments are saved together or not at all.
         async with self.pool.connection() as conn:
             await conn.execute(
                 """
@@ -143,6 +159,31 @@ class PostgresStore:
                     Jsonb(response.model_dump(mode="json")),
                 ),
             )
+            if jev:
+                async with conn.cursor() as cur:
+                    await cur.executemany(
+                        """
+                        INSERT INTO jev_assessments
+                            (request_id, call_id, question, status, finished_at,
+                             mocked, option_set_version, choice, error_type, record)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        [
+                            (
+                                r.request_id,
+                                r.call_id,
+                                r.question,
+                                r.status,
+                                r.finished_at,
+                                r.mocked,
+                                r.option_set_version,
+                                r.choice,
+                                r.error_type,
+                                Jsonb(r.model_dump(mode="json")),
+                            )
+                            for r in jev
+                        ],
+                    )
             await conn.execute(
                 """
                 DELETE FROM requests WHERE seq <= (
