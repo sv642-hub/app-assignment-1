@@ -15,10 +15,17 @@ from pydantic import AwareDatetime, Field, model_validator
 from app_assignment_1.schemas import StrictModel
 
 ROUTE_OPTIONS = frozenset({"standard", "complex"})
-# Jev's probabilities are rounded, so the total is only close to 1.
-PROBABILITY_TOTAL_TOLERANCE = 0.05
+# Jev gives each probability to two decimals, so each value can be off by up to
+# 0.005 and the total by up to 0.005 per option: 0.39 for the 78 intent labels.
+MIN_PROBABILITY_TOTAL_TOLERANCE = 0.05
+ROUNDING_ERROR_PER_OPTION = 0.005
 # Two options can share the top probability. Allow for rounding when comparing.
 TIE_TOLERANCE = 1e-9
+
+
+def probability_total_tolerance(options: int) -> float:
+    """How far from 1 the rounded probabilities of `options` options may add up."""
+    return max(MIN_PROBABILITY_TOTAL_TOLERANCE, ROUNDING_ERROR_PER_OPTION * options)
 
 
 class JevAssessment(StrictModel):
@@ -94,7 +101,8 @@ class JevAssessment(StrictModel):
         values = list(self.probabilities.values())
         if not all(math.isfinite(value) and 0 <= value <= 1 for value in values):
             raise ValueError("Each probability must be a number from 0 to 1")
-        if abs(sum(values) - 1) > PROBABILITY_TOTAL_TOLERANCE:
+        tolerance = probability_total_tolerance(len(values)) + TIE_TOLERANCE
+        if abs(sum(values) - 1) > tolerance:
             raise ValueError("Probabilities must add up to about 1")
         if self.choice not in self.probabilities:
             raise ValueError("The choice must be one of the options")
