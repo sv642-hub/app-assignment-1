@@ -27,6 +27,20 @@ export function describeModels(health) {
   });
 }
 
+const BREAKER_PILLS = {
+  closed: { tone: "good", text: "Calling Jev" },
+  open: { tone: "bad", text: "Skipped" },
+  half_open: { tone: "bad", text: "Trial call" },
+};
+
+function breakerText(breaker) {
+  if (!breaker || breaker.state === "closed") return null;
+  if (breaker.state === "open") {
+    return `Jev failed ${breaker.consecutive_failures} calls in a row, so the gateway is skipping it. Keyword rules route every message until the ${breaker.cooldown_seconds} s cool-off ends.`;
+  }
+  return "The Jev cool-off has ended. The next message tries Jev again. Until a call succeeds, keyword rules route messages.";
+}
+
 function bannerFor(health, models) {
   if (health.status === "ok") {
     return { tone: "good", title: "All systems normal", text: "Both models are serving their routes. No controller action is in effect." };
@@ -36,14 +50,45 @@ function bannerFor(health, models) {
     return { tone: "bad", title: "No model available", text: "Chat requests return an error until a model comes back." };
   }
   const up = models.find((m) => m.usable);
-  const text = down
-    .map((m) =>
-      m.disabled_by_controller
-        ? `${m.name} was disabled by the controller. ${m.route[0].toUpperCase() + m.route.slice(1)} requests are going to ${up.name} until the cooldown ends.`
-        : `${m.name} is marked unavailable in the config. Its requests are going to ${up.name}.`,
-    )
-    .join(" ");
-  return { tone: "bad", title: "Degraded", text };
+  const parts = down.map((m) =>
+    m.disabled_by_controller
+      ? `${m.name} was disabled by the controller. ${m.route[0].toUpperCase() + m.route.slice(1)} requests are going to ${up.name} until the cooldown ends.`
+      : `${m.name} is marked unavailable in the config. Its requests are going to ${up.name}.`,
+  );
+  const jev = breakerText(health.jev_breaker);
+  if (jev) parts.push(jev);
+  return { tone: "bad", title: "Degraded", text: parts.join(" ") };
+}
+
+function JevCard({ breaker }) {
+  const pill = BREAKER_PILLS[breaker.state];
+  return (
+    <section className="card model-card" aria-label="Jev router">
+      <div className="model-head">
+        <div>
+          <h2>Jev router</h2>
+          <span className="muted small">Picks the route for each message</span>
+        </div>
+        <span className={`pill pill-${pill.tone}`}>{pill.text}</span>
+      </div>
+      <p className="muted small">
+        After {breaker.failure_limit} failed Jev calls in a row, the gateway skips Jev for {breaker.cooldown_seconds} s and routes by keyword rules. Then one trial call
+        decides whether Jev comes back. A wrong answer from Jev does not count as a failed call.
+      </p>
+      <div className="stat-grid">
+        <div className="stat">
+          <div className="muted">Failed calls in a row</div>
+          <strong>
+            {breaker.consecutive_failures} of {breaker.failure_limit}
+          </strong>
+        </div>
+        <div className="stat">
+          <div className="muted">Cool-off</div>
+          <strong>{breaker.cooldown_seconds} s</strong>
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function ModelCard({ model, threshold }) {
@@ -140,6 +185,7 @@ function HealthBody({ health }) {
         {models.map((model) => (
           <ModelCard key={model.name} model={model} threshold={rules.failure_threshold} />
         ))}
+        {health.jev_breaker && <JevCard breaker={health.jev_breaker} />}
       </div>
 
       <section className="card">

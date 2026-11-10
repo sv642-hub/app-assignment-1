@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import App, { HEALTH_POLL_MS } from "./App.jsx";
-import { degradedHealth, fakeGateway, healthyHealth, outageHealth } from "./test/fixtures.js";
+import { degradedHealth, fakeGateway, healthyHealth, jevOutageHealth, outageHealth } from "./test/fixtures.js";
 
 function renderWith(gateway) {
   vi.spyOn(globalThis, "fetch").mockImplementation(gateway.fetch);
@@ -145,6 +145,53 @@ describe("Health", () => {
     expect(within(small).getByText("Failed calls: 4. Format failures: 1.")).toBeInTheDocument();
     const large = screen.getByRole("region", { name: "qwen3-4b" });
     expect(within(large).queryByText(/Failed calls/)).not.toBeInTheDocument();
+  });
+
+  it("shows the Jev breaker calling Jev when it is closed", async () => {
+    const user = renderWith(fakeGateway({ health: healthyHealth }));
+
+    await user.click(screen.getByRole("button", { name: "Health" }));
+
+    const jev = await screen.findByRole("region", { name: "Jev router" });
+    expect(within(jev).getByText("Calling Jev")).toBeInTheDocument();
+    expect(within(jev).getByText("0 of 5")).toBeInTheDocument();
+    expect(within(jev).getByText("30 s")).toBeInTheDocument();
+  });
+
+  it("explains an open Jev breaker while both models serve", async () => {
+    const user = renderWith(fakeGateway({ health: jevOutageHealth }));
+
+    await user.click(screen.getByRole("button", { name: /Health/ }));
+
+    const banner = await screen.findByRole("status");
+    expect(banner).toHaveTextContent("Degraded");
+    expect(banner).toHaveTextContent("Jev failed 5 calls in a row, so the gateway is skipping it.");
+    expect(screen.getAllByText("Serving")).toHaveLength(2);
+
+    const jev = screen.getByRole("region", { name: "Jev router" });
+    expect(within(jev).getByText("Skipped")).toBeInTheDocument();
+    expect(within(jev).getByText("5 of 5")).toBeInTheDocument();
+    expect(screen.getByText("Gateway degraded")).toBeInTheDocument();
+  });
+
+  it("explains a half-open Jev breaker", async () => {
+    const health = { ...jevOutageHealth, jev_breaker: { ...jevOutageHealth.jev_breaker, state: "half_open" } };
+    const user = renderWith(fakeGateway({ health }));
+
+    await user.click(screen.getByRole("button", { name: /Health/ }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("The next message tries Jev again.");
+    expect(within(screen.getByRole("region", { name: "Jev router" })).getByText("Trial call")).toBeInTheDocument();
+  });
+
+  it("hides the Jev card when the gateway does not report the breaker", async () => {
+    const { jev_breaker: _, ...older } = healthyHealth;
+    const user = renderWith(fakeGateway({ health: older }));
+
+    await user.click(screen.getByRole("button", { name: "Health" }));
+
+    expect(await screen.findByText("All systems normal")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Jev router" })).not.toBeInTheDocument();
   });
 
   it("opens on the Health screen from its link", async () => {
