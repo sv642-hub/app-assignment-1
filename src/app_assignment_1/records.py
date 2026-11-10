@@ -1,13 +1,13 @@
-"""Records the gateway writes for the semantic monitor, and where they go.
+"""Records the gateway writes for the semantic monitor.
 
 Only the Jev assessment is defined so far. The backend response record waits on
 the open points in PR 45 (see docs/JEV_QWEN_INTEGRATION_PLAN.md). Nothing in the
-gateway writes these records yet.
+gateway writes these records yet; they will be saved through `Store`.
 """
 
 import math
 from collections.abc import Collection, Sequence
-from typing import Literal, Protocol
+from typing import Literal
 from uuid import UUID
 
 from pydantic import AwareDatetime, Field, model_validator
@@ -15,10 +15,17 @@ from pydantic import AwareDatetime, Field, model_validator
 from app_assignment_1.schemas import StrictModel
 
 ROUTE_OPTIONS = frozenset({"standard", "complex"})
-# Jev's probabilities are rounded, so the total is only close to 1.
-PROBABILITY_TOTAL_TOLERANCE = 0.05
+# Jev gives each probability to two decimals, so each value can be off by up to
+# 0.005 and the total by up to 0.005 per option: 0.39 for the 78 intent labels.
+MIN_PROBABILITY_TOTAL_TOLERANCE = 0.05
+ROUNDING_ERROR_PER_OPTION = 0.005
 # Two options can share the top probability. Allow for rounding when comparing.
 TIE_TOLERANCE = 1e-9
+
+
+def probability_total_tolerance(options: int) -> float:
+    """How far from 1 the rounded probabilities of `options` options may add up."""
+    return max(MIN_PROBABILITY_TOTAL_TOLERANCE, ROUNDING_ERROR_PER_OPTION * options)
 
 
 class JevAssessment(StrictModel):
@@ -96,7 +103,8 @@ def check_probabilities(choice: str, probabilities: dict[str, float]) -> None:
     values = list(probabilities.values())
     if not all(math.isfinite(value) and 0 <= value <= 1 for value in values):
         raise ValueError("Each probability must be a number from 0 to 1")
-    if abs(sum(values) - 1) > PROBABILITY_TOTAL_TOLERANCE:
+    tolerance = probability_total_tolerance(len(values)) + TIE_TOLERANCE
+    if abs(sum(values) - 1) > tolerance:
         raise ValueError("Probabilities must add up to about 1")
     if choice not in probabilities:
         raise ValueError("The choice must be one of the options")
@@ -143,19 +151,3 @@ def check_call(records: Sequence[JevAssessment]) -> None:
             raise ValueError(f"Both answers from one call must share {field}")
     if (first.status == "skipped") != (second.status == "skipped"):
         raise ValueError("Jev is skipped for the whole call or not at all")
-
-
-class RecordSink(Protocol):
-    """Where the gateway sends records. Sebastian's monitor will implement it."""
-
-    def write_jev(self, record: JevAssessment) -> None: ...
-
-
-class InMemoryRecordSink:
-    """Keeps records in a list, for tests until the monitor is ready."""
-
-    def __init__(self) -> None:
-        self.jev: list[JevAssessment] = []
-
-    def write_jev(self, record: JevAssessment) -> None:
-        self.jev.append(record)

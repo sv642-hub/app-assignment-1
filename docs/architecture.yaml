@@ -103,9 +103,9 @@ components:
     title: Jev intent question
     owner: Verness
     items:
-      - built: Gateway builds both records
+      - built: Gateway saves both records
       - simulated: Intent in the routing call, 11 options
-      - todo: 78 options; store records
+      - todo: 78 options in the routing call
 
   semantic_monitor:
     title: Semantic monitor
