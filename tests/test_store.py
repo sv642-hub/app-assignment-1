@@ -13,10 +13,10 @@ import asyncio
 import logging
 import os
 import time
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import psycopg
 import pytest
@@ -26,6 +26,7 @@ from pydantic import ValidationError
 
 from app_assignment_1.api import create_app
 from app_assignment_1.config import PUBLIC_DATABASE_PASSWORD, Settings
+from app_assignment_1.records import JevAssessment
 from app_assignment_1.router import MockJevRouter
 from app_assignment_1.schemas import ChatResponse, Intervention, Trace
 from app_assignment_1.service import Gateway
@@ -99,6 +100,35 @@ def response(n: int = 0) -> ChatResponse:
             fallback_reason=None,
         ),
     )
+
+
+def assessments(request_id: UUID) -> list[JevAssessment]:
+    """One call's two records: an ok route answer and an intent error."""
+    call = {
+        "request_id": request_id,
+        "call_id": uuid4(),
+        "finished_at": datetime(2026, 11, 9, 12, tzinfo=UTC),
+        "mocked": False,
+        "option_set_version": "labels-0123456789ab",
+        "latency_ms": 840.0,
+        "jev_model": "jev-1.14.0",
+        "provider_request_id": "req_123",
+        "input_tokens": 900,
+        "output_tokens": 12,
+    }
+    return [
+        JevAssessment(
+            **call,
+            question="route",
+            status="ok",
+            choice="standard",
+            confidence=0.4,
+            probabilities={"standard": 0.7, "complex": 0.3},
+        ),
+        JevAssessment(
+            **call, question="intent", status="error", error_type="wrong_options"
+        ),
+    ]
 
 
 def intervention(n: int) -> Intervention:
@@ -181,6 +211,70 @@ def test_api_reads_history_from_the_store(make_store: MakeStore) -> None:
         assert "zebra-quartz" not in fetched.text
 
 
+def test_memory_store_saves_jev_assessments_with_the_request() -> None:
+    store = MemoryStore(1)
+    first, second = response(0), response(1)
+    asyncio.run(store.save_request(first, assessments(first.id)))
+    asyncio.run(store.save_request(second, assessments(second.id)))
+    # The request limit is 1, and the assessments keep 2 per request.
+    assert list(store.requests) == [second.id]
+    assert [r.request_id for r in store.jev_assessments] == [second.id] * 2
+
+
+def test_postgres_saves_jev_assessments_with_the_request(postgres_url: str) -> None:
+    first, second = response(0), response(1)
+    records = assessments(first.id)
+
+    async def body(store: Store) -> None:
+        await store.save_request(first, records)
+        await store.save_request(second, assessments(second.id))
+
+    run(PostgresStore(postgres_url, 1, connect_timeout=10), body)
+    with psycopg.connect(postgres_url) as conn:
+        rows = conn.execute(
+            "SELECT request_id, question, status, mocked, option_set_version,"
+            " choice, error_type, record FROM jev_assessments ORDER BY seq"
+        ).fetchall()
+        kept = conn.execute("SELECT id FROM requests").fetchall()
+    # The first request is pruned; its assessments stay for the monitor.
+    assert kept == [(second.id,)]
+    assert len(rows) == 4
+    assert rows[0][:7] == (
+        first.id,
+        "route",
+        "ok",
+        False,
+        "labels-0123456789ab",
+        "standard",
+        None,
+    )
+    assert rows[1][:7] == (
+        first.id,
+        "intent",
+        "error",
+        False,
+        "labels-0123456789ab",
+        None,
+        "wrong_options",
+    )
+    assert [JevAssessment.model_validate(row[7]) for row in rows[:2]] == records
+
+
+def test_postgres_saves_a_request_and_its_assessments_together(
+    postgres_url: str,
+) -> None:
+    saved = response(0)
+    broken = assessments(saved.id)
+    broken.append(broken[0])  # a duplicate (call_id, question) row fails
+
+    async def body(store: Store) -> None:
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            await store.save_request(saved, broken)
+        assert await store.get_request(saved.id) is None
+
+    run(PostgresStore(postgres_url, 10, connect_timeout=10), body)
+
+
 def test_postgres_history_survives_a_restart(postgres_url: str) -> None:
     """A new store on the same database is what a restarted gateway sees."""
     settings = Settings(_env_file=None)
@@ -198,8 +292,14 @@ def test_postgres_keeps_no_message_text(postgres_url: str) -> None:
     with psycopg.connect(postgres_url) as conn:
         rows = conn.execute("SELECT row_to_json(requests)::text FROM requests")
         dumped = [row[0] for row in rows.fetchall()]
+        rows = conn.execute(
+            "SELECT row_to_json(jev_assessments)::text FROM jev_assessments"
+        )
+        jev = [row[0] for row in rows.fetchall()]
     assert len(dumped) == 1
     assert "zebra-quartz" not in dumped[0]
+    assert len(jev) == 2
+    assert not any("zebra-quartz" in row for row in jev)
 
 
 def test_migrations_run_once(postgres_url: str) -> None:
@@ -209,9 +309,15 @@ def test_migrations_run_once(postgres_url: str) -> None:
             second = await migrate(conn)
             cur = await conn.execute("SELECT version, name FROM schema_migrations")
             rows = await cur.fetchall()
-        assert first == ["001_requests_and_interventions.sql"]
+        assert first == [
+            "001_requests_and_interventions.sql",
+            "002_jev_assessments.sql",
+        ]
         assert second == []
-        assert rows == [(1, "001_requests_and_interventions.sql")]
+        assert sorted(rows) == [
+            (1, "001_requests_and_interventions.sql"),
+            (2, "002_jev_assessments.sql"),
+        ]
 
     asyncio.run(main())
 
@@ -236,10 +342,12 @@ class BrokenStore(MemoryStore):
         super().__init__(10)
         self.fail = True
 
-    async def save_request(self, response: ChatResponse) -> None:
+    async def save_request(
+        self, response: ChatResponse, jev: Sequence[JevAssessment] = ()
+    ) -> None:
         if self.fail:
             raise ConnectionError("database is down")
-        await super().save_request(response)
+        await super().save_request(response, jev)
 
     async def save_interventions(self, items: object) -> None:
         if self.fail:
@@ -278,7 +386,9 @@ SECRET_URL = "postgresql://gw:Hunter2Pass@127.0.0.1:1/gw"
 
 
 class HangingStore(MemoryStore):
-    async def save_request(self, response: ChatResponse) -> None:
+    async def save_request(
+        self, response: ChatResponse, jev: Sequence[JevAssessment] = ()
+    ) -> None:
         await asyncio.sleep(60)
 
     async def save_interventions(self, items: object) -> None:

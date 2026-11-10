@@ -1,4 +1,4 @@
-"""Gateway flow; request history and interventions go to a Store."""
+"""Gateway flow; requests, their Jev assessments and interventions go to a Store."""
 
 import asyncio
 import logging
@@ -19,7 +19,7 @@ from app_assignment_1.intents import load_intents
 from app_assignment_1.labels import UNKNOWN, load_labels
 from app_assignment_1.metrics import GatewayMetrics
 from app_assignment_1.monitor import Controller
-from app_assignment_1.records import JevAssessment, RecordSink, check_call
+from app_assignment_1.records import JevAssessment, check_call
 from app_assignment_1.router import JevAnswer, JevResult, Router, RuleRouter
 from app_assignment_1.schemas import (
     BackendConfig,
@@ -96,7 +96,6 @@ class Gateway:
         backends: Sequence[Backend] | None = None,
         clock: Callable[[], float] = time.monotonic,
         store: Store | None = None,
-        jev_records: RecordSink | None = None,
     ):
         if settings.provider_mode == "real":
             raise ValueError(
@@ -109,9 +108,6 @@ class Gateway:
         self.jev_option_set_version: str = getattr(
             router, "option_set_version", "unspecified"
         )
-        # Where Jev assessments go. None until the monitor's storage is agreed
-        # (PR 70): the records are still built and checked, then dropped.
-        self.jev_records = jev_records
         self.jev_breaker = CircuitBreaker(
             settings.jev_breaker_failures, settings.jev_breaker_cooldown_seconds, clock
         )
@@ -186,13 +182,16 @@ class Gateway:
 
     async def chat(self, message: str) -> ChatResponse:
         try:
-            response = await self._chat(message)
+            response, jev = await self._chat(message)
         finally:
             # Interventions also happen on requests that end in a 503.
             await self.save_interventions()
         try:
+            # The Jev assessments are saved with their request or not at all, so
+            # every saved assessment has a request to join to. A request that
+            # ends in a 503 or is cancelled saves neither.
             await asyncio.wait_for(
-                self.store.save_request(response), self.store_timeout
+                self.store.save_request(response, jev), self.store_timeout
             )
         except Exception as exc:
             # The customer still gets the reply; it just cannot be looked up later.
@@ -201,17 +200,16 @@ class Gateway:
 
     async def _call_jev(
         self, request_id: UUID, message: str, reasons: list[str]
-    ) -> JevResult | None:
-        """Call Jev once and write both assessments. None means use the rule
-        router; the reason is added to `reasons`."""
+    ) -> tuple[JevResult | None, list[JevAssessment]]:
+        """Call Jev once and build both assessments. A None result means use
+        the rule router; the reason is added to `reasons`."""
         call_id = uuid4()
         if not self.jev_breaker.allow():
             reasons.append("jev_circuit_open")
             self.metrics.jev_fallbacks.labels("jev_circuit_open").inc()
-            self._write_jev(
+            return None, self._jev_records(
                 request_id, call_id, status="skipped", skip_reason="circuit_open"
             )
-            return None
         start = perf_counter()
         try:
             result = JevResult.model_validate(
@@ -219,15 +217,9 @@ class Gateway:
             )
         except asyncio.CancelledError:
             # The request was cancelled, for example by a client disconnect.
-            # Jev neither passed nor failed, but the call was made.
+            # Jev neither passed nor failed, and no record is written: the
+            # monitor would count it as a Jev outage.
             self.jev_breaker.abandoned()
-            self._write_jev(
-                request_id,
-                call_id,
-                status="timeout",
-                error_type="cancelled",
-                start=start,
-            )
             raise
         except Exception as exc:
             # Only isolate the replaceable router call. Cancellation still propagates.
@@ -239,19 +231,19 @@ class Gateway:
             reasons.append(reason)
             self.metrics.jev_fallbacks.labels(reason).inc()
             self.jev_breaker.failed()
-            self._write_jev(
+            return None, self._jev_records(
                 request_id,
                 call_id,
                 status="timeout" if timed_out else "error",
                 error_type=error_type,
                 start=start,
             )
-            return None
         self.jev_breaker.succeeded()
-        self._write_jev(request_id, call_id, start=start, result=result)
-        return result
+        return result, self._jev_records(
+            request_id, call_id, start=start, result=result
+        )
 
-    def _write_jev(
+    def _jev_records(
         self,
         request_id: UUID,
         call_id: UUID,
@@ -262,10 +254,11 @@ class Gateway:
         skip_reason: Literal["circuit_open"] | None = None,
         start: float | None = None,
         result: JevResult | None = None,
-    ) -> None:
-        """Build both assessments for one call and hand them to the sink.
+    ) -> list[JevAssessment]:
+        """Build and check both assessments for one call.
 
-        A record problem is logged and never fails the customer's request.
+        A record problem is logged, returns no records and never fails the
+        customer's request.
         """
         call: dict[str, Any] = {
             "request_id": request_id,
@@ -303,23 +296,17 @@ class Gateway:
         except ValueError as exc:
             # ValidationError is a ValueError. Its text can hold Jev's answer.
             logger.warning("Could not build Jev records (%s)", type(exc).__name__)
-            return
-        if self.jev_records is None:
-            return
-        try:
-            for record in records:
-                self.jev_records.write_jev(record)
-        except Exception as exc:
-            logger.warning("Could not write Jev records (%s)", type(exc).__name__)
+            return []
+        return records
 
-    async def _chat(self, message: str) -> ChatResponse:
+    async def _chat(self, message: str) -> tuple[ChatResponse, list[JevAssessment]]:
         # Created before any provider call, so later records can share it.
         request_id = uuid4()
         start = perf_counter()
         reasons: list[str] = []
         router_name: Literal["mock_jev", "rule_router"] = "mock_jev"
         decision: RoutingDecision | None = None
-        result = await self._call_jev(request_id, message, reasons)
+        result, jev = await self._call_jev(request_id, message, reasons)
         if result is not None:
             # Each answer stands on its own: an invalid intent answer does not
             # stop Jev's route from being used.
@@ -443,4 +430,4 @@ class Gateway:
             trace.route, trace.model, trace.reply_source, trace.format_check
         ).inc()
         self.metrics.chat_latency.observe(perf_counter() - start)
-        return response
+        return response, jev

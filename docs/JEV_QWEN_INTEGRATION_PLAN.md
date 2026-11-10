@@ -74,12 +74,12 @@ The gateway awaits this call inside the existing **2-second routing deadline**. 
 
 - After 5 consecutive whole-call failures, skip Jev for 30 seconds and use the rule router. Both limits are configurable starting values.
 - While the breaker is open, record both questions as `skipped` with `skip_reason` set to `circuit_open`. After the 30 seconds, the next message tries Jev again.
-- Report the breaker state in `/v1/health`, so the Health screen can show that routing is degraded.
+- Report the breaker state in `/v1/health` as `jev_breaker`, so the Health screen can show that Jev is skipped. The breaker does not change `status`, which stays about the backends.
 
 **Other rules:**
 
 - Measure latency in the gateway. Capture the returned model, token usage and optional `x-typesafe-request-id`. The SDK exposes this header as `request_id`, but the docs do not say it is always present. Verify it with an actual response before claiming live evidence.
-- Sebastian’s monitor owns joining and scoring. Supply a recording test sink until that integration is ready; do not turn Jev disagreements into controller actions in Verness’s client work.
+- Sebastian’s monitor owns joining and scoring. The gateway saves the records through `Store`, in the same write as the request; do not turn Jev disagreements into controller actions in Verness’s client work.
 
 **Contingency:** split the intent question into its own background call only if the combined call misses the routing deadline too often.
 

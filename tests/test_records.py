@@ -1,4 +1,4 @@
-"""Jev assessment records: status rules, answers, the combined call and the sink."""
+"""Jev assessment records: status rules, answers and the combined call."""
 
 import math
 from datetime import UTC, datetime
@@ -9,11 +9,10 @@ import pytest
 from pydantic import ValidationError
 
 from app_assignment_1.records import (
-    InMemoryRecordSink,
     JevAssessment,
-    RecordSink,
     check_call,
     check_options,
+    probability_total_tolerance,
 )
 
 REQUEST_ID = uuid4()
@@ -121,6 +120,42 @@ def invalid(values: dict[str, Any], message: str) -> None:
 )
 def test_valid_records(values: dict[str, Any]) -> None:
     JevAssessment(**values)
+
+
+def rounded_intent(top: float, options: int = 78) -> dict[str, float]:
+    """`options` probabilities with `top` first, each rounded to two decimals."""
+    rest = (1 - top) / (options - 1)
+    values = {"unknown": round(top, 2)}
+    values.update({f"label_{i}": round(rest, 2) for i in range(options - 1)})
+    return values
+
+
+@pytest.mark.parametrize("top", [0.3, 0.5, 0.7, 0.9])
+def test_rounded_78_option_answers_are_valid(top: float) -> None:
+    probabilities = rounded_intent(top)
+    # These totals are outside the old fixed 0.05 tolerance.
+    assert abs(sum(probabilities.values()) - 1) > 0.05
+    JevAssessment(**intent_answer(choice="unknown", probabilities=probabilities))
+
+
+def test_worst_case_rounding_of_78_options_is_valid() -> None:
+    # Every value rounded down by just under 0.005: the total is 0.39 short.
+    probabilities = {f"label_{i}": 0.0 for i in range(77)}
+    probabilities["unknown"] = 1 - 0.39
+    JevAssessment(**intent_answer(choice="unknown", probabilities=probabilities))
+
+
+def test_tolerance_grows_with_options_but_not_below_005() -> None:
+    assert probability_total_tolerance(2) == 0.05
+    assert probability_total_tolerance(10) == 0.05
+    assert probability_total_tolerance(78) == pytest.approx(0.39)
+
+
+def test_78_option_total_past_the_tolerance_is_rejected() -> None:
+    probabilities = {f"label_{i}": 0.0 for i in range(77)}
+    probabilities["unknown"] = 0.6
+    with pytest.raises(ValidationError, match="add up to about 1"):
+        JevAssessment(**intent_answer(choice="unknown", probabilities=probabilities))
 
 
 def test_skipped_route_is_allowed() -> None:
@@ -236,16 +271,6 @@ def test_mismatched_pairs_are_rejected(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         check_call([JevAssessment(**values) for values in pair])
-
-
-def test_in_memory_sink_keeps_records_in_order() -> None:
-    sink: RecordSink = InMemoryRecordSink()
-    route = JevAssessment(**route_answer())
-    intent = JevAssessment(**intent_answer())
-    sink.write_jev(route)
-    sink.write_jev(intent)
-    assert isinstance(sink, InMemoryRecordSink)
-    assert sink.jev == [route, intent]
 
 
 def test_records_round_trip_through_json() -> None:
