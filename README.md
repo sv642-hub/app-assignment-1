@@ -32,7 +32,7 @@ The gateway runs a small in-memory self-healing loop, the first piece of the pla
 - **Action limit:** the controller never disables the last usable backend. It logs `kept_last_backend` instead and keeps serving.
 - **Visibility:** the request that triggers an action shows it in `trace.controller_action` and in that reply's details. `GET /v1/health` lists samples, format failures, call errors, failure rate and disabled status for each backend, the last 50 interventions with their reasons, and the controller rules. It also lists `recent_requests`, up to 20 retained requests that got a reply, newest first, with `completed_at`, route, actual model, fallback reason and format check, but no request id. `usage` gives attempted, completed and failed calls for each model since startup, including fallback attempts; token and cost fields are `null` in mock mode. The **Health** screen shows the same data and refreshes every 5 seconds.
 
-The monitor watches format failures and failed calls only. It does not know whether an intent or reply is correct. Its windows and which backends are disabled reset when the gateway restarts. The intervention log is kept in the store (see [Storage](#storage)), so with Postgres it survives a restart.
+The failure monitor watches format failures and failed calls only. It does not know whether an intent or reply is correct. Its windows and which backends are disabled reset when the gateway restarts. The intervention log is kept in the store (see [Storage](#storage)), so with Postgres it survives a restart.
 
 Do not run the overrides below on the deployment testers use. They use the default Compose project and port 8080, so they replace the running stack and reset its history. Use your own machine or a different host.
 
@@ -51,6 +51,30 @@ docker compose -f compose.yml -f compose.outage.yml up -d --build --wait
 ```
 
 Send five standard messages. Each one is still answered, by `qwen3-4b` with `fallback_reason: "selected_backend_error"`, and the fifth disables `qwen3-1.7b`. Health shows the failed calls and the intervention. Both overrides simulate faults with the mock backends; neither stops a real model.
+
+### Semantic monitor
+
+A model can return a well-formed reply for the wrong intent, which the format check cannot see. The semantic monitor compares each model's intent with Jev's answer to the intent question, from the same request:
+
+- **Samples:** a reply that passed the format check is an `agree` if the model's label matches Jev's, a `disagree` if it differs, and `no_signal` if Jev has no usable intent answer (timeout, error, invalid answer or circuit breaker open). Failed format checks and failed calls give no sample; the failure monitor counts them. `unknown` is a label like any other.
+- **Window:** the last `APP_SEMANTIC_WINDOW` samples per model (default 50). A model serving the other route's messages (after a fallback) sees different traffic, so those samples are counted apart, as `rerouted_agreements` and `rerouted_disagreements`.
+- **Status** for each model, checked in this order:
+  - `low_coverage`: at least `APP_SEMANTIC_MIN_SAMPLES` (default 10) samples, but fewer than `APP_SEMANTIC_MIN_COVERAGE` (default 0.5) had a Jev answer. During a Jev outage, missing data does not look like a healthy model.
+  - `collecting`: fewer scored samples than the minimum.
+  - `no_baseline`: no healthy baseline is set (`APP_SEMANTIC_BASELINE_DISAGREEMENT_RATE`, unset by default), so rates are reported but never flagged.
+  - `above_baseline`: the disagreement rate is above the baseline plus `APP_SEMANTIC_ALERT_MARGIN` (default 0.15).
+  - `normal`: otherwise.
+- **Visibility:** `GET /v1/health` has `semantic` (per model: counts, `disagreement_rate`, `coverage`, `status`) and `semantic_rules`. `/metrics` has `gateway_semantic_samples_total`, `gateway_semantic_disagreement_rate`, `gateway_semantic_coverage` and `gateway_semantic_above_baseline`. The rate and coverage gauges are absent while a model has no data, so an empty window never reads as 0%.
+
+The semantic monitor only reports. It takes no action, and the Health screen does not show it yet. The defaults are placeholders: the baseline, margin and coverage minimum should be set from dev data before the final test. In mock mode, Jev and both models share one keyword classifier, so a healthy mock always agrees and its baseline is 0. A disagreement rate measured on mocks says nothing about real model quality. The windows reset when the gateway restarts.
+
+To see it work, use the label-swap override. In `config/backends.labelswap.json`, the small model has `label_swap_rate: 1`: it answers every matched message with the next intent's label and policy card. The override also sets the mock baseline of 0:
+
+```bash
+docker compose -f compose.yml -f compose.labelswap.yml up -d --build --wait
+```
+
+Send ten standard messages, such as "My card has not arrived". Each one gets a well-formed reply about a lost or stolen card. Every format check passes and the controller does nothing, but `GET /v1/health` shows `qwen3-1.7b` with a disagreement rate of 1.0 and status `above_baseline`. Return to normal with `docker compose up -d --wait`.
 
 ## Run with Docker Compose
 

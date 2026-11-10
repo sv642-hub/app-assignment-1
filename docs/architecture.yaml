@@ -95,8 +95,8 @@ components:
     title: Fault injection hooks
     owner: Pavlos
     items:
-      - built: Outage and bad format, by Compose override
-      - todo: Label swap, bad prompt
+      - built: Outage, bad format and label swap, by Compose override
+      - todo: Bad prompt
       - todo: POST /v1/faults with operator token
 
   jev_intent:
@@ -112,8 +112,9 @@ components:
     owner: Sebastian
     items:
       - built: Format and failed-call rate
-      - todo: Scoring of Jev agreement
-      - todo: Disagreement rate vs. healthy baseline
+      - built: Jev agreement and coverage
+      - built: Rate vs. a set baseline
+      - todo: Baseline from dev data
 
   controller:
     title: Controller
@@ -131,8 +132,8 @@ components:
     items:
       - built: Scrapes the gateway; no published port
       - built: Requests, latency, errors, Jev fallbacks, controller
-      - todo: vLLM and monitor targets
-      - todo: Cost and quality signals
+      - built: Semantic disagreement and coverage
+      - todo: vLLM targets; cost signals
 
   postgres:
     title: postgres
@@ -181,8 +182,8 @@ components:
     owner: "Verness · Pavlos: key"
     items:
       - simulated: Routing call is a local JSON mock
-      - todo: Real TypeSafe client over HTTPS; API key
-      - todo: Plain httpx, pinned jev-1.14.0
+      - built: "TypeSafe client code: plain httpx, jev-1.14.0"
+      - todo: First live call with the API key
 
   probe:
     title: Probe (stretch, offline)
@@ -207,7 +208,8 @@ components:
     title: Chaos scenarios (about 20)
     owner: "Pavlos · Jackson: screen"
     items:
-      - built: "Two faults by hand: outage and bad format, with a tester walkthrough"
+      - built: "Three faults by hand: outage, bad format, label swap"
+      - built: Tester walkthrough for outage and bad format
       - todo: Scenarios on command; detection and recovery times; false interventions
       - todo: Demo owner not assigned
 
@@ -252,7 +254,7 @@ layout:
     jev_intent: [620, 850, 225, 205]
     semantic_monitor: [855, 850, 225, 205]
     controller: [1090, 850, 225, 205]
-    prometheus: [300, 690, 270, 190]
+    prometheus: [300, 690, 270, 205]
     postgres: [300, 930, 270, 240]
     configuration: [620, 1110, 685, 190]
     vllm_small: [1420, 225, 370, 140]

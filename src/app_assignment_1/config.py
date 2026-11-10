@@ -34,6 +34,14 @@ class Settings(BaseSettings):
     monitor_min_samples: int = Field(default=5, ge=1, le=1000)
     monitor_failure_threshold: float = Field(default=0.5, gt=0, le=1)
     controller_cooldown_seconds: float = Field(default=60, gt=0, le=3600)
+    # Semantic monitor (semantic.py). Placeholders until set from dev data.
+    semantic_window: int = Field(default=50, ge=1, le=10000)
+    semantic_min_samples: int = Field(default=10, ge=1, le=10000)
+    semantic_min_coverage: float = Field(default=0.5, ge=0, le=1)
+    # The disagreement rate of a healthy model. None: not measured yet, so the
+    # monitor reports rates but never flags them.
+    semantic_baseline_disagreement_rate: float | None = Field(default=None, ge=0, le=1)
+    semantic_alert_margin: float = Field(default=0.15, ge=0, le=1)
     # memory: process memory, lost on restart. postgres: needs database_url.
     store: Literal["memory", "postgres"] = "memory"
     database_url: SecretStr | None = None
@@ -58,6 +66,8 @@ class Settings(BaseSettings):
     def min_samples_fit_window(self) -> "Settings":
         if self.monitor_min_samples > self.monitor_window:
             raise ValueError("monitor_min_samples cannot exceed monitor_window")
+        if self.semantic_min_samples > self.semantic_window:
+            raise ValueError("semantic_min_samples cannot exceed semantic_window")
         return self
 
     @model_validator(mode="after")
