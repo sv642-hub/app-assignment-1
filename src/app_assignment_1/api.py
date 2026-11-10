@@ -75,10 +75,10 @@ def create_app(
     async def health(request: Request) -> HealthResponse:
         gateway: Gateway = request.app.state.gateway
         breaker = gateway.jev_breaker
-        healthy = (
-            all(gateway.usable(b) for b in gateway.backends)
-            and breaker.state() == "closed"
-        )
+        # Only the backends decide the status. While the Jev breaker is open the
+        # rule router routes, and customers still get answers from the right
+        # models; `jev_breaker` shows it.
+        healthy = all(gateway.usable(b) for b in gateway.backends)
         monitor = gateway.controller.stats()
         # stats() may log a re-enable; save it before reading the log back.
         await gateway.save_interventions()

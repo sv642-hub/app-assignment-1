@@ -1,4 +1,4 @@
-"""The gateway writes both Jev assessments per request, and the circuit breaker."""
+"""The gateway saves both Jev assessments with each request, and the circuit breaker."""
 
 import asyncio
 import json
@@ -14,9 +14,10 @@ from app_assignment_1.breaker import CircuitBreaker
 from app_assignment_1.config import Settings
 from app_assignment_1.jev import TypeSafeJevRouter, create_jev_http_client
 from app_assignment_1.labels import load_labels
-from app_assignment_1.records import InMemoryRecordSink, JevAssessment, check_call
+from app_assignment_1.records import JevAssessment, check_call
 from app_assignment_1.router import MockJevRouter
-from app_assignment_1.service import Gateway
+from app_assignment_1.service import BackendUnavailable, Gateway
+from app_assignment_1.store import MemoryStore
 
 MESSAGE = "my card has not arrived"
 LABELS = load_labels(Path("config/labels.json"))
@@ -91,17 +92,21 @@ def real_router(server: FakeJev) -> TypeSafeJevRouter:
 
 
 def gateway(settings: Settings, router: Any, clock: Clock | None = None):
-    sink = InMemoryRecordSink()
-    return Gateway(settings, router, clock=clock or Clock(), jev_records=sink), sink
+    store = MemoryStore(settings.request_store_limit)
+    return Gateway(settings, router, clock=clock or Clock(), store=store), store
+
+
+def saved(store: MemoryStore) -> list[JevAssessment]:
+    return list(store.jev_assessments)
 
 
 def chat(gw: Gateway) -> Any:
     return asyncio.run(gw.chat(MESSAGE))
 
 
-def pair(sink: InMemoryRecordSink) -> dict[str, JevAssessment]:
+def pair(store: MemoryStore) -> dict[str, JevAssessment]:
     """The last call's two records, checked as one call."""
-    records = sink.jev[-2:]
+    records = saved(store)[-2:]
     check_call(records)
     return {record.question: record for record in records}
 
@@ -110,10 +115,10 @@ def pair(sink: InMemoryRecordSink) -> dict[str, JevAssessment]:
 
 
 def test_mock_request_writes_two_ok_records(settings: Settings) -> None:
-    gw, sink = gateway(settings, MockJevRouter(settings.intents_path))
+    gw, store = gateway(settings, MockJevRouter(settings.intents_path))
     response = chat(gw)
-    assert len(sink.jev) == 2
-    records = pair(sink)
+    assert len(saved(store)) == 2
+    records = pair(store)
     for record in records.values():
         assert record.request_id == response.id
         assert record.status == "ok"
@@ -126,16 +131,16 @@ def test_mock_request_writes_two_ok_records(settings: Settings) -> None:
 
 
 def test_each_call_gets_its_own_call_id(settings: Settings) -> None:
-    gw, sink = gateway(settings, MockJevRouter(settings.intents_path))
+    gw, store = gateway(settings, MockJevRouter(settings.intents_path))
     first, second = chat(gw), chat(gw)
     assert first.id != second.id
-    assert len({record.call_id for record in sink.jev}) == 2
+    assert len({record.call_id for record in saved(store)}) == 2
 
 
 def test_real_call_records_the_call_details(settings: Settings) -> None:
-    gw, sink = gateway(settings, real_router(FakeJev()))
+    gw, store = gateway(settings, real_router(FakeJev()))
     chat(gw)
-    records = pair(sink)
+    records = pair(store)
     for record in records.values():
         assert record.status == "ok"
         assert record.mocked is False
@@ -147,9 +152,9 @@ def test_real_call_records_the_call_details(settings: Settings) -> None:
 
 
 def test_records_never_hold_the_message(settings: Settings) -> None:
-    gw, sink = gateway(settings, real_router(FakeJev()))
+    gw, store = gateway(settings, real_router(FakeJev()))
     chat(gw)
-    for record in sink.jev:
+    for record in saved(store):
         assert MESSAGE not in record.model_dump_json()
 
 
@@ -158,10 +163,10 @@ def test_invalid_route_answer_records_an_error_and_keeps_the_intent(
 ) -> None:
     server = FakeJev()
     server.payload = jev_body(route={"type": "noul", "noul": 0.9})
-    gw, sink = gateway(settings, real_router(server))
+    gw, store = gateway(settings, real_router(server))
     response = chat(gw)
     assert response.trace.fallback_reason == "jev_invalid_route"
-    records = pair(sink)
+    records = pair(store)
     assert records["route"].status == "error"
     assert records["route"].error_type == "wrong_type"
     # The call still happened, so both records carry its details.
@@ -178,9 +183,9 @@ def test_http_failure_records_both_questions_as_errors(
 ) -> None:
     server = FakeJev()
     server.status = status
-    gw, sink = gateway(settings, real_router(server))
+    gw, store = gateway(settings, real_router(server))
     assert chat(gw).trace.fallback_reason == "jev_error"
-    for record in pair(sink).values():
+    for record in pair(store).values():
         assert record.status == "error"
         assert record.error_type == error_type
         assert record.jev_model is None
@@ -195,9 +200,9 @@ def test_malformed_body_records_bad_json(settings: Settings) -> None:
     client = create_jev_http_client(
         Settings(_env_file=None, jev_api_key="tsk-test"), httpx.MockTransport(handler)
     )
-    gw, sink = gateway(settings, TypeSafeJevRouter(client, "jev-1.14.0", LABELS))
+    gw, store = gateway(settings, TypeSafeJevRouter(client, "jev-1.14.0", LABELS))
     chat(gw)
-    assert {r.error_type for r in sink.jev} == {"bad_json"}
+    assert {r.error_type for r in saved(store)} == {"bad_json"}
 
 
 class SlowRouter:
@@ -214,17 +219,17 @@ class SlowRouter:
 
 def test_timeout_records_both_questions_as_timeouts(settings: Settings) -> None:
     fast = settings.model_copy(update={"jev_timeout_seconds": 0.01})
-    gw, sink = gateway(fast, SlowRouter())
+    gw, store = gateway(fast, SlowRouter())
     assert chat(gw).trace.fallback_reason == "jev_timeout"
-    for record in pair(sink).values():
+    for record in pair(store).values():
         assert record.status == "timeout"
         assert record.error_type == "timeout"
         assert record.option_set_version == "labels-test"
         assert record.latency_ms is not None and record.latency_ms >= 10
 
 
-def test_cancelled_request_records_cancelled(settings: Settings) -> None:
-    gw, sink = gateway(settings, SlowRouter())
+def test_a_cancelled_request_saves_no_records(settings: Settings) -> None:
+    gw, store = gateway(settings, SlowRouter())
 
     async def run() -> None:
         task = asyncio.create_task(gw.chat(MESSAGE))
@@ -234,9 +239,9 @@ def test_cancelled_request_records_cancelled(settings: Settings) -> None:
             await task
 
     asyncio.run(run())
-    for record in pair(sink).values():
-        assert record.status == "timeout"
-        assert record.error_type == "cancelled"
+    # No record: the monitor would count a client disconnect as a Jev outage.
+    assert saved(store) == []
+    assert store.requests == {}
     # A cancelled call does not count against Jev.
     assert gw.jev_breaker.consecutive_failures == 0
 
@@ -276,9 +281,9 @@ class BrokenRouter:
 def test_unexpected_router_errors_get_a_generic_code(
     settings: Settings, caplog: pytest.LogCaptureFixture
 ) -> None:
-    gw, sink = gateway(settings, BrokenRouter())
+    gw, store = gateway(settings, BrokenRouter())
     chat(gw)
-    assert {r.error_type for r in sink.jev} == {"router_error"}
+    assert {r.error_type for r in saved(store)} == {"router_error"}
     assert "tsk-secret" not in caplog.text
     assert MESSAGE not in caplog.text
 
@@ -291,28 +296,40 @@ def test_invalid_router_output_gets_invalid_result(settings: Settings) -> None:
         async def route(self, message: str) -> Any:
             return {"route": "complex"}
 
-    gw, sink = gateway(settings, BadRouter())
+    gw, store = gateway(settings, BadRouter())
     assert chat(gw).trace.fallback_reason == "jev_error"
-    assert {r.error_type for r in sink.jev} == {"invalid_result"}
+    assert {r.error_type for r in saved(store)} == {"invalid_result"}
 
 
-def test_a_failing_sink_does_not_fail_the_request(
+def test_records_are_saved_with_their_request(settings: Settings) -> None:
+    gw, store = gateway(settings, MockJevRouter(settings.intents_path))
+    response = chat(gw)
+    assert list(store.requests) == [response.id]
+    assert {record.request_id for record in saved(store)} == {response.id}
+
+
+def test_a_request_without_a_reply_saves_no_records(settings: Settings) -> None:
+    gw, store = gateway(settings, MockJevRouter(settings.intents_path))
+    for backend in gw.backends:
+        backend.config.available = False
+    with pytest.raises(BackendUnavailable):
+        chat(gw)
+    assert saved(store) == []
+
+
+def test_a_failing_save_drops_the_request_and_its_records_together(
     settings: Settings, caplog: pytest.LogCaptureFixture
 ) -> None:
-    class FailingSink:
-        def write_jev(self, record: JevAssessment) -> None:
+    class FailingStore(MemoryStore):
+        async def save_request(self, response: Any, jev: Any = ()) -> None:
             raise OSError("disk full")
 
-    gw = Gateway(
-        settings, MockJevRouter(settings.intents_path), jev_records=FailingSink()
-    )
+    store = FailingStore(10)
+    gw = Gateway(settings, MockJevRouter(settings.intents_path), store=store)
     assert chat(gw).trace.router == "mock_jev"
-    assert "Could not write Jev records (OSError)" in caplog.text
-
-
-def test_without_a_sink_records_are_dropped(settings: Settings) -> None:
-    gw = Gateway(settings, MockJevRouter(settings.intents_path))
-    assert chat(gw).trace.router == "mock_jev"
+    assert "Could not save request (OSError)" in caplog.text
+    assert store.requests == {}
+    assert saved(store) == []
 
 
 # Circuit breaker
@@ -386,7 +403,7 @@ def test_an_abandoned_trial_lets_the_next_message_try() -> None:
 def test_gateway_skips_jev_while_the_breaker_is_open(settings: Settings) -> None:
     clock = Clock()
     router = BrokenRouter()
-    gw, sink = gateway(settings, router, clock)
+    gw, store = gateway(settings, router, clock)
     for _ in range(5):
         assert chat(gw).trace.fallback_reason == "jev_error"
     assert router.calls == 5
@@ -395,7 +412,7 @@ def test_gateway_skips_jev_while_the_breaker_is_open(settings: Settings) -> None
     assert router.calls == 5
     assert response.trace.fallback_reason == "jev_circuit_open"
     assert response.trace.router == "rule_router"
-    for record in pair(sink).values():
+    for record in pair(store).values():
         assert record.status == "skipped"
         assert record.skip_reason == "circuit_open"
         assert record.error_type is None
@@ -411,7 +428,7 @@ def test_gateway_closes_the_breaker_when_jev_recovers(settings: Settings) -> Non
     clock = Clock()
     server = FakeJev()
     server.status = 529
-    gw, sink = gateway(settings, real_router(server), clock)
+    gw, store = gateway(settings, real_router(server), clock)
     for _ in range(5):
         chat(gw)
     assert gw.jev_breaker.state() == "open"
@@ -462,11 +479,14 @@ def test_health_shows_the_breaker(settings: Settings) -> None:
         for _ in range(5):
             client.post("/v1/chat", json={"message": MESSAGE})
         health = client.get("/v1/health").json()
-        assert health["status"] == "degraded"
+        # The rule router routes, and both models still answer.
+        assert health["status"] == "ok"
         assert health["jev_breaker"]["state"] == "open"
         assert health["jev_breaker"]["consecutive_failures"] == 5
         clock.now += 30
-        assert client.get("/v1/health").json()["jev_breaker"]["state"] == "half_open"
+        health = client.get("/v1/health").json()
+        assert health["jev_breaker"]["state"] == "half_open"
+        assert health["status"] == "ok"
 
 
 def test_metrics_count_circuit_open_fallbacks(settings: Settings) -> None:
@@ -485,8 +505,11 @@ def test_a_record_problem_does_not_fail_the_request(
         raise ValueError("answer was card_arrival")
 
     monkeypatch.setattr("app_assignment_1.service.check_call", broken_check)
-    gw, sink = gateway(settings, MockJevRouter(settings.intents_path))
-    assert chat(gw).trace.router == "mock_jev"
-    assert sink.jev == []
+    gw, store = gateway(settings, MockJevRouter(settings.intents_path))
+    response = chat(gw)
+    assert response.trace.router == "mock_jev"
+    # The request is still saved, without records.
+    assert list(store.requests) == [response.id]
+    assert saved(store) == []
     assert "Could not build Jev records (ValueError)" in caplog.text
     assert "card_arrival" not in caplog.text
