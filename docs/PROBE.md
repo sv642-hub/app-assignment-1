@@ -6,10 +6,10 @@ The probe reads Qwen3-1.7B activations and estimates whether the model's output 
 
 ## How it fits together
 
-1. `ProbeExample` holds a prompt, a reply, a correct/wrong label and the token confidence.
+1. `ProbeExample` holds a prompt, a reply, a correct/wrong label and the token confidence. Its fields are strict: `correct` must be a real `True` or `False`, and `token_confidence` a number from 0 to 1, not `True` or a string. A prompt that is empty after `normalize_prompt` is rejected. `GateRunInfo` and `GateReport` are strict in the same way, and `GateRunInfo` strips its strings, so whitespace alone counts as empty.
 2. An `ActivationExtractor` turns each prompt and reply into one vector. `MockActivationExtractor` uses hashes, so it carries no signal.
-3. `train_probe` fits a logistic regression, giving a `LinearProbe`.
-4. `run_gate` compares both scores on the dev set with `auroc`. It returns a `GateReport` with both AUROCs, the interval on their difference, the interval on the probe's own AUROC, and a `GateRunInfo`: the model, layer, pooling, token confidence method and dataset version.
+3. `train_probe` fits a logistic regression, giving a `LinearProbe`. `LinearProbe.score` gives a probability, and `LinearProbe.logit` gives the log odds before the sigmoid.
+4. `run_gate` compares both scores on the dev set with `auroc`. It ranks the probe by logit, not probability: the sigmoid rounds to exactly 1.0 once the logit passes about 37, which would turn different outputs into ties. AUROC only uses the order, so the logit gives the same result wherever the probability doesn't round. It returns a `GateReport` with both AUROCs, the interval on their difference, the interval on the probe's own AUROC, and a `GateRunInfo`: the model, layer, pooling, token confidence method and dataset version.
 
 ## Pass rule
 
@@ -28,7 +28,19 @@ The probe passes only if all three of these hold (`gate_passes`):
 
 `train_probe` raises an error if the training set has only one class.
 
-`run_gate` also raises an error if the dev set has fewer than 20 correct or 20 wrong examples. In synthetic runs with no signal, the interval passed far too often on small or lopsided dev sets: 10.0% of runs with 100 correct and 3 wrong, and 3.0% with 100 and 20, against about 2.5% if it behaves. The number 20 comes from those runs, not from a published threshold.
+`run_gate` also raises an error if the dev set has fewer than 20 correct or 20 wrong examples, because the interval is overconfident on small or lopsided dev sets. The number 20 is a judgment from the simulation below, not a published threshold.
+
+`scripts/probe_false_pass.py` measures how often the gate passes when neither score carries any signal (uniform random scores, seeds 0 onward). If an interval behaves, it should clear zero in about 2.5% of runs. These are simulations of the gate's statistics, not results on any model:
+
+| Dev set (correct, wrong) | Condition | Runs | Passed |
+|---|---|---|---|
+| 20, 20 | Full rule | 4,000 | 0.95% |
+| 20, 20 | Difference interval only (the old rule) | 4,000 | 3.15% |
+| 20, 20 | Probe-above-chance interval only | 4,000 | 2.35% |
+| 100, 20 | Full rule | 4,000 | 1.12% |
+| 100, 3 | Full rule | 2,000 | 4.90% |
+
+The standard error is about 0.2 to 0.3 points at 4,000 runs and 0.5 at 2,000. So at the floor, the difference interval alone passes slightly too often, about 3% against 2.5%, which matches the review of #62. The full rule passes less often, because both intervals must clear zero. The worst case is token confidence ranking below chance: then only the probe-above-chance interval matters, at about 2.35%. A lopsided set like 100 and 3 passes about twice as often as it should, even under the full rule, which is why the floor exists. To rerun one row: `uv run python scripts/probe_false_pass.py --correct 20 --wrong 20 --runs 4000 --condition difference`.
 
 ## Still to build
 

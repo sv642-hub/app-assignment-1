@@ -15,9 +15,15 @@ import unicodedata
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol, Self
+from typing import Annotated, Protocol, Self
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import (
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from app_assignment_1.schemas import StrictModel
 
@@ -29,6 +35,10 @@ BOOTSTRAP_TAIL = 0.025  # 2.5% in each tail gives a 95% interval.
 MIN_DEV_CLASS_SIZE = 20
 
 CHANCE_AUROC = 0.5
+
+# Strict fields reject look-alike inputs: True for 1, 1.0 for an int, "no" for
+# False. Strings are stripped first, so whitespace alone counts as empty.
+NonBlankStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
 class ProbeExample(StrictModel):
@@ -42,18 +52,26 @@ class ProbeExample(StrictModel):
 
     prompt: str = Field(min_length=1)
     reply: str
-    correct: bool
-    token_confidence: float = Field(ge=0, le=1)
+    correct: bool = Field(strict=True)
+    token_confidence: float = Field(ge=0, le=1, strict=True)
+
+    @field_validator("prompt")
+    @classmethod
+    def _prompt_has_text(cls, prompt: str) -> str:
+        # The prompt is kept as given, because the extractor reads it.
+        if not normalize_prompt(prompt):
+            raise ValueError("prompt must contain visible text.")
+        return prompt
 
 
 class GateRunInfo(StrictModel):
     """What a gate run measured, so a saved report can be cited and repeated."""
 
-    model: str = Field(min_length=1)
-    layer: int = Field(ge=0)
-    pooling: str = Field(min_length=1)
-    token_confidence_method: str = Field(min_length=1)
-    dataset_version: str = Field(min_length=1)
+    model: NonBlankStr
+    layer: int = Field(ge=0, strict=True)
+    pooling: NonBlankStr
+    token_confidence_method: NonBlankStr
+    dataset_version: NonBlankStr
 
 
 def gate_passes(mocked: bool, difference_low: float, probe_auroc_low: float) -> bool:
@@ -69,16 +87,16 @@ class GateReport(StrictModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    probe_auroc: float = Field(ge=0, le=1)
-    probe_auroc_low: float = Field(ge=0, le=1)
-    probe_auroc_high: float = Field(ge=0, le=1)
-    token_auroc: float = Field(ge=0, le=1)
-    difference_low: float = Field(ge=-1, le=1)
-    difference_high: float = Field(ge=-1, le=1)
-    train_examples: int = Field(ge=2)
-    dev_examples: int = Field(ge=2)
-    passed: bool
-    mocked: bool
+    probe_auroc: float = Field(ge=0, le=1, strict=True)
+    probe_auroc_low: float = Field(ge=0, le=1, strict=True)
+    probe_auroc_high: float = Field(ge=0, le=1, strict=True)
+    token_auroc: float = Field(ge=0, le=1, strict=True)
+    difference_low: float = Field(ge=-1, le=1, strict=True)
+    difference_high: float = Field(ge=-1, le=1, strict=True)
+    train_examples: int = Field(ge=2, strict=True)
+    dev_examples: int = Field(ge=2, strict=True)
+    passed: bool = Field(strict=True)
+    mocked: bool = Field(strict=True)
     run_info: GateRunInfo
 
     @model_validator(mode="after")
@@ -126,14 +144,20 @@ class LinearProbe:
     weights: tuple[float, ...]
     bias: float
 
-    def score(self, features: Sequence[float]) -> float:
-        """Estimated probability that the output is correct."""
+    def logit(self, features: Sequence[float]) -> float:
+        """Log odds that the output is correct. Use this to rank outputs:
+        `score` rounds to exactly 0.0 or 1.0 once the logit passes about 37,
+        which would turn different outputs into ties."""
         logit = self.bias + sum(
             weight * value for weight, value in zip(self.weights, features, strict=True)
         )
         if not math.isfinite(logit):
             raise ValueError("Probe features must be finite numbers.")
-        return _sigmoid(logit)
+        return logit
+
+    def score(self, features: Sequence[float]) -> float:
+        """Estimated probability that the output is correct."""
+        return _sigmoid(self.logit(features))
 
 
 def _sigmoid(value: float) -> float:
@@ -317,8 +341,10 @@ def run_gate(
         [extractor.extract(example.prompt, example.reply) for example in train],
         [example.correct for example in train],
     )
+    # Logits, not probabilities: AUROC only uses the order, and logits keep
+    # it where the sigmoid would round to 1.0.
     probe_scores = [
-        probe.score(extractor.extract(example.prompt, example.reply)) for example in dev
+        probe.logit(extractor.extract(example.prompt, example.reply)) for example in dev
     ]
     token_scores = [example.token_confidence for example in dev]
     difference_low, difference_high = auroc_difference_interval(

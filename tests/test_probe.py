@@ -43,6 +43,16 @@ class MockLabelLeakExtractor(LabelLeakExtractor):
     mocked = True
 
 
+class SaturatingExtractor:
+    """Test double: large activations, so every dev sigmoid rounds to 1.0."""
+
+    mocked = False
+    values = {"good train": 1.0, "bad train": -1.0, "good dev": 100.0, "bad dev": 50.0}
+
+    def extract(self, prompt: str, reply: str) -> list[float]:
+        return [self.values[" ".join(prompt.split()[:2])]]
+
+
 class ConstantExtractor:
     """Test double: a broken extractor that returns the same vector each time."""
 
@@ -154,6 +164,20 @@ def test_difference_interval_contains_the_observed_difference() -> None:
 
     assert low < auroc(first, labels) - auroc(second, labels) < high
     assert low < high
+
+
+def test_difference_interval_matches_known_endpoints() -> None:
+    # Pins the 95% interval, 2,000 resamples and seed. The endpoints move with
+    # a 90% interval (0.045, 0.375), 200 resamples (0.010, 0.395) or seed 1.
+    rng = random.Random(7)
+    labels = [index % 2 == 0 for index in range(40)]
+    first = [round(rng.random() + 0.4 * label, 3) for label in labels]
+    second = [round(rng.random() + 0.2 * label, 3) for label in labels]
+
+    low, high = auroc_difference_interval(first, second, labels)
+
+    assert low == pytest.approx(0.0175, abs=1e-12)
+    assert high == pytest.approx(0.405, abs=1e-12)
 
 
 def test_difference_interval_is_repeatable() -> None:
@@ -342,10 +366,17 @@ def test_gate_rejects_too_few_of_either_class(label: bool) -> None:
     "change",
     [
         {"model": ""},
+        {"model": " "},
         {"layer": -1},
+        {"layer": True},
+        {"layer": 1.0},
+        {"layer": "1"},
         {"pooling": ""},
+        {"pooling": "\t"},
         {"token_confidence_method": ""},
+        {"token_confidence_method": "  \n"},
         {"dataset_version": ""},
+        {"dataset_version": " "},
     ],
 )
 def test_run_info_rejects_missing_values(change: dict[str, object]) -> None:
@@ -353,9 +384,60 @@ def test_run_info_rejects_missing_values(change: dict[str, object]) -> None:
         GateRunInfo.model_validate(RUN_INFO.model_dump() | change)
 
 
-def test_example_rejects_confidence_outside_zero_to_one() -> None:
+def test_run_info_strips_surrounding_whitespace() -> None:
+    info = GateRunInfo.model_validate(RUN_INFO.model_dump() | {"model": " qwen "})
+
+    assert info.model == "qwen"
+
+
+@pytest.mark.parametrize("confidence", [1.5, -0.1])
+def test_example_rejects_confidence_outside_zero_to_one(confidence: float) -> None:
     with pytest.raises(ValidationError):
-        example("good", True, 1.5)
+        example("good", True, confidence)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"token_confidence": True},
+        {"token_confidence": "0.5"},
+        {"correct": "no"},
+        {"correct": 0},
+        {"prompt": " "},
+        {"prompt": "\u200b\ufeff"},
+    ],
+)
+def test_example_rejects_loose_values(change: dict[str, object]) -> None:
+    values = {"prompt": "good", "reply": "r", "correct": True, "token_confidence": 0.5}
+
+    with pytest.raises(ValidationError):
+        ProbeExample.model_validate(values | change)
+
+
+def test_example_accepts_integer_confidence_and_keeps_the_prompt() -> None:
+    item = ProbeExample(prompt=" Good ", reply="r", correct=False, token_confidence=1)
+
+    assert item.token_confidence == 1.0
+    assert item.prompt == " Good "
+
+
+def test_probe_logit_is_the_score_before_the_sigmoid() -> None:
+    probe = LinearProbe(weights=(2.0, -1.0), bias=0.5)
+
+    assert probe.logit([1.0, 3.0]) == -0.5
+    assert probe.score([1.0, 3.0]) == pytest.approx(1 / (1 + math.exp(0.5)))
+    assert probe.score([100.0, 0.0]) == probe.score([50.0, 0.0]) == 1.0
+    assert probe.logit([100.0, 0.0]) > probe.logit([50.0, 0.0])
+
+
+def test_gate_ranks_by_logit_when_the_sigmoid_saturates() -> None:
+    dev = dev_examples(0.5, 0.5)
+
+    report = run_gate(examples(0.5, 0.5), dev, SaturatingExtractor(), RUN_INFO)
+
+    # On rounded probabilities every dev score is 1.0, which gives AUROC 0.5.
+    assert report.probe_auroc == 1.0
+    assert report.passed
 
 
 def test_gate_fails_a_probe_with_no_information() -> None:
