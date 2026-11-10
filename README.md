@@ -9,11 +9,11 @@ A mocked banking-support gateway for DSAN 6700 Deliverable 2, with a React chat 
 ## What happens to a message
 
 1. The React app sends the message over HTTP to the FastAPI gateway.
-2. `MockJevRouter` stands in for Jev's difficulty call. It returns only a route (`standard` or `complex`) and a confidence, never an intent. It uses the configured complexity of the best keyword match; unmatched messages go to `standard`.
+2. `MockJevRouter` stands in for Jev's combined call, which answers two questions: the route (`standard` or `complex`) and the intent. It uses the configured complexity and intent of the best keyword match; unmatched messages go to `standard` with intent `unknown`. The gateway uses only the route answer. Jev's intent is an assessment for the monitor and never replaces the backend's intent. Nothing records it yet.
 3. Standard selects mock `qwen3-1.7b`. Complex selects mock `qwen3-4b`. The selected mock backend waits for its simulated delay, detects the intent by matching complete keyword phrases (longer/more matches score higher; config order breaks ties), and fills the reply template with fictional policy facts. Both mock backends share this classifier.
 4. Reply checks reject blank text, replies over 4,000 characters, unfilled `{placeholder}` tokens and intent labels outside `config/labels.json`. Pydantic validates the result. The chat shows the reply and its route; **Show details** opens the intent, policy facts and trace.
 
-If Jev fails or does not answer within `APP_JEV_TIMEOUT_SECONDS`, the rule router chooses the route instead: messages of `APP_RULE_ROUTER_COMPLEX_MIN_WORDS` words or more go to `complex`, shorter ones to `standard`. The request still goes to a backend. The trace shows `router: "rule_router"`, `jev_choice: null`, `confidence: null` and `fallback_reason` `jev_timeout` or `jev_error`.
+If Jev fails or does not answer within `APP_JEV_TIMEOUT_SECONDS`, the rule router chooses the route instead: messages of `APP_RULE_ROUTER_COMPLEX_MIN_WORDS` words or more go to `complex`, shorter ones to `standard`. The request still goes to a backend. The trace shows `router: "rule_router"`, `jev_choice: null`, `confidence: null` and `fallback_reason` `jev_timeout` or `jev_error`. Jev's answers are checked one at a time: an invalid route answer also uses the rule router, with `fallback_reason: "jev_invalid_route"`, while an invalid intent answer still uses Jev's route.
 
 If the backend detects no intent, it returns intent `unknown` with a reply asking the customer to describe their banking problem (`reply_source: "no_match"`). A real backend must keep this behaviour. Vague and off-topic messages currently get the same reply. If a backend returns one of the 67 Banking77 intents that has no policy card, it must send an empty reply and no policy facts. The gateway then replies that the demo does not cover that topic (`reply_source: "unsupported_topic"`). The mock backends only match the 10 carded intents, so they never take this path. If the selected backend is marked unavailable, the other is used only when available (`selected_backend_unavailable`). When both are unavailable, every message returns HTTP 503. When Jev fails and the backend falls back, `fallback_reason` lists both reasons.
 
@@ -126,7 +126,7 @@ The `prometheus` service (Prometheus 3.15.1, config in [`prometheus/prometheus.y
 | `gateway_chat_unavailable_total` | none | Chat requests that got a 503 |
 | `gateway_chat_latency_seconds` | none | Histogram of time spent in the gateway per chat request, including 503s |
 | `gateway_backend_calls_attempted_total`, `_completed_total`, `_failed_total` | `model` | Backend calls, the same numbers as `usage` in `/v1/health` |
-| `gateway_jev_fallbacks_total` | `reason` (`jev_timeout`, `jev_error`) | Requests routed by the rule router because Jev failed |
+| `gateway_jev_fallbacks_total` | `reason` (`jev_timeout`, `jev_error`, `jev_invalid_route`) | Requests routed by the rule router because Jev failed or its route answer was invalid |
 | `gateway_model_disabled` | `model` | 1 while the controller has the model disabled |
 | `gateway_monitor_failure_rate`, `gateway_monitor_window_samples` | `model` | Failure rate and number of calls in the monitor window (rate is 0 when the window is empty) |
 | `gateway_controller_interventions_total` | `action`, `model` | Controller actions: `disabled`, `re-enabled`, `kept_last_backend` |
@@ -387,4 +387,4 @@ CI runs these checks, the frontend tests and build, a Compose smoke test through
 - `tests/`: unit and API tests. `scripts/smoke_compose.py`: public-proxy smoke test.
 - `discussion.md`, `problem2-local-run.md`, benchmark results: historical Assignment 2 records. The original SmolLM2 implementation and measurement scripts remain in Git history before this prototype.
 
-`Router` is a small async interface returning a validated `RoutingDecision` (route and confidence only). A future real Jev client can implement it, and a real vLLM client can implement `Backend` (returning intent, reply and facts), without changing the HTTP contract or the frontend. `Store` works the same way for storage. The rest of the planned architecture is follow-up work.
+`Router` is a small async interface returning a validated `JevResult`: the route and intent answers, each checked on its own, plus the model and token counts. A future real Jev client can implement it, and a real vLLM client can implement `Backend` (returning intent, reply and facts), without changing the HTTP contract or the frontend. `Store` works the same way for storage. The rest of the planned architecture is follow-up work.

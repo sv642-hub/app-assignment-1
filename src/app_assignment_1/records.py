@@ -91,23 +91,25 @@ class JevAssessment(StrictModel):
             or self.output_tokens is None
         ):
             raise ValueError("An ok answer needs the model and token counts")
-        self._check_probabilities()
+        assert self.choice is not None and self.probabilities is not None
+        check_probabilities(self.choice, self.probabilities)
         if self.question == "route":
             check_options(self, ROUTE_OPTIONS)
         return self
 
-    def _check_probabilities(self) -> None:
-        assert self.probabilities is not None and self.choice is not None
-        values = list(self.probabilities.values())
-        if not all(math.isfinite(value) and 0 <= value <= 1 for value in values):
-            raise ValueError("Each probability must be a number from 0 to 1")
-        tolerance = probability_total_tolerance(len(values)) + TIE_TOLERANCE
-        if abs(sum(values) - 1) > tolerance:
-            raise ValueError("Probabilities must add up to about 1")
-        if self.choice not in self.probabilities:
-            raise ValueError("The choice must be one of the options")
-        if self.probabilities[self.choice] < max(values) - TIE_TOLERANCE:
-            raise ValueError("The choice must have the highest probability")
+
+def check_probabilities(choice: str, probabilities: dict[str, float]) -> None:
+    """Raise unless the probabilities are valid and the choice is a top option."""
+    values = list(probabilities.values())
+    if not all(math.isfinite(value) and 0 <= value <= 1 for value in values):
+        raise ValueError("Each probability must be a number from 0 to 1")
+    tolerance = probability_total_tolerance(len(values)) + TIE_TOLERANCE
+    if abs(sum(values) - 1) > tolerance:
+        raise ValueError("Probabilities must add up to about 1")
+    if choice not in probabilities:
+        raise ValueError("The choice must be one of the options")
+    if probabilities[choice] < max(values) - TIE_TOLERANCE:
+        raise ValueError("The choice must have the highest probability")
 
 
 def check_options(record: JevAssessment, options: Collection[str]) -> None:

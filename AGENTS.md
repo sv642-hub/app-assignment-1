@@ -12,7 +12,7 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 - `src/app_assignment_1/service.py`: gateway flow and reply format checks; saves requests and interventions to the store.
 - `src/app_assignment_1/store.py`: `Store` interface, `MemoryStore` (default) and `PostgresStore` (psycopg 3, plain SQL), plus the migration runner.
 - `src/app_assignment_1/migrations/`: numbered SQL files applied once at startup. Add a new file for schema changes; never edit one that has run.
-- `src/app_assignment_1/router.py`: `Router` interface, `MockJevRouter`, and the fallback `RuleRouter`.
+- `src/app_assignment_1/router.py`: `Router` interface returning a `JevResult` (route and intent answers), `MockJevRouter`, and the fallback `RuleRouter`.
 - `src/app_assignment_1/backends.py`: `Backend` interface and `MockBackend` (the mock Qwen backends).
 - `src/app_assignment_1/intents.py`: keyword matching over the configured intents, shared by the mocks.
 - `src/app_assignment_1/labels.py`: loads the shared labels (77 Banking77 intents plus `unknown`) and derives `option_set_version`.

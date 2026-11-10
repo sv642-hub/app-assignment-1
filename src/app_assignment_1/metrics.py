@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from app_assignment_1.service import Gateway
 
 ACTIONS = ("disabled", "re-enabled", "kept_last_backend")
-JEV_FALLBACK_REASONS = ("jev_timeout", "jev_error")
+JEV_FALLBACK_REASONS = ("jev_timeout", "jev_error", "jev_invalid_route")
 
 
 class GatewayMetrics:
@@ -41,7 +41,8 @@ class GatewayMetrics:
         )
         self.jev_fallbacks = Counter(
             "gateway_jev_fallbacks",
-            "Requests routed by the rule router because the Jev call failed.",
+            "Requests routed by the rule router: the Jev call failed or its route "
+            "answer was invalid.",
             ["reason"],
             registry=self.registry,
         )

@@ -71,7 +71,7 @@ def test_chat_request_updates_counters(settings):
             assert value(found, "gateway_model_disabled", model=model) == 0
             assert value(found, "gateway_monitor_failure_rate", model=model) == 0
             assert value(found, "gateway_monitor_window_samples", model=model) == 1
-        for reason in ["jev_timeout", "jev_error"]:
+        for reason in ["jev_timeout", "jev_error", "jev_invalid_route"]:
             assert value(found, "gateway_jev_fallbacks_total", reason=reason) == 0
 
 
