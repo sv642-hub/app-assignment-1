@@ -13,6 +13,7 @@ from app_assignment_1.schemas import (
     ChatRequest,
     ChatResponse,
     HealthResponse,
+    JevBreakerStatus,
     RecentRequest,
 )
 from app_assignment_1.service import BackendUnavailable, Gateway
@@ -73,7 +74,11 @@ def create_app(
     @app.get("/v1/health", response_model=HealthResponse)
     async def health(request: Request) -> HealthResponse:
         gateway: Gateway = request.app.state.gateway
-        healthy = all(gateway.usable(b) for b in gateway.backends)
+        breaker = gateway.jev_breaker
+        healthy = (
+            all(gateway.usable(b) for b in gateway.backends)
+            and breaker.state() == "closed"
+        )
         monitor = gateway.controller.stats()
         # stats() may log a re-enable; save it before reading the log back.
         await gateway.save_interventions()
@@ -94,6 +99,12 @@ def create_app(
             monitor=monitor,
             interventions=await gateway.store.recent_interventions(50),
             controller=gateway.controller.rules(),
+            jev_breaker=JevBreakerStatus(
+                state=breaker.state(),
+                consecutive_failures=breaker.consecutive_failures,
+                failure_limit=breaker.failure_limit,
+                cooldown_seconds=breaker.cooldown,
+            ),
         )
 
     # Internal only: Caddy does not proxy /metrics, and it stays out of /v1 and

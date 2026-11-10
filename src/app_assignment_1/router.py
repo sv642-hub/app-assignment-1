@@ -3,6 +3,8 @@
 The rule router is the fallback and chooses a route only.
 """
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Protocol
 
@@ -44,9 +46,9 @@ class JevAnswer(StrictModel):
 class JevResult(StrictModel):
     """Both answers from one combined Jev call, and the call's details.
 
-    Internal to the gateway: it picks the route from `route` and, from step B3,
-    writes a `JevAssessment` for each answer. The intent options are checked
-    against the label file when the records are written.
+    Internal to the gateway: it picks the route from `route` and writes a
+    `JevAssessment` for each answer. The router checks the intent options: the
+    real client against the 78 labels, the mock against its own intents.
     """
 
     route: JevAnswer
@@ -68,7 +70,14 @@ class JevResult(StrictModel):
 class Router(Protocol):
     """Jev's interface. A whole-call failure raises; the gateway then uses the
     rule router. An invalid answer to one question comes back as a `JevAnswer`
-    with `error_type` set."""
+    with `error_type` set.
+
+    `mocked` and `option_set_version` describe every call, so the gateway can
+    write records even when a call fails.
+    """
+
+    mocked: bool
+    option_set_version: str
 
     async def route(self, message: str) -> JevResult: ...
 
@@ -82,9 +91,14 @@ class MockJevRouter:
     calibrated, and the mock reports no tokens.
     """
 
+    mocked = True
+
     def __init__(self, path: Path):
         self.intents = load_intents(path)
         self.intent_options = [item.intent for item in self.intents] + [UNKNOWN]
+        # The mock chooses from its own intents, not the 78 labels.
+        digest = hashlib.sha256(json.dumps(self.intent_options).encode()).hexdigest()
+        self.option_set_version = f"mock-intents-{digest[:12]}"
 
     async def route(self, message: str) -> JevResult:
         score, match = match_intent(self.intents, message)
