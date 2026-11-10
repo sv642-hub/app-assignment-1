@@ -102,7 +102,7 @@ components:
     title: Jev intent question
     owner: Verness
     items:
-      - built: Assessment record schema and test sink
+      - built: Assessment record schema
       - simulated: Intent in the routing call, 11 options
       - todo: 78 options; gateway writes records
 
