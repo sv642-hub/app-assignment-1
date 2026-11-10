@@ -17,6 +17,7 @@ export const healthyHealth = {
   ],
   interventions: [],
   controller: RULES,
+  jev_breaker: { state: "closed", consecutive_failures: 0, failure_limit: 5, cooldown_seconds: 30 },
   recent_requests: [
     { completed_at: "2026-10-30T14:33:02Z", route: "standard", model: "qwen3-1.7b", fallback_reason: null, format_check: "failed" },
     { completed_at: "2026-10-30T14:32:51Z", route: "complex", model: "qwen3-4b", fallback_reason: "selected_backend_error", format_check: "passed" },
@@ -50,6 +51,13 @@ export const outageHealth = {
   interventions: [
     { at: "2026-10-30T14:32:08Z", backend: "qwen3-1.7b", action: "disabled", reason: "failure rate 100% over last 5 calls" },
   ],
+};
+
+// Both models serve, but Jev failed 5 calls in a row, so the breaker is open.
+// `status` is about the models only, so it stays ok.
+export const jevOutageHealth = {
+  ...healthyHealth,
+  jev_breaker: { state: "open", consecutive_failures: 5, failure_limit: 5, cooldown_seconds: 30 },
 };
 
 export const lostCardReply = {
