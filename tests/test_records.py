@@ -1,4 +1,4 @@
-"""Jev assessment records: status rules, answers, the combined call and the sink."""
+"""Jev assessment records: status rules, answers and the combined call."""
 
 import math
 from datetime import UTC, datetime
@@ -9,9 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from app_assignment_1.records import (
-    InMemoryRecordSink,
     JevAssessment,
-    RecordSink,
     check_call,
     check_options,
 )
@@ -236,16 +234,6 @@ def test_mismatched_pairs_are_rejected(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         check_call([JevAssessment(**values) for values in pair])
-
-
-def test_in_memory_sink_keeps_records_in_order() -> None:
-    sink: RecordSink = InMemoryRecordSink()
-    route = JevAssessment(**route_answer())
-    intent = JevAssessment(**intent_answer())
-    sink.write_jev(route)
-    sink.write_jev(intent)
-    assert isinstance(sink, InMemoryRecordSink)
-    assert sink.jev == [route, intent]
 
 
 def test_records_round_trip_through_json() -> None:

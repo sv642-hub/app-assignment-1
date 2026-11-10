@@ -1,13 +1,13 @@
-"""Records the gateway writes for the semantic monitor, and where they go.
+"""Records the gateway writes for the semantic monitor.
 
 Only the Jev assessment is defined so far. The backend response record waits on
 the open points in PR 45 (see docs/JEV_QWEN_INTEGRATION_PLAN.md). Nothing in the
-gateway writes these records yet.
+gateway writes these records yet; they will be saved through `Store`.
 """
 
 import math
 from collections.abc import Collection, Sequence
-from typing import Literal, Protocol
+from typing import Literal
 from uuid import UUID
 
 from pydantic import AwareDatetime, Field, model_validator
@@ -141,19 +141,3 @@ def check_call(records: Sequence[JevAssessment]) -> None:
             raise ValueError(f"Both answers from one call must share {field}")
     if (first.status == "skipped") != (second.status == "skipped"):
         raise ValueError("Jev is skipped for the whole call or not at all")
-
-
-class RecordSink(Protocol):
-    """Where the gateway sends records. Sebastian's monitor will implement it."""
-
-    def write_jev(self, record: JevAssessment) -> None: ...
-
-
-class InMemoryRecordSink:
-    """Keeps records in a list, for tests until the monitor is ready."""
-
-    def __init__(self) -> None:
-        self.jev: list[JevAssessment] = []
-
-    def write_jev(self, record: JevAssessment) -> None:
-        self.jev.append(record)
