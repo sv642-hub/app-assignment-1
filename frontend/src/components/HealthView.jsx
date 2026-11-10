@@ -30,7 +30,9 @@ export function describeModels(health) {
 const BREAKER_PILLS = {
   closed: { tone: "good", text: "Calling Jev" },
   open: { tone: "bad", text: "Skipped" },
-  half_open: { tone: "bad", text: "Trial call" },
+  // After the cool-off, the breaker waits for the next message, which can be
+  // hours on a quiet gateway. Nothing is failing meanwhile.
+  half_open: { tone: "neutral", text: "Waiting for next message" },
 };
 
 function breakerText(breaker) {
@@ -42,7 +44,11 @@ function breakerText(breaker) {
 }
 
 function bannerFor(health, models) {
+  // `status` is about the models only. A skipped Jev is a neutral note: the
+  // models still answer, and keyword rules pick the route.
+  const jev = breakerText(health.jev_breaker);
   if (health.status === "ok") {
+    if (jev) return { tone: "note", title: "Keyword rules are routing while Jev is skipped", text: `Both models are serving. ${jev}` };
     return { tone: "good", title: "All systems normal", text: "Both models are serving their routes. No controller action is in effect." };
   }
   const down = models.filter((m) => !m.usable);
@@ -55,7 +61,6 @@ function bannerFor(health, models) {
       ? `${m.name} was disabled by the controller. ${m.route[0].toUpperCase() + m.route.slice(1)} requests are going to ${up.name} until the cooldown ends.`
       : `${m.name} is marked unavailable in the config. Its requests are going to ${up.name}.`,
   );
-  const jev = breakerText(health.jev_breaker);
   if (jev) parts.push(jev);
   return { tone: "bad", title: "Degraded", text: parts.join(" ") };
 }

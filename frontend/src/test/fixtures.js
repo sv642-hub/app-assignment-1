@@ -54,9 +54,9 @@ export const outageHealth = {
 };
 
 // Both models serve, but Jev failed 5 calls in a row, so the breaker is open.
+// `status` is about the models only, so it stays ok.
 export const jevOutageHealth = {
   ...healthyHealth,
-  status: "degraded",
   jev_breaker: { state: "open", consecutive_failures: 5, failure_limit: 5, cooldown_seconds: 30 },
 };
 

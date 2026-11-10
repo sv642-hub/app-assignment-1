@@ -508,6 +508,15 @@ p {
   color: var(--bad);
 }
 
+.banner-note {
+  background: var(--bg);
+  border-color: var(--border-strong);
+}
+
+.banner-note strong {
+  color: var(--ink-2);
+}
+
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -560,6 +569,11 @@ p {
 .action-re-enabled {
   background: var(--good-bg);
   color: var(--good-ink);
+}
+
+.pill-neutral {
+  background: var(--border);
+  color: var(--ink-2);
 }
 
 .pill-bad,
