@@ -198,6 +198,8 @@ class SemanticRules(StrictModel):
     min_coverage: float = Field(ge=0, le=1)
     baseline_disagreement_rate: float | None = Field(ge=0, le=1)
     alert_margin: float = Field(ge=0, le=1)
+    # Whether the controller disables a model that is above the baseline.
+    actions_enabled: bool
 
 
 class HealthResponse(StrictModel):

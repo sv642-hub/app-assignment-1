@@ -20,7 +20,7 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 - `src/app_assignment_1/labels.py`: loads the shared labels (77 Banking77 intents plus `unknown`) and derives `option_set_version`.
 - `src/app_assignment_1/monitor.py`: in-memory failure monitor (format failures and failed calls) and `Controller`; new interventions wait in `unsaved` until the gateway stores them.
 - `src/app_assignment_1/records.py`: `JevAssessment` records for the semantic monitor and the checks on them. The gateway builds two records per request and saves them with the request through `Store`.
-- `src/app_assignment_1/semantic.py`: in-memory semantic monitor; scores each model's intent against Jev's intent answer, per model, with coverage and a baseline. Reports only.
+- `src/app_assignment_1/semantic.py`: in-memory semantic monitor; scores each model's intent against Jev's intent answer, per model, with coverage and a baseline. The controller acts on it only with `APP_SEMANTIC_ACTIONS_ENABLED` (off by default).
 - `src/app_assignment_1/metrics.py`: Prometheus metrics for the gateway, served at the internal `/metrics` path (not proxied by Caddy).
 - `src/app_assignment_1/schemas.py`: Pydantic API contracts and config models.
 - `src/app_assignment_1/config.py`: cached Pydantic Settings.
@@ -31,7 +31,7 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 - `scripts/smoke_compose.py`: smoke test against the public proxy.
 - `scripts/render_architecture.py`: draws `docs/architecture.svg` from `docs/architecture.yaml`; `--check` fails if they differ.
 - `env/`: `.env.example`, `.env.production.example` and `postgres.env.example` templates. Real `env/.env` and `env/postgres.env` are optional and ignored by git. `compose.defaults.env` holds public throwaway values (store and database password) so Compose and CI start without private files; never use it for a deployment.
-- `compose.yml`: `gateway`, `postgres` (named volume `postgres-data`), `proxy` and `prometheus` services; only `proxy` publishes a port. `compose.chaos.yml`: override that makes the small model corrupt every reply. `compose.outage.yml`: override that makes every call to the small model raise an error. `compose.labelswap.yml`: override that makes the small model answer with the wrong intent, for the semantic monitor.
+- `compose.yml`: `gateway`, `postgres` (named volume `postgres-data`), `proxy` and `prometheus` services; only `proxy` publishes a port. `compose.chaos.yml`: override that makes the small model corrupt every reply. `compose.outage.yml`: override that makes every call to the small model raise an error. `compose.labelswap.yml`: override that makes the small model answer with the wrong intent and turns semantic actions on, so the controller disables it.
 - `Caddyfile`: serves the React app on port 8080 and proxies `/v1`, `/docs`, `/redoc` and `/openapi.json` to the gateway. Never add `/metrics`.
 - `prometheus/prometheus.yml`: Prometheus scrape config; scrapes `gateway:8000/metrics` on the Compose network.
 - `docs/TEAM_PLAN.md`: who owns what. `USER_BRIEF.md`: guide for beta testers.

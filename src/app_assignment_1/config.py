@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     # monitor reports rates but never flags them.
     semantic_baseline_disagreement_rate: float | None = Field(default=None, ge=0, le=1)
     semantic_alert_margin: float = Field(default=0.15, ge=0, le=1)
+    # Off: the semantic monitor only reports. On: the controller disables a
+    # model above the baseline, with the same cooldown and action limit as for
+    # format failures. Keep it off until the baseline comes from dev data.
+    semantic_actions_enabled: bool = False
     # memory: process memory, lost on restart. postgres: needs database_url.
     store: Literal["memory", "postgres"] = "memory"
     database_url: SecretStr | None = None

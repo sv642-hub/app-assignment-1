@@ -52,6 +52,12 @@ class Controller:
         # Every intervention since start; the log above keeps only the latest.
         self.action_counts: Counter[tuple[str, BackendName]] = Counter()
         self.unsaved: list[Intervention] = []
+        # Called with a model's name when its cooldown ends, so other monitors
+        # can start that model's window again too.
+        self.on_reenable: list[Callable[[BackendName], None]] = []
+        # Models above the semantic baseline that could not be disabled, so
+        # kept_last_backend is logged once per run, not on every reply.
+        self.semantic_warned: set[BackendName] = set()
 
     def _note(
         self,
@@ -76,6 +82,8 @@ class Controller:
         # Re-enabling happens on the next check; log when the cooldown ended.
         del self.disabled_until[name]
         self.windows[name].clear()
+        for reset in self.on_reenable:
+            reset(name)
         self._note(name, "re-enabled", "cooldown elapsed; window reset", now - until)
         return False
 
@@ -109,13 +117,34 @@ class Controller:
             else "failure"
         )
         reason = f"{kind} rate {rate:.0%} over last {len(window)} calls"
+        return self._disable(name, reason, can_disable, self.warned)
+
+    def record_semantic(
+        self, name: BackendName, reason: str | None, can_disable: bool
+    ) -> str | None:
+        """Act on the semantic monitor: `reason` is set while the model is
+        above the baseline, None otherwise. Return the action taken, if any."""
+        if reason is None:
+            self.semantic_warned.discard(name)
+            return None
+        if name in self.disabled_until:
+            return None
+        return self._disable(name, reason, can_disable, self.semantic_warned)
+
+    def _disable(
+        self,
+        name: BackendName,
+        reason: str,
+        can_disable: bool,
+        warned: set[BackendName],
+    ) -> str | None:
         if not can_disable:
             # Log once per run above the threshold, not on every failing request.
-            if name not in self.warned:
-                self.warned.add(name)
+            if name not in warned:
+                warned.add(name)
                 self._note(name, "kept_last_backend", reason)
             return None
-        self.warned.discard(name)
+        warned.discard(name)
         self.disabled_until[name] = self.clock() + self.cooldown
         self._note(name, "disabled", reason)
         return f"disabled {name}: {reason}"

@@ -340,6 +340,7 @@ def test_health_reports_the_rules(tmp_path):
         "min_coverage": 0.5,
         "baseline_disagreement_rate": 0.0,
         "alert_margin": 0.2,
+        "actions_enabled": False,
     }
 
 
@@ -398,3 +399,8 @@ def test_labelswap_override_points_at_a_valid_config():
         ],
     )
     assert settings.semantic_baseline_disagreement_rate == 0
+    actions = Settings(
+        _env_file=None,
+        semantic_actions_enabled=env["APP_SEMANTIC_ACTIONS_ENABLED"],
+    )
+    assert actions.semantic_actions_enabled is True
