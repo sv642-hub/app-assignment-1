@@ -66,7 +66,7 @@ A model can return a well-formed reply for the wrong intent, which the format ch
   - `normal`: otherwise.
 - **Visibility:** `GET /v1/health` has `semantic` (per model: counts, `disagreement_rate`, `coverage`, `status`) and `semantic_rules`. `/metrics` has `gateway_semantic_samples_total`, `gateway_semantic_disagreement_rate`, `gateway_semantic_coverage` and `gateway_semantic_above_baseline`. The rate and coverage gauges are absent while a model has no data, so an empty window never reads as 0%.
 
-The semantic monitor only reports. It takes no action, and the Health screen does not show it yet. The defaults are placeholders: the baseline, margin and coverage minimum should be set from dev data before the final test. In mock mode, Jev and both models share one keyword classifier, so a healthy mock always agrees and its baseline is 0. A disagreement rate measured on mocks says nothing about real model quality. The windows reset when the gateway restarts.
+The semantic monitor only reports and takes no action. The **Health** screen shows it as a table, one row per model, and adds a red "Possible wrong intents" banner while a model is above the baseline. The defaults are placeholders: the baseline, margin and coverage minimum should be set from dev data before the final test. In mock mode, Jev and both models share one keyword classifier, so a healthy mock always agrees and its baseline is 0. A disagreement rate measured on mocks says nothing about real model quality. The windows reset when the gateway restarts.
 
 To see it work, use the label-swap override. In `config/backends.labelswap.json`, the small model has `label_swap_rate: 1`: it answers every matched message with the next intent's label and policy card. The override also sets the mock baseline of 0:
 
@@ -74,7 +74,7 @@ To see it work, use the label-swap override. In `config/backends.labelswap.json`
 docker compose -f compose.yml -f compose.labelswap.yml up -d --build --wait
 ```
 
-Send ten standard messages, such as "My card has not arrived". Each one gets a well-formed reply about a lost or stolen card. Every format check passes and the controller does nothing, but `GET /v1/health` shows `qwen3-1.7b` with a disagreement rate of 1.0 and status `above_baseline`. Return to normal with `docker compose up -d --wait`.
+Send ten standard messages, such as "My card has not arrived". Each one gets a well-formed reply about a lost or stolen card. Every format check passes and the controller does nothing, but `GET /v1/health` shows `qwen3-1.7b` with a disagreement rate of 1.0 and status `above_baseline`, and the **Health** screen shows the banner. Return to normal with `docker compose up -d --wait`.
 
 ## Run with Docker Compose
 

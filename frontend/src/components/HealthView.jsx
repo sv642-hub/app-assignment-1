@@ -43,11 +43,37 @@ function breakerText(breaker) {
   return "The Jev cool-off has ended. The next message tries Jev again. Until a call succeeds, keyword rules route messages.";
 }
 
+const SEMANTIC_PILLS = {
+  normal: { tone: "good", text: "Normal" },
+  above_baseline: { tone: "bad", text: "Above baseline" },
+  collecting: { tone: "neutral", text: "Collecting" },
+  no_baseline: { tone: "neutral", text: "No baseline set" },
+  low_coverage: { tone: "neutral", text: "Low coverage" },
+};
+
+function scored(model) {
+  return model.agreements + model.disagreements;
+}
+
+// One sentence per model whose disagreement with Jev is above the baseline.
+function semanticText(health) {
+  const baseline = health.semantic_rules?.baseline_disagreement_rate;
+  return (health.semantic ?? [])
+    .filter((m) => m.status === "above_baseline")
+    .map(
+      (m) =>
+        `${m.name}'s intent differs from Jev's on ${percent(m.disagreement_rate)} of recent replies (${m.disagreements} of ${scored(m)}), above the ${percent(baseline)} baseline. These replies pass the format check, so the controller takes no action.`,
+    )
+    .join(" ");
+}
+
 function bannerFor(health, models) {
   // `status` is about the models only. A skipped Jev is a neutral note: the
   // models still answer, and keyword rules pick the route.
   const jev = breakerText(health.jev_breaker);
+  const semantic = semanticText(health);
   if (health.status === "ok") {
+    if (semantic) return { tone: "bad", title: "Possible wrong intents", text: [semantic, jev].filter(Boolean).join(" ") };
     if (jev) return { tone: "note", title: "Keyword rules are routing while Jev is skipped", text: `Both models are serving. ${jev}` };
     return { tone: "good", title: "All systems normal", text: "Both models are serving their routes. No controller action is in effect." };
   }
@@ -61,8 +87,59 @@ function bannerFor(health, models) {
       ? `${m.name} was disabled by the controller. ${m.route[0].toUpperCase() + m.route.slice(1)} requests are going to ${up.name} until the cooldown ends.`
       : `${m.name} is marked unavailable in the config. Its requests are going to ${up.name}.`,
   );
+  if (semantic) parts.push(semantic);
   if (jev) parts.push(jev);
   return { tone: "bad", title: "Degraded", text: parts.join(" ") };
+}
+
+function SemanticCard({ semantic, rules }) {
+  const baseline = rules.baseline_disagreement_rate;
+  return (
+    <section className="card" aria-label="Semantic monitor">
+      <h2>Semantic monitor</h2>
+      <p className="muted small">
+        A model can give a well-formed reply for the wrong intent, which the format check cannot see. For each reply that passed the format check, the
+        monitor compares the model&apos;s intent with Jev&apos;s, over the last {rules.window} replies per model. It only reports; it takes no action.
+      </p>
+      <div className="table-scroll">
+        <table className="log" aria-label="Semantic monitor">
+          <thead>
+            <tr>
+              <th scope="col">Model</th>
+              <th scope="col">Status</th>
+              <th scope="col">Differs from Jev</th>
+              <th scope="col">Had a Jev answer</th>
+              <th scope="col">Rerouted traffic</th>
+            </tr>
+          </thead>
+          <tbody>
+            {semantic.map((m) => {
+              const pill = SEMANTIC_PILLS[m.status] ?? { tone: "neutral", text: m.status };
+              const rerouted = m.rerouted_agreements + m.rerouted_disagreements;
+              return (
+                <tr key={m.name}>
+                  <td className="mono">{m.name}</td>
+                  <td>
+                    <span className={`pill pill-${pill.tone}`}>{pill.text}</span>
+                  </td>
+                  <td>{m.disagreement_rate === null ? "no data yet" : `${percent(m.disagreement_rate)} (${m.disagreements} of ${scored(m)})`}</td>
+                  <td>{m.coverage === null ? "no data yet" : `${percent(m.coverage)} (${scored(m)} of ${m.samples})`}</td>
+                  <td>{rerouted === 0 ? "none" : `${m.rerouted_disagreements} of ${rerouted} differ`}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="muted small">
+        {baseline === null
+          ? "No healthy baseline is set yet, so rates are shown but never flagged. It should come from dev data."
+          : `Flagged above ${percent(baseline + rules.alert_margin)}: the ${percent(baseline)} baseline plus a ${percent(rules.alert_margin)} margin.`}{" "}
+        A model needs {rules.min_samples} scored replies first, and at least {percent(rules.min_coverage)} of its replies need a Jev answer, so a Jev outage
+        does not look like a healthy model. In mock mode, Jev and both models use the same keyword matcher, so a healthy model always agrees.
+      </p>
+    </section>
+  );
 }
 
 function JevCard({ breaker }) {
@@ -195,6 +272,8 @@ function HealthBody({ health }) {
         {health.jev_breaker && <JevCard breaker={health.jev_breaker} />}
       </div>
 
+      {health.semantic && health.semantic_rules && <SemanticCard semantic={health.semantic} rules={health.semantic_rules} />}
+
       <section className="card">
         <h2>Recent completed requests</h2>
         <p className="muted small">Up to 20 retained requests that got a reply, newest first, including replies that failed the format check. Requests that got no reply (HTTP 503) are not listed. Kept across gateway restarts when it uses Postgres, as in Compose.</p>
@@ -297,7 +376,10 @@ function HealthBody({ health }) {
           <li>Send it once more: qwen3-4b answers. Health shows the format failures, the disabled small model and an intervention.</li>
           <li>Finish within {rules.cooldown_seconds} s. After the cooldown, the small model is enabled again and fails again.</li>
         </ol>
-        <p>This tests format failures and rerouting only. A wrong answer that passes the format check is not detected.</p>
+        <p>
+          This tests format failures and rerouting only. A wrong answer that passes the format check is not caught by the controller. The semantic monitor
+          above reports it: the README&apos;s label-swap override shows how.
+        </p>
       </section>
 
       <section className="card">

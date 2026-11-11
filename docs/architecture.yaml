@@ -47,7 +47,7 @@ components:
     items:
       - built: React (Vite) build served by Caddy
       - built: Chat (the Playground)
-      - built: "Health: per-model window, Jev breaker, recent requests, usage, chaos walkthrough"
+      - built: "Health: per-model window, Jev breaker, semantic monitor, recent requests, usage, chaos walkthrough"
       - todo: Deployments and Jev screens
       - todo: Chaos mode screen
 
