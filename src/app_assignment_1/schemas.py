@@ -112,6 +112,10 @@ class BackendConfig(StrictModel):
     fault_rate: float = Field(default=0, ge=0, le=1)
     # Share of mock calls that raise on purpose, to simulate an outage.
     error_rate: float = Field(default=0, ge=0, le=1)
+    # Share of matched mock replies given another intent's label and card on
+    # purpose. The reply passes the format check; only the semantic monitor
+    # sees it.
+    label_swap_rate: float = Field(default=0, ge=0, le=1)
 
 
 class BackendMonitor(StrictModel):
@@ -168,6 +172,35 @@ class JevBreakerStatus(StrictModel):
     cooldown_seconds: float = Field(gt=0)
 
 
+class SemanticStatus(StrictModel):
+    """One model's agreement with Jev's intent answer, over the monitor window."""
+
+    name: BackendName
+    samples: int = Field(ge=0)
+    agreements: int = Field(ge=0)
+    disagreements: int = Field(ge=0)
+    # Passed format checks with no usable Jev intent answer.
+    no_signal: int = Field(ge=0)
+    # None until a sample is scored, so an empty window never reads as 0%.
+    disagreement_rate: float | None = Field(ge=0, le=1)
+    coverage: float | None = Field(ge=0, le=1)
+    status: Literal[
+        "low_coverage", "collecting", "no_baseline", "above_baseline", "normal"
+    ]
+    # Traffic from the other route, kept out of the window above.
+    rerouted_agreements: int = Field(ge=0)
+    rerouted_disagreements: int = Field(ge=0)
+    rerouted_no_signal: int = Field(ge=0)
+
+
+class SemanticRules(StrictModel):
+    window: int = Field(ge=1)
+    min_samples: int = Field(ge=1)
+    min_coverage: float = Field(ge=0, le=1)
+    baseline_disagreement_rate: float | None = Field(ge=0, le=1)
+    alert_margin: float = Field(ge=0, le=1)
+
+
 class HealthResponse(StrictModel):
     recent_requests: list[RecentRequest] = Field(default_factory=list)
     usage: list[ModelUsage] = Field(default_factory=list)
@@ -179,3 +212,5 @@ class HealthResponse(StrictModel):
     interventions: list[Intervention]
     controller: ControllerRules
     jev_breaker: JevBreakerStatus
+    semantic: list[SemanticStatus]
+    semantic_rules: SemanticRules

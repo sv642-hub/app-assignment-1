@@ -30,6 +30,7 @@ from app_assignment_1.schemas import (
     RoutingDecision,
     Trace,
 )
+from app_assignment_1.semantic import SemanticMonitor, score
 from app_assignment_1.store import MemoryStore, Store
 
 logger = logging.getLogger(__name__)
@@ -149,6 +150,9 @@ class Gateway:
             )
         self.controller = Controller(
             (b.config.name for b in self.backends), settings, clock
+        )
+        self.semantic = SemanticMonitor(
+            (b.config.name for b in self.backends), settings
         )
         self.metrics = GatewayMetrics(self)
 
@@ -396,6 +400,15 @@ class Gateway:
             )
             or action
         )
+        if not format_errors:
+            # Score the model's own label against Jev's intent answer. A failed
+            # format check gives no semantic sample; the controller counted it.
+            sample = score(generated.intent, jev)
+            rerouted = backend is not selected
+            self.semantic.record(backend.config.name, sample, rerouted)
+            self.metrics.semantic_samples.labels(
+                backend.config.name, sample, "rerouted" if rerouted else "own"
+            ).inc()
 
         response = ChatResponse(
             id=request_id,

@@ -51,6 +51,10 @@ class MockBackend:
         if self.rng.random() < self.config.error_rate:
             raise ConnectionError("Simulated backend outage")
         _, match = match_intent(self.intents, message)
+        if match is not None and self.rng.random() < self.config.label_swap_rate:
+            # Simulated semantic fault: a confident reply for the wrong intent.
+            # It passes the format check; only the semantic monitor sees it.
+            match = self.intents[(self.intents.index(match) + 1) % len(self.intents)]
         if match is None:
             reply = BackendReply(intent="unknown", reply=UNKNOWN_REPLY, policy_facts=[])
         else:

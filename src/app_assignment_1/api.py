@@ -105,6 +105,8 @@ def create_app(
                 failure_limit=breaker.failure_limit,
                 cooldown_seconds=breaker.cooldown,
             ),
+            semantic=gateway.semantic.stats(),
+            semantic_rules=gateway.semantic.rules,
         )
 
     # Internal only: Caddy does not proxy /metrics, and it stays out of /v1 and

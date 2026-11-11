@@ -3,7 +3,15 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import App, { HEALTH_POLL_MS } from "./App.jsx";
-import { degradedHealth, fakeGateway, healthyHealth, jevOutageHealth, outageHealth } from "./test/fixtures.js";
+import {
+  degradedHealth,
+  fakeGateway,
+  healthyHealth,
+  jevOutageHealth,
+  labelSwapHealth,
+  lowCoverageHealth,
+  outageHealth,
+} from "./test/fixtures.js";
 
 function renderWith(gateway) {
   vi.spyOn(globalThis, "fetch").mockImplementation(gateway.fetch);
@@ -220,6 +228,102 @@ describe("Health", () => {
   });
 });
 
+
+describe("Semantic monitor", () => {
+  async function openHealth(health) {
+    const user = renderWith(fakeGateway({ health }));
+    await user.click(screen.getByRole("button", { name: "Health" }));
+    return screen.findByRole("table", { name: "Semantic monitor" });
+  }
+
+  function row(table, name) {
+    return within(table).getByText(name).closest("tr");
+  }
+
+  it("shows rates without flagging them when no baseline is set", async () => {
+    const table = await openHealth(healthyHealth);
+
+    const small = row(table, "qwen3-1.7b");
+    expect(within(small).getByText("No baseline set")).toHaveClass("pill-neutral");
+    expect(small).toHaveTextContent("0% (0 of 12)");
+    expect(small).toHaveTextContent("100% (12 of 12)");
+    expect(within(row(table, "qwen3-4b")).getByText("Collecting")).toBeInTheDocument();
+    expect(row(table, "qwen3-4b")).toHaveTextContent("1 of 3 differ");
+    expect(screen.getByText(/No healthy baseline is set yet/)).toBeInTheDocument();
+    expect(screen.getByText("All systems normal")).toBeInTheDocument();
+  });
+
+  it("flags a model above the baseline in the table and the banner", async () => {
+    const table = await openHealth(labelSwapHealth);
+
+    const small = row(table, "qwen3-1.7b");
+    expect(within(small).getByText("Above baseline")).toHaveClass("pill-bad");
+    expect(small).toHaveTextContent("100% (10 of 10)");
+    expect(within(row(table, "qwen3-4b")).getByText("Normal")).toHaveClass("pill-good");
+
+    const banner = screen.getByRole("status");
+    expect(banner).toHaveClass("banner-bad");
+    expect(banner).toHaveTextContent("Possible wrong intents");
+    expect(banner).toHaveTextContent("qwen3-1.7b's intent differs from Jev's on 100% of recent replies (10 of 10), above the 0% baseline.");
+    expect(screen.getByText(/Flagged above 15%: the 0% baseline plus a 15% margin/)).toBeInTheDocument();
+    // The models still serve, so the gateway's own status is unchanged.
+    expect(screen.getByText("Gateway healthy")).toBeInTheDocument();
+  });
+
+  it("shows low coverage instead of a healthy rate while Jev is down", async () => {
+    const table = await openHealth(lowCoverageHealth);
+
+    const small = row(table, "qwen3-1.7b");
+    expect(within(small).getByText("Low coverage")).toHaveClass("pill-neutral");
+    expect(small).toHaveTextContent("no data yet");
+    expect(small).toHaveTextContent("0% (0 of 12)");
+    // An empty window has no rate and no coverage, never 0%.
+    expect(within(row(table, "qwen3-4b")).getAllByText("no data yet")).toHaveLength(2);
+    expect(screen.getByRole("status")).toHaveTextContent("Keyword rules are routing while Jev is skipped");
+  });
+
+  it("adds the semantic alert to a degraded banner", async () => {
+    const health = { ...degradedHealth, semantic: labelSwapHealth.semantic, semantic_rules: labelSwapHealth.semantic_rules };
+    await openHealth(health);
+
+    const banner = screen.getByRole("status");
+    expect(banner).toHaveTextContent("Degraded");
+    expect(banner).toHaveTextContent("qwen3-1.7b was disabled by the controller.");
+    expect(banner).toHaveTextContent("qwen3-1.7b's intent differs from Jev's");
+  });
+
+  it("lists rerouted replies that had no Jev answer", async () => {
+    const semantic = healthyHealth.semantic.map((m) =>
+      m.name === "qwen3-4b" ? { ...m, rerouted_agreements: 0, rerouted_disagreements: 0, rerouted_no_signal: 5 } : m,
+    );
+    const table = await openHealth({ ...healthyHealth, semantic });
+
+    expect(row(table, "qwen3-4b")).toHaveTextContent("5 without a Jev answer");
+    expect(row(table, "qwen3-1.7b")).toHaveTextContent("none");
+  });
+
+  it("shows a rate just above the threshold with one decimal", async () => {
+    // 5 of 33 is 15.2%, above the 15% limit; whole percents would show 15% twice.
+    const semantic = labelSwapHealth.semantic.map((m) =>
+      m.name === "qwen3-1.7b" ? { ...m, samples: 33, agreements: 28, disagreements: 5, disagreement_rate: 0.152 } : m,
+    );
+    const table = await openHealth({ ...labelSwapHealth, semantic });
+
+    expect(row(table, "qwen3-1.7b")).toHaveTextContent("15.2% (5 of 33)");
+    expect(screen.getByText(/Flagged above 15%:/)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("on 15.2% of recent replies (5 of 33)");
+  });
+
+  it("hides the card when the gateway does not report the monitor", async () => {
+    const { semantic: _s, semantic_rules: _r, ...older } = healthyHealth;
+    const user = renderWith(fakeGateway({ health: older }));
+
+    await user.click(screen.getByRole("button", { name: "Health" }));
+
+    expect(await screen.findByText("All systems normal")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Semantic monitor" })).not.toBeInTheDocument();
+  });
+});
 
 describe("Issue 30", () => {
   it("explains recent completed requests on Health", async () => {

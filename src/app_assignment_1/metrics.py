@@ -12,6 +12,8 @@ from prometheus_client import CollectorRegistry, Counter, Histogram, generate_la
 from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily, Metric
 from prometheus_client.registry import Collector
 
+from app_assignment_1.semantic import SAMPLES
+
 if TYPE_CHECKING:
     from app_assignment_1.service import Gateway
 
@@ -53,6 +55,18 @@ class GatewayMetrics:
         )
         for reason in JEV_FALLBACK_REASONS:
             self.jev_fallbacks.labels(reason)
+        self.semantic_samples = Counter(
+            "gateway_semantic_samples",
+            "Replies that passed the format check, scored against Jev's intent "
+            "answer: agree, disagree or no_signal. traffic is own for the model's "
+            "route, rerouted for the other route's messages.",
+            ["model", "sample", "traffic"],
+            registry=self.registry,
+        )
+        for backend in gateway.backends:
+            for sample in SAMPLES:
+                for traffic in ("own", "rerouted"):
+                    self.semantic_samples.labels(backend.config.name, sample, traffic)
         self.registry.register(_GatewayStateCollector(gateway))
 
     def render(self) -> bytes:
@@ -112,3 +126,29 @@ class _GatewayStateCollector(Collector):
             for action in ACTIONS:
                 interventions.add_metric([action, name], counts[(action, name)])
         yield interventions
+
+        # Only models with data get a value: an empty window is not 0%.
+        disagreement = GaugeMetricFamily(
+            "gateway_semantic_disagreement_rate",
+            "Share of scored replies in the semantic window whose intent differs "
+            "from Jev's. Absent until a reply is scored.",
+            labels=["model"],
+        )
+        coverage = GaugeMetricFamily(
+            "gateway_semantic_coverage",
+            "Share of the semantic window that had a usable Jev intent answer. "
+            "Absent while the window is empty.",
+            labels=["model"],
+        )
+        above = GaugeMetricFamily(
+            "gateway_semantic_above_baseline",
+            "1 if the model's disagreement rate is above baseline plus margin.",
+            labels=["model"],
+        )
+        for model in gateway.semantic.stats():
+            if model.disagreement_rate is not None:
+                disagreement.add_metric([model.name], model.disagreement_rate)
+            if model.coverage is not None:
+                coverage.add_metric([model.name], model.coverage)
+            above.add_metric([model.name], int(model.status == "above_baseline"))
+        yield from (disagreement, coverage, above)
