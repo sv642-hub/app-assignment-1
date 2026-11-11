@@ -292,6 +292,28 @@ describe("Semantic monitor", () => {
     expect(banner).toHaveTextContent("qwen3-1.7b's intent differs from Jev's");
   });
 
+  it("lists rerouted replies that had no Jev answer", async () => {
+    const semantic = healthyHealth.semantic.map((m) =>
+      m.name === "qwen3-4b" ? { ...m, rerouted_agreements: 0, rerouted_disagreements: 0, rerouted_no_signal: 5 } : m,
+    );
+    const table = await openHealth({ ...healthyHealth, semantic });
+
+    expect(row(table, "qwen3-4b")).toHaveTextContent("5 without a Jev answer");
+    expect(row(table, "qwen3-1.7b")).toHaveTextContent("none");
+  });
+
+  it("shows a rate just above the threshold with one decimal", async () => {
+    // 5 of 33 is 15.2%, above the 15% limit; whole percents would show 15% twice.
+    const semantic = labelSwapHealth.semantic.map((m) =>
+      m.name === "qwen3-1.7b" ? { ...m, samples: 33, agreements: 28, disagreements: 5, disagreement_rate: 0.152 } : m,
+    );
+    const table = await openHealth({ ...labelSwapHealth, semantic });
+
+    expect(row(table, "qwen3-1.7b")).toHaveTextContent("15.2% (5 of 33)");
+    expect(screen.getByText(/Flagged above 15%:/)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("on 15.2% of recent replies (5 of 33)");
+  });
+
   it("hides the card when the gateway does not report the monitor", async () => {
     const { semantic: _s, semantic_rules: _r, ...older } = healthyHealth;
     const user = renderWith(fakeGateway({ health: older }));

@@ -190,6 +190,7 @@ class SemanticStatus(StrictModel):
     # Traffic from the other route, kept out of the window above.
     rerouted_agreements: int = Field(ge=0)
     rerouted_disagreements: int = Field(ge=0)
+    rerouted_no_signal: int = Field(ge=0)
 
 
 class SemanticRules(StrictModel):

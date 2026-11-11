@@ -8,6 +8,22 @@ function percent(value) {
   return `${Math.round(value * 100)}%`;
 }
 
+// One decimal unless it is a whole number, so a rate just above a threshold
+// (15.2% against 15%) does not round to look equal to it.
+function finePercent(value) {
+  const tenths = Math.round(value * 1000) / 10;
+  return Number.isInteger(tenths) ? `${tenths}%` : `${tenths.toFixed(1)}%`;
+}
+
+// Rerouted replies: how many differ from Jev, and how many had no Jev answer.
+function reroutedText(m) {
+  const scoredRerouted = m.rerouted_agreements + m.rerouted_disagreements;
+  const parts = [];
+  if (scoredRerouted) parts.push(`${m.rerouted_disagreements} of ${scoredRerouted} differ`);
+  if (m.rerouted_no_signal) parts.push(`${m.rerouted_no_signal} without a Jev answer`);
+  return parts.join("; ") || "none";
+}
+
 function formatTime(iso) {
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
@@ -62,7 +78,7 @@ function semanticText(health) {
     .filter((m) => m.status === "above_baseline")
     .map(
       (m) =>
-        `${m.name}'s intent differs from Jev's on ${percent(m.disagreement_rate)} of recent replies (${m.disagreements} of ${scored(m)}), above the ${percent(baseline)} baseline. These replies pass the format check, so the controller takes no action.`,
+        `${m.name}'s intent differs from Jev's on ${finePercent(m.disagreement_rate)} of recent replies (${m.disagreements} of ${scored(m)}), above the ${finePercent(baseline)} baseline. These replies pass the format check, so the controller takes no action.`,
     )
     .join(" ");
 }
@@ -115,16 +131,15 @@ function SemanticCard({ semantic, rules }) {
           <tbody>
             {semantic.map((m) => {
               const pill = SEMANTIC_PILLS[m.status] ?? { tone: "neutral", text: m.status };
-              const rerouted = m.rerouted_agreements + m.rerouted_disagreements;
               return (
                 <tr key={m.name}>
                   <td className="mono">{m.name}</td>
                   <td>
                     <span className={`pill pill-${pill.tone}`}>{pill.text}</span>
                   </td>
-                  <td>{m.disagreement_rate === null ? "no data yet" : `${percent(m.disagreement_rate)} (${m.disagreements} of ${scored(m)})`}</td>
+                  <td>{m.disagreement_rate === null ? "no data yet" : `${finePercent(m.disagreement_rate)} (${m.disagreements} of ${scored(m)})`}</td>
                   <td>{m.coverage === null ? "no data yet" : `${percent(m.coverage)} (${scored(m)} of ${m.samples})`}</td>
-                  <td>{rerouted === 0 ? "none" : `${m.rerouted_disagreements} of ${rerouted} differ`}</td>
+                  <td>{reroutedText(m)}</td>
                 </tr>
               );
             })}
@@ -134,7 +149,7 @@ function SemanticCard({ semantic, rules }) {
       <p className="muted small">
         {baseline === null
           ? "No healthy baseline is set yet, so rates are shown but never flagged. It should come from dev data."
-          : `Flagged above ${percent(baseline + rules.alert_margin)}: the ${percent(baseline)} baseline plus a ${percent(rules.alert_margin)} margin.`}{" "}
+          : `Flagged above ${finePercent(baseline + rules.alert_margin)}: the ${finePercent(baseline)} baseline plus a ${finePercent(rules.alert_margin)} margin.`}{" "}
         A model needs {rules.min_samples} scored replies first, and at least {percent(rules.min_coverage)} of its replies need a Jev answer, so a Jev outage
         does not look like a healthy model. In mock mode, Jev and both models use the same keyword matcher, so a healthy model always agrees.
       </p>
