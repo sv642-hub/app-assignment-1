@@ -112,6 +112,8 @@ class Gateway:
             settings.jev_breaker_failures, settings.jev_breaker_cooldown_seconds, clock
         )
         self.rule_router = RuleRouter(settings.rule_router_complex_min_words)
+        self.request_deadline = settings.request_deadline_seconds
+        self.alternate_reserve = settings.alternate_reserve_seconds
         self.jev_timeout = settings.jev_timeout_seconds
         self.store = store or MemoryStore(settings.request_store_limit)
         # Each store write waits at most this long, so a database outage
@@ -332,6 +334,8 @@ class Gateway:
             jev_choice = decision.route
         selected = next(b for b in self.backends if b.config.route == decision.route)
         action = None
+        attempted = 0
+        deadline_exceeded = False
         for backend in (selected, *(b for b in self.backends if b is not selected)):
             if not self.usable(backend):
                 if backend is selected:
@@ -341,13 +345,32 @@ class Gateway:
                         else "selected_backend_unavailable"
                     )
                 continue
+            remaining = self.request_deadline - (perf_counter() - start)
+            if remaining <= 0:
+                deadline_exceeded = True
+                break
+            budget = remaining - self.alternate_reserve if attempted == 0 else remaining
+            if budget <= 0:
+                deadline_exceeded = True
+                break
             usage = self.usage[backend.config.name]
             usage.attempted_calls += 1
+            attempted += 1
+            timer = asyncio.timeout(budget)
             try:
-                generated = BackendReply.model_validate(await backend.generate(message))
+                async with timer:
+                    generated = BackendReply.model_validate(
+                        await backend.generate(message)
+                    )
                 usage.completed_calls += 1
                 break
             except Exception as exc:
+                if timer.expired() and attempted > 1:
+                    # The alternate had a shortened opportunity. Do not score
+                    # this as a model failure or a successful monitor sample.
+                    usage.deadline_exceeded_calls += 1
+                    deadline_exceeded = True
+                    break
                 usage.failed_calls += 1
                 # A reply that fails BackendReply validation also counts as a call
                 # error. Cancellation still propagates. Do not log input text or
@@ -364,6 +387,10 @@ class Gateway:
             self.metrics.chat_unavailable.inc()
             self.metrics.chat_latency.observe(perf_counter() - start)
             raise BackendUnavailable
+        if deadline_exceeded:
+            self.metrics.chat_unavailable.inc()
+            self.metrics.chat_latency.observe(perf_counter() - start)
+            raise BackendUnavailable("deadline_exceeded")
         intent, reply, facts = generated.intent, generated.reply, generated.policy_facts
         uncarded = (
             intent in self.labels.names
