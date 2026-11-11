@@ -142,6 +142,28 @@ def test_rate_equal_to_baseline_plus_margin_is_normal(tmp_path):
     assert (status(m).disagreement_rate, status(m).status) == (0.25, "normal")
 
 
+@pytest.mark.parametrize(
+    ("baseline", "margin", "disagree", "scored"),
+    [(0.3, 0.15, 9, 20), (0.19, 0.15, 17, 50), (0.7, 0.1, 8, 10)],
+)
+def test_rate_exactly_at_the_limit_is_normal_despite_float_sums(
+    tmp_path, baseline, margin, disagree, scored
+):
+    # 0.30 + 0.15 is 0.44999999999999996 in floats.
+    m = monitor(
+        tmp_path,
+        semantic_window=scored + 1,
+        semantic_min_samples=scored,
+        semantic_baseline_disagreement_rate=baseline,
+        semantic_alert_margin=margin,
+    )
+    for sample in ["disagree"] * disagree + ["agree"] * (scored - disagree):
+        m.record(SMALL, sample, rerouted=False)
+    assert status(m).status == "normal"
+    m.record(SMALL, "disagree", rerouted=False)  # one more pushes it over
+    assert status(m).status == "above_baseline"
+
+
 def test_no_baseline_reports_rates_without_flagging(tmp_path):
     m = monitor(tmp_path, semantic_baseline_disagreement_rate=None)
     for _ in range(3):
@@ -183,6 +205,8 @@ def test_rerouted_samples_stay_out_of_the_window(tmp_path):
     s = status(m, LARGE)
     assert (s.samples, s.status) == (0, "collecting")
     assert (s.rerouted_agreements, s.rerouted_disagreements) == (0, 4)
+    m.record(LARGE, "no_signal", rerouted=True)
+    assert status(m, LARGE).rerouted_no_signal == 1
 
 
 def test_models_have_separate_windows(tmp_path):
@@ -329,6 +353,23 @@ def test_rerouted_traffic_is_kept_apart(tmp_path):
             assert trace["model"] == LARGE
         s = health(client, LARGE)
     assert (s["samples"], s["rerouted_agreements"]) == (0, 3)
+
+
+def test_rerouted_replies_without_jev_appear_in_health_and_metrics(tmp_path):
+    # Jev is down and the small model fails, so the large model serves
+    # standard messages with no Jev answer to compare with.
+    settings = make_settings(tmp_path, errors=(1, 0), monitor_min_samples=20)
+    router = FailingRouter(settings.intents_path)
+    with TestClient(create_app(settings, router=router)) as client:
+        for _ in range(5):
+            client.post("/v1/chat", json={"message": STANDARD})
+        s = health(client, LARGE)
+        text = client.get("/metrics").text
+    assert (s["samples"], s["rerouted_no_signal"]) == (0, 5)
+    assert (
+        'gateway_semantic_samples_total{model="qwen3-4b",sample="no_signal",'
+        'traffic="rerouted"} 5.0'
+    ) in text
 
 
 def test_health_reports_the_rules(tmp_path):

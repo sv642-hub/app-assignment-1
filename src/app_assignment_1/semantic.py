@@ -15,7 +15,7 @@ in monitor.py counts them. A model serving the other route's traffic sees
 different messages, so those samples are kept apart from its own window.
 
 The windows live in the gateway process and reset on restart, like the failure
-monitor's. The rules come from docs/MONITOR_RECORDS.md (PR 45). The baseline,
+monitor's. The rules follow the scoring table drafted in PR #45. The baseline,
 margin and coverage minimum are placeholders until they are set from dev data.
 """
 
@@ -29,6 +29,9 @@ from app_assignment_1.schemas import BackendName, SemanticRules, SemanticStatus
 
 Sample = Literal["agree", "disagree", "no_signal"]
 SAMPLES: tuple[Sample, ...] = ("agree", "disagree", "no_signal")
+# Baseline plus margin is a sum of floats: 0.30 + 0.15 is 0.44999999999999996.
+# Without this, a rate exactly at the limit would be flagged.
+THRESHOLD_TOLERANCE = 1e-9
 
 
 def score(model_intent: str, jev: Sequence[JevAssessment]) -> Sample:
@@ -103,7 +106,12 @@ class SemanticMonitor:
             status = "collecting"
         elif rules.baseline_disagreement_rate is None:
             status = "no_baseline"
-        elif rate > rules.baseline_disagreement_rate + rules.alert_margin:
+        elif (
+            rate
+            > rules.baseline_disagreement_rate
+            + rules.alert_margin
+            + THRESHOLD_TOLERANCE
+        ):
             status = "above_baseline"
         else:
             status = "normal"
@@ -119,4 +127,5 @@ class SemanticMonitor:
             status=status,
             rerouted_agreements=rerouted.count("agree"),
             rerouted_disagreements=rerouted.count("disagree"),
+            rerouted_no_signal=rerouted.count("no_signal"),
         )

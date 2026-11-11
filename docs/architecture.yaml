@@ -184,7 +184,7 @@ components:
     items:
       - simulated: Routing call is a local JSON mock
       - built: "TypeSafe client code: plain httpx, jev-1.14.0"
-      - todo: First live call with the API key
+      - todo: Real mode in the app; 300-call check on Jetstream2
 
   probe:
     title: Probe (stretch, offline)

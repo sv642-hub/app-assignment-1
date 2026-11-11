@@ -57,7 +57,7 @@ Send five standard messages. Each one is still answered, by `qwen3-4b` with `fal
 A model can return a well-formed reply for the wrong intent, which the format check cannot see. The semantic monitor compares each model's intent with Jev's answer to the intent question, from the same request:
 
 - **Samples:** a reply that passed the format check is an `agree` if the model's label matches Jev's, a `disagree` if it differs, and `no_signal` if Jev has no usable intent answer (timeout, error, invalid answer or circuit breaker open). Failed format checks and failed calls give no sample; the failure monitor counts them. `unknown` is a label like any other.
-- **Window:** the last `APP_SEMANTIC_WINDOW` samples per model (default 50). A model serving the other route's messages (after a fallback) sees different traffic, so those samples are counted apart, as `rerouted_agreements` and `rerouted_disagreements`.
+- **Window:** the last `APP_SEMANTIC_WINDOW` samples per model (default 50). A model serving the other route's messages (after a fallback) sees different traffic, so those samples are counted apart, as `rerouted_agreements`, `rerouted_disagreements` and `rerouted_no_signal`.
 - **Status** for each model, checked in this order:
   - `low_coverage`: at least `APP_SEMANTIC_MIN_SAMPLES` (default 10) samples, but fewer than `APP_SEMANTIC_MIN_COVERAGE` (default 0.5) had a Jev answer. During a Jev outage, missing data does not look like a healthy model.
   - `collecting`: fewer scored samples than the minimum.
