@@ -1,7 +1,8 @@
 # Demo only: the small model answers every matched message with the wrong
 # intent's label and policy card. The replies pass the format check, so the
 # failure monitor sees nothing; the semantic monitor sees it disagree with Jev,
-# and with semantic actions on, the controller disables it.
+# and with semantic actions on, the controller disables it once qwen3-4b has
+# answered (send one complex message first).
 # Both mocks share one keyword classifier, so a healthy mock disagrees 0% of the
 # time, and the baseline here is 0. A real baseline comes from dev data.
 # docker compose -f compose.yml -f compose.labelswap.yml up -d --wait

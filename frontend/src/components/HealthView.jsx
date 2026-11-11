@@ -75,6 +75,7 @@ function scored(model) {
 // plus what the controller did about it.
 function semanticText(health, models) {
   const rules = health.semantic_rules;
+  const threshold = health.controller.failure_threshold;
   const disabled = new Set(models.filter((m) => m.disabled_by_controller).map((m) => m.name));
   return (health.semantic ?? [])
     .filter((m) => m.status === "above_baseline")
@@ -83,7 +84,14 @@ function semanticText(health, models) {
       if (!rules.actions_enabled) return `${found} These replies pass the format check, and semantic actions are off, so the controller takes no action.`;
       // The model-down sentence already says the controller disabled it.
       if (disabled.has(m.name)) return found;
-      return `${found} The controller keeps it in service because the other model is not available.`;
+      // The controller only acts while the other model is serving and has
+      // answered recently without failing (see Controller.answering).
+      const other = models.find((o) => o.name !== m.name);
+      if (!other?.usable) return `${found} The controller keeps it in service because the other model is not available.`;
+      if (!other.samples || other.failure_rate >= threshold) {
+        return `${found} The controller keeps it in service until ${other.name} has answered recently without failing.`;
+      }
+      return `${found} The controller takes it out of service on its next reply.`;
     })
     .join(" ");
 }

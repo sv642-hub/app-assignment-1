@@ -307,6 +307,22 @@ describe("Semantic monitor", () => {
     expect(screen.getByRole("status")).toHaveTextContent("The controller keeps it in service because the other model is not available.");
   });
 
+  it("says the controller acts on the next reply when the other model is answering", async () => {
+    // Both serve, as right after a cooldown: the flagged model is not disabled yet.
+    await openHealth({ ...labelSwapHealth, semantic_rules: semanticActionHealth.semantic_rules });
+
+    const banner = screen.getByRole("status");
+    expect(banner).toHaveTextContent("The controller takes it out of service on its next reply.");
+    expect(banner).not.toHaveTextContent("not available");
+  });
+
+  it("says the controller waits while the other model has not answered yet", async () => {
+    const monitor = labelSwapHealth.monitor.map((m) => (m.name === "qwen3-4b" ? { ...m, samples: 0, failure_rate: null } : m));
+    await openHealth({ ...labelSwapHealth, monitor, semantic_rules: semanticActionHealth.semantic_rules });
+
+    expect(screen.getByRole("status")).toHaveTextContent("keeps it in service until qwen3-4b has answered recently without failing.");
+  });
+
   it("shows low coverage instead of a healthy rate while Jev is down", async () => {
     const table = await openHealth(lowCoverageHealth);
 

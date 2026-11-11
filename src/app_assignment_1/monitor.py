@@ -119,6 +119,15 @@ class Controller:
         reason = f"{kind} rate {rate:.0%} over last {len(window)} calls"
         return self._disable(name, reason, can_disable, self.warned)
 
+    def answering(self, name: BackendName) -> bool:
+        """The model has calls in its window and its failure rate is below the
+        threshold. An empty window, as after a re-enable, is not evidence."""
+        window = self.windows[name]
+        if not window:
+            return False
+        failures = sum(item != "ok" for item in window)
+        return failures / len(window) < self.threshold
+
     def record_semantic(
         self, name: BackendName, reason: str | None, can_disable: bool
     ) -> str | None:
