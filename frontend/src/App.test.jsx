@@ -11,6 +11,7 @@ import {
   labelSwapHealth,
   lowCoverageHealth,
   outageHealth,
+  semanticActionHealth,
 } from "./test/fixtures.js";
 
 function renderWith(gateway) {
@@ -268,6 +269,58 @@ describe("Semantic monitor", () => {
     expect(screen.getByText(/Flagged above 15%: the 0% baseline plus a 15% margin/)).toBeInTheDocument();
     // The models still serve, so the gateway's own status is unchanged.
     expect(screen.getByText("Gateway healthy")).toBeInTheDocument();
+  });
+
+  it("says the controller takes no action while semantic actions are off", async () => {
+    await openHealth(labelSwapHealth);
+
+    expect(screen.getByRole("status")).toHaveTextContent("semantic actions are off, so the controller takes no action.");
+    expect(screen.getByText(/Semantic actions are off, so it only reports/)).toBeInTheDocument();
+  });
+
+  it("shows the controller disabling a model for its disagreement with Jev", async () => {
+    await openHealth(semanticActionHealth);
+
+    const banner = screen.getByRole("status");
+    expect(banner).toHaveTextContent("Degraded");
+    expect(banner).toHaveTextContent("qwen3-1.7b was disabled by the controller.");
+    expect(banner).toHaveTextContent("qwen3-1.7b's intent differs from Jev's on 100% of recent replies (10 of 10), above the 0% baseline.");
+    expect(banner).not.toHaveTextContent("takes no action");
+    expect(banner).not.toHaveTextContent("keeps it in service");
+    expect(screen.getByText(/Semantic actions are on: when a model is above the baseline/)).toBeInTheDocument();
+    const small = screen.getByRole("region", { name: "qwen3-1.7b" });
+    expect(within(small).getByText("Disabled")).toBeInTheDocument();
+    expect(within(small).getByText("0% (0 of 10)")).toBeInTheDocument();
+    const rows = within(screen.getByRole("table", { name: "Interventions" })).getAllByRole("row");
+    expect(rows[1]).toHaveTextContent("intent differs from Jev's on 100% of last 10 scored replies");
+  });
+
+  it("says when the controller keeps the last working model in service", async () => {
+    const health = {
+      ...labelSwapHealth,
+      semantic_rules: semanticActionHealth.semantic_rules,
+      backends: labelSwapHealth.backends.map((b) => (b.name === "qwen3-4b" ? { ...b, available: false } : b)),
+      status: "degraded",
+    };
+    await openHealth(health);
+
+    expect(screen.getByRole("status")).toHaveTextContent("The controller keeps it in service because the other model is not available.");
+  });
+
+  it("says the controller acts on the next reply when the other model is answering", async () => {
+    // Both serve, as right after a cooldown: the flagged model is not disabled yet.
+    await openHealth({ ...labelSwapHealth, semantic_rules: semanticActionHealth.semantic_rules });
+
+    const banner = screen.getByRole("status");
+    expect(banner).toHaveTextContent("The controller takes it out of service on its next reply.");
+    expect(banner).not.toHaveTextContent("not available");
+  });
+
+  it("says the controller waits while the other model has not answered yet", async () => {
+    const monitor = labelSwapHealth.monitor.map((m) => (m.name === "qwen3-4b" ? { ...m, samples: 0, failure_rate: null } : m));
+    await openHealth({ ...labelSwapHealth, monitor, semantic_rules: semanticActionHealth.semantic_rules });
+
+    expect(screen.getByRole("status")).toHaveTextContent("keeps it in service until qwen3-4b has answered recently without failing.");
   });
 
   it("shows low coverage instead of a healthy rate while Jev is down", async () => {

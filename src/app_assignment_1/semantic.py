@@ -45,7 +45,9 @@ def score(model_intent: str, jev: Sequence[JevAssessment]) -> Sample:
 class SemanticMonitor:
     """Sliding windows of agreement with Jev, one per model.
 
-    Reports only; it takes no action. Each model's status is, in order:
+    It only reports. With APP_SEMANTIC_ACTIONS_ENABLED, the gateway asks the
+    controller to disable a model whose status is `above_baseline`. Each
+    model's status is, in order:
     - `low_coverage`: the window is full enough, but too few requests had a
       Jev answer. Missing data must not look like healthy data.
     - `collecting`: fewer scored samples than the minimum.
@@ -69,15 +71,21 @@ class SemanticMonitor:
             min_coverage=settings.semantic_min_coverage,
             baseline_disagreement_rate=settings.semantic_baseline_disagreement_rate,
             alert_margin=settings.semantic_alert_margin,
+            actions_enabled=settings.semantic_actions_enabled,
         )
 
     def record(self, name: BackendName, sample: Sample, rerouted: bool) -> None:
         (self.rerouted if rerouted else self.windows)[name].append(sample)
 
-    def stats(self) -> list[SemanticStatus]:
-        return [self._status(name) for name in self.windows]
+    def reset(self, name: BackendName) -> None:
+        """Start the model's window again, as the failure monitor does when
+        the controller re-enables a model."""
+        self.windows[name].clear()
 
-    def _status(self, name: BackendName) -> SemanticStatus:
+    def stats(self) -> list[SemanticStatus]:
+        return [self.status(name) for name in self.windows]
+
+    def status(self, name: BackendName) -> SemanticStatus:
         window = self.windows[name]
         agree, disagree = window.count("agree"), window.count("disagree")
         no_signal = window.count("no_signal")

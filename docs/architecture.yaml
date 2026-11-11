@@ -120,9 +120,10 @@ components:
     title: Controller
     owner: Sebastian
     items:
-      - built: Windows, samples, cooldowns
+      - built: Windows and cooldowns
       - built: Disables a model, traffic moves
-      - built: Intervention log saved to Postgres
+      - built: Interventions in Postgres
+      - built: Semantic actions (off)
       - todo: Roll back
 
   prometheus:

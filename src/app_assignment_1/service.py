@@ -23,6 +23,7 @@ from app_assignment_1.records import JevAssessment, check_call
 from app_assignment_1.router import JevAnswer, JevResult, Router, RuleRouter
 from app_assignment_1.schemas import (
     BackendConfig,
+    BackendName,
     BackendReply,
     ChatResponse,
     ModelUsage,
@@ -154,6 +155,11 @@ class Gateway:
         self.semantic = SemanticMonitor(
             (b.config.name for b in self.backends), settings
         )
+        if settings.semantic_actions_enabled:
+            # A re-enabled model starts both windows again, or one old run of
+            # disagreements would disable it on its next reply. With actions
+            # off, the semantic report keeps its window across a cooldown.
+            self.controller.on_reenable.append(self.semantic.reset)
         self.metrics = GatewayMetrics(self)
 
     def usable(self, backend: Backend) -> bool:
@@ -162,8 +168,33 @@ class Gateway:
             backend.config.name
         )
 
+    def _semantic_reason(self, name: BackendName) -> str | None:
+        """Why the controller should act on this model, or None if it is not
+        above the baseline."""
+        status = self.semantic.status(name)
+        baseline = self.semantic.rules.baseline_disagreement_rate
+        if status.status != "above_baseline" or baseline is None:
+            return None
+        scored = status.agreements + status.disagreements
+        return (
+            f"intent differs from Jev's on {status.disagreement_rate:.0%} of last "
+            f"{scored} scored replies (baseline {baseline:.0%})"
+        )
+
     def others_usable(self, backend: Backend) -> bool:
         return any(self.usable(b) for b in self.backends if b is not backend)
+
+    def others_answering(self, backend: Backend) -> bool:
+        """For a semantic disable: another model is usable and has answered
+        recently without failing. "Usable" alone is not enough: a model that
+        fails every call stays usable until its failure window fills, and
+        disabling the only model that answers would turn wrong-but-valid
+        replies into 503s."""
+        return any(
+            self.usable(b) and self.controller.answering(b.config.name)
+            for b in self.backends
+            if b is not backend
+        )
 
     async def save_interventions(self) -> None:
         """Move the controller's new interventions to the store, in order."""
@@ -409,6 +440,19 @@ class Gateway:
             self.metrics.semantic_samples.labels(
                 backend.config.name, sample, "rerouted" if rerouted else "own"
             ).inc()
+            # Only replies on the model's own route can trigger an action. A
+            # rerouted reply can follow a one-off error from the selected model,
+            # which is still usable, so it must not disable the model that
+            # served it.
+            if self.semantic.rules.actions_enabled and not rerouted:
+                action = (
+                    self.controller.record_semantic(
+                        backend.config.name,
+                        self._semantic_reason(backend.config.name),
+                        can_disable=self.others_answering(backend),
+                    )
+                    or action
+                )
 
         response = ChatResponse(
             id=request_id,
