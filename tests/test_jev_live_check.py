@@ -325,12 +325,78 @@ def test_summary_reports_rounding_against_both_limits() -> None:
 
 def test_summary_checks_the_confidence_formula_where_it_can() -> None:
     # Route: top 0.7 of 2 options gives (0.7 - 0.5) / 0.5 = 0.4, as sent.
-    # Intent: with 78 options the formula and the top probability are within
-    # 0.013, so no intent answer can tell them apart.
+    # Intent: the payload has full-precision probabilities, so even the 0.0013
+    # gap between the formula (0.8987) and the top probability (0.9) is clear,
+    # and a confidence of 0.9 matches the top probability.
     text = live.summarize([record(400)])
     assert "| route | 1 | 1 | 0.000 | 0.000 | 0 | 0 | 1 of 1 | 0 of 1 |" in text
     intent = next(line for line in text.splitlines() if line.startswith("| intent"))
+    assert intent.endswith("| 0 of 1 | 1 of 1 |")
+
+
+def two_decimal_intent(top: float, confidence: float) -> dict[str, Any]:
+    payload = jev_payload()
+    probabilities = {label: 0.0 for label in OPTIONS}
+    probabilities["card_arrival"] = top
+    probabilities["unknown"] = round(1 - top, 2)
+    payload["answers"]["intent"] |= {
+        "probabilities": probabilities,
+        "confidence": confidence,
+    }
+    return payload
+
+
+def test_two_decimal_intent_answers_cannot_tell_the_two_apart() -> None:
+    # Rounded to 0.01, the formula and the top probability are within both
+    # tolerances of each other for 78 options, so no answer counts.
+    text = live.summarize([record(400, payload=two_decimal_intent(0.87, 0.87))])
+    intent = next(line for line in text.splitlines() if line.startswith("| intent"))
     assert intent.endswith("| 0 of 0 | 0 of 0 |")
+    assert "intent ±0.010 for the formula and ±0.010 for the top probability" in text
+
+
+def test_rounded_route_answers_that_follow_the_formula_all_match() -> None:
+    # Sebastian's case on #79: p from 0.5 to 0.97, confidence = 2p - 1, both
+    # then rounded to two decimals. A fixed 0.01 match counted 212 of 300.
+    records = []
+    for i in range(300):
+        p = 0.5 + 0.47 * i / 299
+        payload = jev_payload()
+        payload["answers"]["route"] |= {
+            "choice": "complex",
+            "confidence": round(2 * p - 1, 2),
+            "probabilities": {"standard": round(1 - p, 2), "complex": round(p, 2)},
+        }
+        records.append(record(400, payload=payload))
+    text = live.summarize(records)
+    route = next(line for line in text.splitlines() if line.startswith("| route"))
+    formula, top = route.rstrip(" |").split(" | ")[-2:]
+    matched, informative = (int(x) for x in formula.split(" of "))
+    assert matched == informative >= 290
+    assert top == f"0 of {informative}"
+    assert "route ±0.015 for the formula and ±0.010 for the top probability" in text
+
+
+def test_confidence_tolerances() -> None:
+    near_formula, near_top = live.confidence_tolerances(2, 0.01)
+    assert near_formula == pytest.approx(0.015)
+    assert near_top == pytest.approx(0.01)
+    near_formula, _ = live.confidence_tolerances(78, 0.01)
+    assert near_formula == pytest.approx(78 / 77 * 0.005 + 0.005)
+
+
+def test_fast_failures_are_left_out_of_the_timeout_share() -> None:
+    # 18 answers, 2 over 2 s, and 10 fast 429s. Counting the 429s would show
+    # 2 of 30 (6.7%) instead of 2 of 20 (10%).
+    records = [record(500) for _ in range(18)] + [
+        record(2500, words=25),
+        record(15000, words=25, status="timeout"),
+    ]
+    records += [record(80, status=429) for _ in range(10)]
+    text = live.summarize(records)
+    assert "in this sample:** 10.0% (2 of 20;" in text
+    assert "Left out: 10 failed calls that returned early (429: 10)." in text
+    assert "## Latency (answered calls and timeouts, ms)" in text
 
 
 def test_summary_sees_a_route_confidence_equal_to_the_top_probability() -> None:

@@ -59,7 +59,8 @@ from app_assignment_1.records import ROUTE_OPTIONS, probability_total_tolerance
 BANDS = ("<=10", "11-20", ">20")
 QUESTIONS = ("route", "intent")
 GATEWAY_TIMEOUT_SECONDS = 2.0
-CONFIDENCE_MATCH = 0.01
+# Allows for floating-point error on top of the rounding tolerance.
+EPSILON = 1e-9
 STOP_AFTER_ERRORS = 5
 
 
@@ -259,6 +260,19 @@ def decimals(value: float) -> int:
     return max(0, -exponent) if isinstance(exponent, int) else 0
 
 
+def confidence_tolerances(options: int, step: float) -> tuple[float, float]:
+    """How far `confidence` may sit from each prediction when Jev rounds the
+    probabilities and the confidence to `step` (0.01 for two decimals).
+
+    The formula's slope in the top probability is n / (n - 1), so rounding p
+    moves it by up to that times step/2, and rounding the confidence adds
+    step/2: 0.015 for the route question. The top probability itself moves by
+    step/2, plus step/2 for the confidence. Returns (formula, top probability).
+    """
+    half = step / 2
+    return options / (options - 1) * half + half + EPSILON, step + EPSILON
+
+
 def _share(k: int, n: int) -> str:
     if n == 0:
         return "no calls"
@@ -311,12 +325,19 @@ def summarize(
         f" responses. ID-like header names seen: {', '.join(names) or 'none'}."
     ]
 
-    timed = [r for r in records if "latency_ms" in r]
+    # Failed calls that returned early (429, 5xx, connection errors) are left
+    # out of the latency and timeout figures: they say nothing about how long
+    # an answer takes, and a burst of them would make the timeout share look
+    # lower. The status line above still shows them.
+    timed = [r for r in records if r in answered or r["status"] == "timeout"]
+    left_out = Counter(
+        str(r["status"]) for r in records if "latency_ms" in r and r not in timed
+    )
     latencies = [r["latency_ms"] for r in timed]
     if latencies:
         lines += [
             "",
-            "## Latency (all calls, ms)",
+            "## Latency (answered calls and timeouts, ms)",
             "",
             "| p50 | p90 | p95 | p99 | max |",
             "|---|---|---|---|---|",
@@ -327,6 +348,12 @@ def summarize(
             + f" | {max(latencies):.0f} |",
             "",
         ]
+        if left_out:
+            lines += [
+                f"Left out: {sum(left_out.values())} failed calls that returned"
+                " early (" + ", ".join(f"{k}: {v}" for k, v in left_out.items()) + ").",
+                "",
+            ]
         limit_ms = timeout_seconds * 1000
         slow = [r for r in timed if r["latency_ms"] > limit_ms]
         lines += [
@@ -368,6 +395,7 @@ def summarize(
         " Confidence = top probability |",
         "|---|---|---|---|---|---|---|---|---|",
     ]
+    tolerance_notes = []
     for question in QUESTIONS:
         rows = []
         for r in answered:
@@ -386,26 +414,48 @@ def summarize(
             for (_, p), off in zip(rows, offs, strict=True)
             if off > probability_total_tolerance(len(p)) + 1e-9
         )
+        # The rounding step comes from the most decimals seen in this
+        # question's probabilities and confidences, so full-precision answers
+        # still get a tight check.
+        confidences = [
+            answer["confidence"]
+            for answer, _ in rows
+            if isinstance(answer.get("confidence"), int | float)
+        ]
+        step = 10.0 ** -max([most, *(decimals(c) for c in confidences)])
         # The formula and the top probability differ by (1 - top) / (n - 1).
-        # With 78 options that is under 0.013, so only answers where the two
-        # predictions clearly differ can tell them apart: in practice, route.
+        # Only answers where the two predictions are further apart than both
+        # tolerances together can tell them apart: in practice, route.
         formula = top = informative = 0
         for answer, p in rows:
             confidence = answer.get("confidence")
             if not isinstance(confidence, int | float):
                 continue
             n = len(p)
+            near_formula, near_top = confidence_tolerances(n, step)
             top_p = max(p.values())
             by_formula = (top_p - 1 / n) / (1 - 1 / n)
-            if abs(by_formula - top_p) <= 2 * CONFIDENCE_MATCH:
+            if abs(by_formula - top_p) <= near_formula + near_top:
                 continue
             informative += 1
-            formula += abs(confidence - by_formula) <= CONFIDENCE_MATCH
-            top += abs(confidence - top_p) <= CONFIDENCE_MATCH
+            formula += abs(confidence - by_formula) <= near_formula
+            top += abs(confidence - top_p) <= near_top
+        near_formula, near_top = confidence_tolerances(len(rows[0][1]), step)
+        tolerance_notes.append(
+            f"{question} ±{near_formula:.3f} for the formula and ±{near_top:.3f}"
+            f" for the top probability (step {step:g})"
+        )
         lines += [
             f"| {question} | {len(rows)} | {most} | {percentile(offs, 0.5):.3f}"
             f" | {max(offs):.3f} | {over_fixed} | {over_tol}"
             f" | {formula} of {informative} | {top} of {informative} |"
+        ]
+    if tolerance_notes:
+        lines += [
+            "",
+            "Confidence matches allow for rounding to the most decimals seen: "
+            + "; ".join(tolerance_notes)
+            + ".",
         ]
 
     lines += ["", "## The gateway's answer checks", ""]
