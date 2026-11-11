@@ -61,3 +61,40 @@ def test_first_timeout_preserves_alternate_and_scores_correctly(alternate):
         assert len(cancelled) == (2 if alternate == "hang" else 1)
         if alternate == "hang":
             assert response.json()["detail"] == "deadline_exceeded"
+
+
+@pytest.mark.parametrize("disabled", ["selected", "alternate"])
+def test_only_usable_model_gets_the_full_remaining_time(disabled):
+    # With the reserve held back, the only usable model would get 0.4 s and
+    # time out on a 0.6 s reply. With nothing to fall back to, it gets ~1 s.
+    settings = Settings(
+        _env_file=None,
+        jev_timeout_seconds=0.01,
+        request_deadline_seconds=1.0,
+        alternate_reserve_seconds=0.6,
+    )
+
+    async def slow(message):
+        await asyncio.sleep(0.6)
+        return BackendReply(
+            intent="unknown",
+            reply="Please describe your banking problem.",
+            policy_facts=[],
+        )
+
+    with TestClient(create_app(settings, ImmediateRouter())) as client:
+        gateway = client.app.state.gateway
+        small, large = gateway.backends
+        off, on = (small, large) if disabled == "selected" else (large, small)
+        gateway.controller.disabled_until[off.config.name] = (
+            gateway.controller.clock() + 3600
+        )
+        on.generate = slow
+        response = client.post("/v1/chat", json={"message": "card"})
+        assert response.status_code == 200
+        assert response.json()["trace"]["model"] == on.config.name
+        usage = {row["name"]: row for row in client.get("/v1/health").json()["usage"]}
+        assert usage[on.config.name]["completed_calls"] == 1
+        assert usage[on.config.name]["failed_calls"] == 0
+        assert usage[on.config.name]["deadline_exceeded_calls"] == 0
+        assert usage[off.config.name]["attempted_calls"] == 0

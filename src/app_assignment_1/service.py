@@ -336,7 +336,8 @@ class Gateway:
         action = None
         attempted = 0
         deadline_exceeded = False
-        for backend in (selected, *(b for b in self.backends if b is not selected)):
+        order = (selected, *(b for b in self.backends if b is not selected))
+        for position, backend in enumerate(order):
             if not self.usable(backend):
                 if backend is selected:
                     reasons.append(
@@ -349,7 +350,14 @@ class Gateway:
             if remaining <= 0:
                 deadline_exceeded = True
                 break
-            budget = remaining - self.alternate_reserve if attempted == 0 else remaining
+            # Hold back the reserve only when another model can still answer.
+            # Otherwise this is the last chance, so it gets all the time left.
+            fallback_left = any(self.usable(b) for b in order[position + 1 :])
+            budget = (
+                remaining - self.alternate_reserve
+                if attempted == 0 and fallback_left
+                else remaining
+            )
             if budget <= 0:
                 deadline_exceeded = True
                 break
