@@ -79,10 +79,10 @@ components:
     title: Backend client
     owner: "Verness · Yanzhen: vLLM client"
     items:
-      - built: "Fallback with budgets; both down: 503"
+      - built: "Fallback; both down: 503"
       - built: vLLM client (not wired in)
       - simulated: Gateway uses mocks
-      - todo: Gateway wiring; per-attempt records
+      - todo: Gateway wiring; 45 s deadline
 
   format_validation:
     title: Format validation

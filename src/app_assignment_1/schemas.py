@@ -153,7 +153,6 @@ class ModelUsage(StrictModel):
     attempted_calls: int = Field(ge=0)
     completed_calls: int = Field(ge=0)
     failed_calls: int = Field(ge=0)
-    deadline_exceeded_calls: int = Field(default=0, ge=0)
     input_tokens: int | None = None
     output_tokens: int | None = None
     estimated_cost_usd: float | None = None

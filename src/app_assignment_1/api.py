@@ -61,12 +61,7 @@ def create_app(
         try:
             return await gateway.chat(payload.message)
         except BackendUnavailable as exc:
-            detail = (
-                "deadline_exceeded"
-                if exc.args == ("deadline_exceeded",)
-                else "No mock backend is available"
-            )
-            raise HTTPException(503, detail) from exc
+            raise HTTPException(503, "No mock backend is available") from exc
 
     @app.get("/v1/requests/{request_id}", response_model=ChatResponse)
     async def get_request(request_id: UUID, request: Request) -> ChatResponse:
