@@ -8,7 +8,7 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 
 ## Layout
 
-- `src/app_assignment_1/api.py`: FastAPI app, the `/v1/chat`, `/v1/requests/{id}` and `/v1/health` routes, and the internal `/metrics` route.
+- `src/app_assignment_1/api.py`: FastAPI app, the `/v1/chat`, `/v1/requests/{id}`, `/v1/health` and `/v1/release` routes, and the internal `/metrics` route.
 - `src/app_assignment_1/service.py`: gateway flow and reply format checks; saves requests and interventions to the store.
 - `src/app_assignment_1/store.py`: `Store` interface, `MemoryStore` (default) and `PostgresStore` (psycopg 3, plain SQL), plus the migration runner.
 - `src/app_assignment_1/migrations/`: numbered SQL files applied once at startup. Add a new file for schema changes; never edit one that has run.
@@ -21,11 +21,12 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 - `src/app_assignment_1/monitor.py`: in-memory failure monitor (format failures and failed calls) and `Controller`; new interventions wait in `unsaved` until the gateway stores them.
 - `src/app_assignment_1/records.py`: `JevAssessment` records for the semantic monitor and the checks on them. The gateway builds two records per request and saves them with the request through `Store`.
 - `src/app_assignment_1/metrics.py`: Prometheus metrics for the gateway, served at the internal `/metrics` path (not proxied by Caddy).
+- `src/app_assignment_1/release.py`: canary releases: config versions, the release (stable, canary, share) and the per-request split. See `docs/CANARY.md`.
 - `src/app_assignment_1/schemas.py`: Pydantic API contracts and config models.
 - `src/app_assignment_1/config.py`: cached Pydantic Settings.
 - `src/app_assignment_1/__init__.py`: package version.
 - `frontend/`: React (Vite) app with Chat and Health screens; `frontend/Dockerfile` builds it into the Caddy image.
-- `config/`: `labels.json` (the 78 labels Jev and Qwen classify into), `intents.json`, `policy_cards.json`, `backends.json`, plus `backends.chaos.json` and `backends.outage.json` for simulated faults.
+- `config/`: `labels.json` (the 78 labels Jev and Qwen classify into), `intents.json`, `policy_cards.json`, `backends.json`, `versions.json` (config versions for canary releases), plus `backends.chaos.json` and `backends.outage.json` for simulated faults.
 - `tests/`: pytest suite. Frontend tests are in `frontend/src/App.test.jsx`.
 - `scripts/smoke_compose.py`: smoke test against the public proxy.
 - `scripts/render_architecture.py`: draws `docs/architecture.svg` from `docs/architecture.yaml`; `--check` fails if they differ.

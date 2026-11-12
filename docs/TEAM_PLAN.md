@@ -10,7 +10,7 @@ Final project for DSAN 6700. This file records who owns what. Owners decide and 
 | Pavlos Baffes | GPU host, vLLM containers, Docker Compose, ports and secrets; evaluation harness runner and chaos scenarios |
 | Yanzhen Gao | Qwen backends: prompt (classify, read policy card, reply), constrained JSON output, vLLM client with timeouts; per-model accuracy and the always-small / always-large baselines |
 | Sebastian Villalobos | Semantic monitor and controller (reroute, fall back, roll back); Prometheus and Postgres; integration across areas; documentation |
-| Jackson Howes | Linear probe on Qwen3-1.7B activations; Chaos mode screen and probe results view; judge validation if time allows |
+| Jackson Howes | Linear probe on Qwen3-1.7B activations; canary splitter; Chaos mode screen and probe results view; judge validation if time allows |
 | Everyone | 60 evaluation messages and 30 human reply grades each |
 
 ## Interfaces to agree first

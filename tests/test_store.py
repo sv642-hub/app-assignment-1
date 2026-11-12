@@ -27,6 +27,7 @@ from pydantic import ValidationError
 from app_assignment_1.api import create_app
 from app_assignment_1.config import PUBLIC_DATABASE_PASSWORD, Settings
 from app_assignment_1.records import JevAssessment
+from app_assignment_1.release import Release
 from app_assignment_1.router import MockJevRouter
 from app_assignment_1.schemas import ChatResponse, Intervention, Trace
 from app_assignment_1.service import Gateway
@@ -189,6 +190,29 @@ def test_interventions_keep_order_and_return_the_last(make_store: MakeStore) -> 
     run(make_store(), body)
 
 
+def test_releases_read_back_newest_first(make_store: MakeStore) -> None:
+    releases = [
+        Release(
+            stable="v1",
+            canary=None if n == 2 else "v2-chaos",
+            canary_percent=0 if n == 2 else 10 * (n + 1),
+            reason=f"change {n}",
+            changed_at=datetime(2026, 11, 12, 12, n, 0, 123456, tzinfo=UTC),
+        )
+        for n in range(3)
+    ]
+
+    async def body(store: Store) -> None:
+        assert await store.recent_releases(5) == []
+        for item in releases:
+            await store.save_release(item)
+        assert await store.recent_releases(5) == releases[::-1]
+        assert await store.recent_releases(1) == [releases[2]]
+        assert await store.recent_releases(0) == []
+
+    run(make_store(), body)
+
+
 def test_memory_store_keeps_the_last_50_interventions() -> None:
     async def body(store: Store) -> None:
         await store.save_interventions([intervention(n) for n in range(60)])
@@ -312,11 +336,13 @@ def test_migrations_run_once(postgres_url: str) -> None:
         assert first == [
             "001_requests_and_interventions.sql",
             "002_jev_assessments.sql",
+            "003_releases.sql",
         ]
         assert second == []
         assert sorted(rows) == [
             (1, "001_requests_and_interventions.sql"),
             (2, "002_jev_assessments.sql"),
+            (3, "003_releases.sql"),
         ]
 
     asyncio.run(main())

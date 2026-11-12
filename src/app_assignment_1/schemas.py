@@ -54,6 +54,10 @@ class Trace(StrictModel):
     format_errors: list[str] = Field(default_factory=list)
     fallback_reason: str | None = None
     controller_action: str | None = None
+    # The config version that answered, and whether it was the canary. None
+    # only on requests saved before canary releases existed.
+    version_id: str | None = None
+    canary: bool = False
     mocked: Literal[True] = True
 
 
@@ -146,6 +150,8 @@ class RecentRequest(StrictModel):
     model: BackendName
     fallback_reason: str | None
     format_check: Literal["passed", "failed"]
+    version_id: str | None = None
+    canary: bool = False
 
 
 class ModelUsage(StrictModel):

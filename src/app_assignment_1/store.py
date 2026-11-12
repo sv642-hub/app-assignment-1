@@ -21,17 +21,20 @@ from psycopg_pool import AsyncConnectionPool
 
 from app_assignment_1.config import PUBLIC_DATABASE_PASSWORD, Settings
 from app_assignment_1.records import JevAssessment
+from app_assignment_1.release import Release
 from app_assignment_1.schemas import ChatResponse, Intervention
 
 logger = logging.getLogger(__name__)
 MIGRATIONS = Path(__file__).parent / "migrations"
 INTERVENTION_LIMIT = 50
+RELEASE_LIMIT = 50
 # Any fixed number works; it only has to be the same for every gateway process.
 MIGRATION_LOCK = 670001
 
 
 class Store(Protocol):
-    """Request history, Jev assessments and the controller's intervention log.
+    """Request history, Jev assessments, the controller's intervention log
+    and the canary release history.
 
     The semantic monitor will add the methods that read Jev assessments. The
     backend response records will get their own methods and migration once
@@ -62,6 +65,15 @@ class Store(Protocol):
         """The last `limit` interventions, oldest first."""
         ...
 
+    async def save_release(self, release: Release) -> None:
+        """Add a release change to the history."""
+        ...
+
+    async def recent_releases(self, limit: int) -> list[Release]:
+        """The last `limit` release changes, newest first. The first one is
+        the release in effect."""
+        ...
+
 
 class MemoryStore:
     """Bounded, process-local history. Resets when the gateway restarts."""
@@ -70,6 +82,8 @@ class MemoryStore:
         self.limit = limit
         self.requests: OrderedDict[UUID, ChatResponse] = OrderedDict()
         self.interventions: deque[Intervention] = deque(maxlen=intervention_limit)
+        # The newest is always kept, so the release in effect is never lost.
+        self.releases: deque[Release] = deque(maxlen=RELEASE_LIMIT)
         # Two per request, so this keeps about as many calls as requests.
         self.jev_assessments: deque[JevAssessment] = deque(maxlen=2 * limit)
 
@@ -98,6 +112,12 @@ class MemoryStore:
 
     async def recent_interventions(self, limit: int) -> list[Intervention]:
         return list(self.interventions)[-limit:] if limit > 0 else []
+
+    async def save_release(self, release: Release) -> None:
+        self.releases.append(release)
+
+    async def recent_releases(self, limit: int) -> list[Release]:
+        return list(self.releases)[::-1][:limit] if limit > 0 else []
 
 
 class PostgresStore:
@@ -234,6 +254,44 @@ class PostgresStore:
         return [
             Intervention(at=at, backend=backend, action=action, reason=reason)
             for at, backend, action, reason in rows
+        ]
+
+    async def save_release(self, release: Release) -> None:
+        async with self.pool.connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO releases
+                    (changed_at, stable, canary, canary_percent, reason)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    release.changed_at,
+                    release.stable,
+                    release.canary,
+                    release.canary_percent,
+                    release.reason,
+                ),
+            )
+
+    async def recent_releases(self, limit: int) -> list[Release]:
+        async with self.pool.connection() as conn:
+            cur = await conn.execute(
+                """
+                SELECT changed_at, stable, canary, canary_percent, reason
+                FROM releases ORDER BY seq DESC LIMIT %s
+                """,
+                (limit,),
+            )
+            rows = await cur.fetchall()
+        return [
+            Release(
+                changed_at=changed_at,
+                stable=stable,
+                canary=canary,
+                canary_percent=percent,
+                reason=reason,
+            )
+            for changed_at, stable, canary, percent, reason in rows
         ]
 
 
