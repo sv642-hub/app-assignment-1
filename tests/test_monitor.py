@@ -220,7 +220,7 @@ def test_all_backends_failing_returns_503_and_keeps_the_last(tmp_path):
             "disabled",
             "kept_last_backend",
         ]
-        assert gateway.requests == {}
+        assert gateway.store.requests == {}
 
 
 def test_shipped_chaos_config_is_valid():

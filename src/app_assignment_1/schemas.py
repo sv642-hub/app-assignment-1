@@ -44,7 +44,9 @@ class Trace(StrictModel):
     jev_choice: Route | None
     route: Route
     model: BackendName
-    reply_source: Literal["policy_template", "no_match", "format_fallback"]
+    reply_source: Literal[
+        "policy_template", "no_match", "unsupported_topic", "format_fallback"
+    ]
     confidence: float | None = Field(ge=0, le=1)
     latency_ms: float = Field(ge=0)
     simulated_latency_ms: int = Field(ge=0)
@@ -62,6 +64,16 @@ class ChatResponse(StrictModel):
     reply: str = Field(min_length=1)
     policy_facts: list[str]
     trace: Trace
+
+
+class LabelConfig(StrictModel):
+    """One option that Jev and the Qwen backends classify a message into."""
+
+    label: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    # The original Banking77 category name, for mapping evaluation data;
+    # None only for `unknown`.
+    banking77_name: str | None
+    description: str = Field(min_length=1)
 
 
 class IntentConfig(StrictModel):
@@ -146,6 +158,16 @@ class ModelUsage(StrictModel):
     estimated_cost_usd: float | None = None
 
 
+class JevBreakerStatus(StrictModel):
+    """The Jev circuit breaker. While it is not closed, the rule router routes
+    most or all messages."""
+
+    state: Literal["closed", "open", "half_open"]
+    consecutive_failures: int = Field(ge=0)
+    failure_limit: int = Field(ge=1)
+    cooldown_seconds: float = Field(gt=0)
+
+
 class HealthResponse(StrictModel):
     recent_requests: list[RecentRequest] = Field(default_factory=list)
     usage: list[ModelUsage] = Field(default_factory=list)
@@ -156,3 +178,4 @@ class HealthResponse(StrictModel):
     monitor: list[BackendMonitor]
     interventions: list[Intervention]
     controller: ControllerRules
+    jev_breaker: JevBreakerStatus

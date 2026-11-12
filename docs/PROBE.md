@@ -62,6 +62,6 @@ These are proposals for team review, fixed before any real run. Nothing here has
 - **Escalation curve:** report the share of wrong outputs caught at each escalation rate, alongside AUROC. AUROC shows the ranking is good, but not what a threshold would do in a live system.
 - **Data split:** Jackson owns this. Use one fixed, seeded split, stratified by intent. The human grades draw from the same data, so agree it once with Sebastian and Yanzhen.
 
-## Still open
+## Gate date
 
-- **Gate date:** `[PROBE GATE DATE]` in `docs/TEAM_PLAN.md` still needs a real date.
+The gate run is due **Friday, November 20, 2026**, as set in `docs/TEAM_PLAN.md`. If the probe does not pass by then, it is reported as an offline result and stays out of the live system.

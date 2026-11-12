@@ -49,20 +49,29 @@ def classify(message: str) -> str:
     ],
 )
 def test_jev_route_and_backend_intent(intent, phrase, route):
-    decision = asyncio.run(MockJevRouter(INTENTS).route(phrase))
-    assert decision.route == route
-    assert decision.confidence is not None and 0 < decision.confidence <= 1
+    result = asyncio.run(MockJevRouter(INTENTS).route(phrase))
+    assert result.route.choice == route
+    assert result.route.confidence is not None and 0 < result.route.confidence <= 1
+    # The mock Jev and the mock backends share one classifier, so they agree.
+    assert result.intent.choice == intent
     assert classify(phrase) == intent
 
 
-def test_jev_returns_route_only():
-    decision = asyncio.run(MockJevRouter(INTENTS).route("I lost my card"))
-    assert set(decision.model_dump()) == {"route", "confidence"}
+def test_mock_jev_answers_both_questions_and_is_marked_mocked():
+    result = asyncio.run(MockJevRouter(INTENTS).route("I lost my card"))
+    assert result.mocked is True
+    assert result.jev_model == "mock-jev"
+    assert (result.input_tokens, result.output_tokens) == (0, 0)
+    assert set(result.route.probabilities or {}) == {"standard", "complex"}
+    options = {item.intent for item in load_intents(INTENTS)} | {"unknown"}
+    assert set(result.intent.probabilities or {}) == options
+    assert sum((result.intent.probabilities or {}).values()) == pytest.approx(1)
 
 
 def test_unmatched_message_routes_standard_and_classifies_unknown():
-    decision = asyncio.run(MockJevRouter(INTENTS).route("weather on Mars"))
-    assert decision.route == "standard"
+    result = asyncio.run(MockJevRouter(INTENTS).route("weather on Mars"))
+    assert result.route.choice == "standard"
+    assert result.intent.choice == "unknown"
     reply = asyncio.run(backend().generate("weather on Mars"))
     assert reply.intent == "unknown"
     assert reply.policy_facts == []

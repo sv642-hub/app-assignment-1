@@ -9,14 +9,14 @@ Final project for DSAN 6700. This file records who owns what. Owners decide and 
 | Verness Chin | Gateway, real Jev client, routing and rule-router fallback; Deployments and Jev screens |
 | Pavlos Baffes | GPU host, vLLM containers, Docker Compose, ports and secrets; evaluation harness runner and chaos scenarios |
 | Yanzhen Gao | Qwen backends: prompt (classify, read policy card, reply), constrained JSON output, vLLM client with timeouts; per-model accuracy and the always-small / always-large baselines |
-| Sebastian Villalobos | Semantic monitor and controller (reroute, fall back, roll back); integration across areas; documentation |
+| Sebastian Villalobos | Semantic monitor and controller (reroute, fall back, roll back); Prometheus and Postgres; integration across areas; documentation |
 | Jackson Howes | Linear probe on Qwen3-1.7B activations; Chaos mode screen and probe results view; judge validation if time allows |
 | Everyone | 60 evaluation messages and 30 human reply grades each |
 
 ## Interfaces to agree first
 
 - **Yanzhen + Pavlos:** vLLM URLs for both models and the request/response format. Yanzhen builds against a local stub until the GPU host is ready.
-- **Verness + Sebastian:** the Jev assessment record (routing call and async intent call) that the monitor reads.
+- **Verness + Sebastian:** the Jev assessment records (one combined routing and intent call per request) that the monitor reads.
 - **Yanzhen + Sebastian:** the backend response record (intent, reply, format check, latency, version ID) that the monitor scores.
 
 ## Evaluation set (shared)
@@ -35,8 +35,9 @@ Final project for DSAN 6700. This file records who owns what. Owners decide and 
 
 ## Probe gate
 
-The probe must beat the model's own token-probability confidence (AUROC on the dev set) by **[PROBE GATE DATE]**. If it does not, it is reported as an offline result and stays out of the live system.
+The probe must beat the model's own token-probability confidence (AUROC on the dev set) by **Friday, November 20, 2026**. If it does not, it is reported as an offline result and stays out of the live system.
 
 ## Diagrams
 
-The architecture diagrams still show Streamlit. Update the frontend box to "React (Vite), static build served by Caddy" before the final deliverable.
+- **Architecture status:** `docs/architecture.svg`, generated from `docs/architecture.yaml`. Every PR that changes what is built, simulated or owned updates the YAML (see `AGENTS.md`). Sebastian keeps the layout and reviews these changes.
+- The proposal's architecture diagrams still show Streamlit. Update the frontend box to "React (Vite), static build served by Caddy" before the final deliverable.

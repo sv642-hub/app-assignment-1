@@ -1,10 +1,12 @@
 """In-memory failure monitor and controller for the backends.
 
-State lives in the gateway process and resets on restart.
+Windows and disabled backends live in the gateway process and reset on restart.
+The gateway saves each intervention to its store (see store.py), which may be
+Postgres; `unsaved` holds the ones it has not saved yet.
 """
 
 import time
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -47,6 +49,9 @@ class Controller:
         self.disabled_until: dict[BackendName, float] = {}
         self.warned: set[BackendName] = set()
         self.log: deque[Intervention] = deque(maxlen=50)
+        # Every intervention since start; the log above keeps only the latest.
+        self.action_counts: Counter[tuple[str, BackendName]] = Counter()
+        self.unsaved: list[Intervention] = []
 
     def _note(
         self,
@@ -56,7 +61,10 @@ class Controller:
         ago: float = 0,
     ) -> None:
         at = datetime.now(UTC) - timedelta(seconds=ago)
-        self.log.append(Intervention(at=at, backend=name, action=action, reason=reason))
+        item = Intervention(at=at, backend=name, action=action, reason=reason)
+        self.log.append(item)
+        self.unsaved.append(item)
+        self.action_counts[(action, name)] += 1
 
     def is_disabled(self, name: BackendName) -> bool:
         until = self.disabled_until.get(name)
