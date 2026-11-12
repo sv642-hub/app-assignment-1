@@ -246,6 +246,59 @@ def test_a_cancelled_request_saves_no_records(settings: Settings) -> None:
     assert gw.jev_breaker.consecutive_failures == 0
 
 
+class SlowStore(MemoryStore):
+    """Holds each request save open for 0.2 s, so a cancel can land in it."""
+
+    async def save_request(self, response: Any, jev: Any = ()) -> None:
+        await asyncio.sleep(0.2)
+        await super().save_request(response, jev)
+
+
+def counted(gw: Gateway) -> int:
+    return sum(len(window) for window in gw.controller.windows.values())
+
+
+def test_a_request_cancelled_while_saving_is_still_saved(settings: Settings) -> None:
+    # The failure monitor counts the reply before the save starts, so the save
+    # must finish: otherwise the monitor counts a request the store never has.
+    store = SlowStore(settings.request_store_limit)
+    gw = Gateway(settings, BrokenRouter(), clock=Clock(), store=store)
+
+    async def run() -> None:
+        task = asyncio.create_task(gw.chat(MESSAGE))
+        await asyncio.sleep(0.05)  # routing and the mock reply are instant
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert counted(gw) == 1
+    assert len(store.requests) == 1
+    check_call(saved(store))
+    assert gw.pending_saves == set()
+
+
+def test_a_second_cancel_leaves_the_save_running(settings: Settings) -> None:
+    store = SlowStore(settings.request_store_limit)
+    gw = Gateway(settings, BrokenRouter(), clock=Clock(), store=store)
+
+    async def run() -> None:
+        task = asyncio.create_task(gw.chat(MESSAGE))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        await asyncio.sleep(0.05)
+        task.cancel()  # lands while the first cancel waits for the save
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert len(gw.pending_saves) == 1
+        await asyncio.gather(*gw.pending_saves)
+
+    asyncio.run(run())
+    assert counted(gw) == 1
+    assert len(store.requests) == 1
+    assert gw.pending_saves == set()
+
+
 def test_a_cancelled_trial_lets_the_next_message_try(settings: Settings) -> None:
     clock = Clock()
     gw, _ = gateway(settings, SlowRouter(), clock)
