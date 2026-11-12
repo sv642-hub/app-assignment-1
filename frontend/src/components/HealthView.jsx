@@ -69,12 +69,14 @@ function JevCard({ breaker }) {
   const pill = BREAKER_PILLS[breaker.state];
   return (
     <section className="card model-card" aria-label="Jev router">
-      <div className="model-head">
-        <div>
+      {/* The subtitle sits under the row, not beside the pill: the half-open
+          pill is long enough to squeeze it onto three lines. */}
+      <div>
+        <div className="model-head">
           <h2>Jev router</h2>
-          <span className="muted small">Picks the route for each message</span>
+          <span className={`pill pill-${pill.tone}`}>{pill.text}</span>
         </div>
-        <span className={`pill pill-${pill.tone}`}>{pill.text}</span>
+        <span className="muted small">Picks the route for each message</span>
       </div>
       <p className="muted small">
         After {breaker.failure_limit} failed Jev calls in a row, the gateway skips Jev for {breaker.cooldown_seconds} s and routes by keyword rules. Then one trial call
