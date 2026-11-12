@@ -79,9 +79,10 @@ components:
     title: Backend client
     owner: "Verness · Yanzhen: vLLM client"
     items:
-      - built: "Tries the other; both down: 503"
-      - simulated: Calls the in-process mock
-      - todo: 45 s request deadline, typed failures
+      - built: "Fallback; both down: 503"
+      - built: vLLM client (not wired in)
+      - simulated: Gateway uses mocks
+      - todo: Gateway wiring; 45 s deadline
 
   format_validation:
     title: Format validation
