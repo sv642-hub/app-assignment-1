@@ -13,9 +13,11 @@ async def chat_completions(simulate: str = "ok") -> dict:
     if simulate == "slow":
         await asyncio.sleep(2)
     reply = {
-        "intent": "unknown",
-        "reply": "Could you describe the banking problem you need help with?",
-        "policy_facts": [],
+        "intent": "card_arrival",
+        "reply": "Your new card will arrive within 5 business days.",
+        "policy_facts": [
+            "DemoBank standard cards arrive within 5 business days.",
+        ],
     }
 
     content = json.dumps(reply)

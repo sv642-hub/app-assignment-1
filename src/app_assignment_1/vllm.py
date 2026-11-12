@@ -7,7 +7,7 @@ from app_assignment_1.schemas import BackendConfig, BackendReply, PolicyCard
 
 
 class BackendCallError(Exception):
-    """The backend returned an unsuccessful HTTP status."""
+    """The backend returned an HTTP error or the request failed."""
 
 
 class BackendTimeoutError(TimeoutError):
@@ -85,7 +85,6 @@ class VLLMBackend:
             raise BackendCallError(
                 f"Backend returned HTTP {exc.response.status_code}"
             ) from None
-
         except httpx.RequestError:
             raise BackendCallError("Backend request failed") from None
 
