@@ -40,3 +40,7 @@ frontend/dist/
 
 # Personal Claude Code notes
 CLAUDE.local.md
+
+# B6 live Jev check: the Banking77 training CSV, samples and call logs.
+# Run logs stay local; summaries go into PR comments or docs by hand.
+live-checks/
