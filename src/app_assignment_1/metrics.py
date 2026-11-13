@@ -2,7 +2,8 @@
 
 Each gateway gets its own registry, so tests and restarts start from zero.
 Labels are limited to fixed sets (route, model, reply source, format check,
-reason, action). Never add message text, replies or request IDs as labels.
+reason, action, configured version). Never add message text, replies or
+request IDs as labels.
 """
 
 from collections.abc import Iterable
@@ -31,6 +32,14 @@ class GatewayMetrics:
             "gateway_chat_requests",
             "Chat requests answered, by route, model, reply source and format check.",
             ["route", "model", "reply_source", "format_check"],
+            registry=self.registry,
+        )
+        # Versions come from config/versions.json, so this label is a fixed set.
+        self.version_requests = Counter(
+            "gateway_version_requests",
+            "Chat requests answered, by config version, release role and format "
+            "check. Compare a canary with stable here.",
+            ["version", "role", "format_check"],
             registry=self.registry,
         )
         self.chat_unavailable = Counter(

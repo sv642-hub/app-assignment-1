@@ -20,6 +20,14 @@ from app_assignment_1.labels import UNKNOWN, load_labels
 from app_assignment_1.metrics import GatewayMetrics
 from app_assignment_1.monitor import Controller
 from app_assignment_1.records import JevAssessment, check_call
+from app_assignment_1.release import (
+    Release,
+    ReleaseChange,
+    ReleaseSource,
+    VersionConfig,
+    load_versions,
+    pick_version,
+)
 from app_assignment_1.router import JevAnswer, JevResult, Router, RuleRouter
 from app_assignment_1.schemas import (
     BackendConfig,
@@ -57,6 +65,15 @@ def check_reply(reply: str) -> list[str]:
 
 class BackendUnavailable(Exception):
     """No configured backend is available or able to answer."""
+
+
+class ReleaseNotSaved(Exception):
+    """The store did not save a release change, so it was not applied."""
+
+
+class ReleaseOutcomeUnknown(Exception):
+    """A release save failed and the store could not be read to check it. The
+    change may have been saved; the gateway reloads on the next chance."""
 
 
 def _jev_error_type(exc: Exception) -> str:
@@ -127,30 +144,153 @@ class Gateway:
         self.labels = load_labels(settings.labels_path)
         if not set(self.cards) <= self.labels.names:
             raise ValueError("Every intent with a policy card must be a label")
+        # One backend pair per config version (release.py).
+        self.version_backends: dict[str, list[Backend]] = {}
         if backends is None:
-            configs = TypeAdapter(list[BackendConfig]).validate_json(
-                settings.backends_path.read_text()
-            )
-            backends = [MockBackend(c, intents, self.cards) for c in configs]
-        self.backends = list(backends)
+            self.versions = load_versions(settings.versions_path)
+            for version in self.versions:
+                path = version.backends_path or settings.backends_path
+                configs = TypeAdapter(list[BackendConfig]).validate_json(
+                    path.read_text()
+                )
+                self.version_backends[version.id] = [
+                    MockBackend(c, intents, self.cards) for c in configs
+                ]
+        else:
+            # Backends passed in (tests) are the only version.
+            self.versions = [
+                VersionConfig(
+                    id=settings.stable_version,
+                    description="Backends passed to the gateway.",
+                )
+            ]
+            self.version_backends[settings.stable_version] = list(backends)
+        expected = {("standard", "qwen3-1.7b"), ("complex", "qwen3-4b")}
+        for pair in self.version_backends.values():
+            if (
+                len(pair) != 2
+                or {(b.config.route, b.config.name) for b in pair} != expected
+            ):
+                raise ValueError(
+                    "Configure exactly one standard 1.7b and one complex 4b backend"
+                )
+        # Usage, the monitor and the controller count per model name, across
+        # versions: a failing canary counts against its model for everyone.
+        # Every version has the same two model names (checked above).
+        pair = next(iter(self.version_backends.values()))
         self.usage = {
             b.config.name: ModelUsage(
                 name=b.config.name, attempted_calls=0, completed_calls=0, failed_calls=0
             )
-            for b in self.backends
+            for b in pair
         }
-        expected = {("standard", "qwen3-1.7b"), ("complex", "qwen3-4b")}
-        if (
-            len(self.backends) != 2
-            or {(b.config.route, b.config.name) for b in self.backends} != expected
-        ):
-            raise ValueError(
-                "Configure exactly one standard 1.7b and one complex 4b backend"
+        self.controller = Controller((b.config.name for b in pair), settings, clock)
+        self.release = self.check_release(
+            ReleaseChange(
+                stable=settings.stable_version,
+                canary=settings.canary_version,
+                canary_percent=settings.canary_percent,
+                reason="Initial release from settings",
             )
-        self.controller = Controller(
-            (b.config.name for b in self.backends), settings, clock
         )
+        self.release_source: ReleaseSource = "settings"
+        self.release_lock = asyncio.Lock()
         self.metrics = GatewayMetrics(self)
+
+    @property
+    def backends(self) -> list[Backend]:
+        """The stable version's backends: what /v1/health reports."""
+        return self.version_backends[self.release.stable]
+
+    def check_versions(self, change: ReleaseChange) -> None:
+        """Raise ValueError if the change names a version not configured."""
+        for version in (change.stable, change.canary):
+            if version is not None and version not in self.version_backends:
+                raise ValueError(f"Unknown version: {version}")
+
+    def check_release(self, change: ReleaseChange) -> Release:
+        """A release for `change`, in effect from now."""
+        self.check_versions(change)
+        return Release(**change.model_dump(), changed_at=datetime.now(UTC))
+
+    async def _latest_saved_release(self) -> list[Release]:
+        return await asyncio.wait_for(self.store.recent_releases(1), self.store_timeout)
+
+    async def load_release(self) -> None:
+        """Use the store's latest release, if it has one this gateway can run.
+
+        Call after the store is open. If the store cannot be read, the release
+        from settings stays in effect and `release_source` says so, so the
+        operator can see that a saved release (a rollback, say) may be
+        waiting. `ensure_release_loaded` retries.
+        """
+        try:
+            saved = await self._latest_saved_release()
+        except Exception as exc:
+            logger.warning("Could not load the release (%s)", type(exc).__name__)
+            self.release_source = "settings_store_unreadable"
+            return
+        if not saved:
+            self.release_source = "settings"
+            return
+        try:
+            self.check_versions(saved[0])
+        except ValueError:
+            logger.warning(
+                "The saved release names a version that is not configured; "
+                "using the release from settings"
+            )
+            self.release_source = "settings"
+            return
+        self.release = saved[0]
+        self.release_source = "store"
+
+    async def ensure_release_loaded(self) -> None:
+        """Retry the load if the store could not be read before."""
+        if self.release_source != "settings_store_unreadable":
+            return
+        async with self.release_lock:
+            if self.release_source == "settings_store_unreadable":
+                await self.load_release()
+
+    async def set_release(self, change: ReleaseChange) -> Release:
+        """Save a release change, then apply it. A change that is not saved
+        is not applied, so a restart cannot undo it silently.
+
+        A failed save may still have been committed (a timeout after the
+        database wrote the row), so the latest saved release is read back
+        before reporting failure.
+        """
+        async with self.release_lock:
+            # Stamped inside the lock, so saved order matches changed_at.
+            release = self.check_release(change)
+            try:
+                await asyncio.wait_for(
+                    self.store.save_release(release), self.store_timeout
+                )
+            except Exception as exc:
+                logger.warning("Could not save release (%s)", type(exc).__name__)
+                try:
+                    latest = await self._latest_saved_release()
+                except Exception as read_exc:
+                    logger.warning(
+                        "Could not check the release save (%s)",
+                        type(read_exc).__name__,
+                    )
+                    self.release_source = "settings_store_unreadable"
+                    raise ReleaseOutcomeUnknown from None
+                if latest != [release]:
+                    raise ReleaseNotSaved from None
+                logger.info("The release was saved despite the error")
+            self.release = release
+            self.release_source = "store"
+        logger.info(
+            "Release changed: stable %s, canary %s at %s%%",
+            release.stable,
+            release.canary,
+            release.canary_percent,
+        )
+        return release
 
     def usable(self, backend: Backend) -> bool:
         """Configured available and not disabled by the controller."""
@@ -158,8 +298,11 @@ class Gateway:
             backend.config.name
         )
 
-    def others_usable(self, backend: Backend) -> bool:
-        return any(self.usable(b) for b in self.backends if b is not backend)
+    def others_usable(
+        self, backend: Backend, backends: Sequence[Backend] | None = None
+    ) -> bool:
+        pair = self.backends if backends is None else backends
+        return any(self.usable(b) for b in pair if b is not backend)
 
     async def save_interventions(self) -> None:
         """Move the controller's new interventions to the store, in order."""
@@ -303,6 +446,8 @@ class Gateway:
         # Created before any provider call, so later records can share it.
         request_id = uuid4()
         start = perf_counter()
+        version_id, canary = pick_version(self.release, request_id)
+        backends = self.version_backends[version_id]
         reasons: list[str] = []
         router_name: Literal["mock_jev", "rule_router"] = "mock_jev"
         decision: RoutingDecision | None = None
@@ -330,9 +475,9 @@ class Gateway:
             jev_choice = None
         else:
             jev_choice = decision.route
-        selected = next(b for b in self.backends if b.config.route == decision.route)
+        selected = next(b for b in backends if b.config.route == decision.route)
         action = None
-        for backend in (selected, *(b for b in self.backends if b is not selected)):
+        for backend in (selected, *(b for b in backends if b is not selected)):
             if not self.usable(backend):
                 if backend is selected:
                     reasons.append(
@@ -356,7 +501,8 @@ class Gateway:
                     "Backend %s failed (%s)", backend.config.name, type(exc).__name__
                 )
                 action = self.controller.record_error(
-                    backend.config.name, can_disable=self.others_usable(backend)
+                    backend.config.name,
+                    can_disable=self.others_usable(backend, backends),
                 )
                 if backend is selected:
                     reasons.append("selected_backend_error")
@@ -392,7 +538,7 @@ class Gateway:
             self.controller.record(
                 backend.config.name,
                 bool(format_errors),
-                can_disable=self.others_usable(backend),
+                can_disable=self.others_usable(backend, backends),
             )
             or action
         )
@@ -423,11 +569,16 @@ class Gateway:
                 format_errors=format_errors,
                 fallback_reason=", ".join(reasons) or None,
                 controller_action=action,
+                version_id=version_id,
+                canary=canary,
             ),
         )
         trace = response.trace
         self.metrics.chat_requests.labels(
             trace.route, trace.model, trace.reply_source, trace.format_check
+        ).inc()
+        self.metrics.version_requests.labels(
+            version_id, "canary" if canary else "stable", trace.format_check
         ).inc()
         self.metrics.chat_latency.observe(perf_counter() - start)
         return response, jev

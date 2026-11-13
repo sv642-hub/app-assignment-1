@@ -27,6 +27,7 @@ from pydantic import ValidationError
 from app_assignment_1.api import create_app
 from app_assignment_1.config import PUBLIC_DATABASE_PASSWORD, Settings
 from app_assignment_1.records import JevAssessment
+from app_assignment_1.release import Release
 from app_assignment_1.router import MockJevRouter
 from app_assignment_1.schemas import ChatResponse, Intervention, Trace
 from app_assignment_1.service import Gateway
@@ -36,6 +37,7 @@ from app_assignment_1.store import (
     Store,
     create_store,
     migrate,
+    stored_response,
 )
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
@@ -189,6 +191,66 @@ def test_interventions_keep_order_and_return_the_last(make_store: MakeStore) -> 
     run(make_store(), body)
 
 
+def test_releases_read_back_newest_first(make_store: MakeStore) -> None:
+    releases = [
+        Release(
+            stable="v1",
+            canary=None if n == 2 else "v2-chaos",
+            canary_percent=0 if n == 2 else 10 * (n + 1),
+            reason=f"change {n}",
+            changed_at=datetime(2026, 11, 12, 12, n, 0, 123456, tzinfo=UTC),
+        )
+        for n in range(3)
+    ]
+
+    async def body(store: Store) -> None:
+        assert await store.recent_releases(5) == []
+        for item in releases:
+            await store.save_release(item)
+        assert await store.recent_releases(5) == releases[::-1]
+        assert await store.recent_releases(1) == [releases[2]]
+        assert await store.recent_releases(0) == []
+
+    run(make_store(), body)
+
+
+def test_stored_responses_ignore_fields_this_version_lacks() -> None:
+    """A row saved by a newer gateway still reads after an image rollback."""
+    saved = response().model_dump(mode="json")
+    saved["added_later"] = 1
+    saved["trace"]["also_added_later"] = {"x": 1}
+    assert stored_response(saved) == response_with_id(saved)
+    # The API models themselves stay strict.
+    with pytest.raises(ValidationError):
+        ChatResponse.model_validate(saved)
+
+
+def response_with_id(saved: dict) -> ChatResponse:
+    known = {k: v for k, v in saved.items() if k != "added_later"}
+    known["trace"] = {
+        k: v for k, v in saved["trace"].items() if k != "also_added_later"
+    }
+    return ChatResponse.model_validate(known)
+
+
+def test_postgres_reads_rows_with_unknown_trace_fields(postgres_url: str) -> None:
+    saved = response()
+
+    async def body(store: Store) -> None:
+        await store.save_request(saved)
+        async with await psycopg.AsyncConnection.connect(postgres_url) as conn:
+            await conn.execute(
+                "UPDATE requests SET response = jsonb_set(response, "
+                "'{trace,added_later}', '1') WHERE id = %s",
+                (saved.id,),
+            )
+            await conn.commit()
+        assert await store.get_request(saved.id) == saved
+        assert await store.recent_requests(1) == [saved]
+
+    run(PostgresStore(postgres_url, 10, connect_timeout=10), body)
+
+
 def test_memory_store_keeps_the_last_50_interventions() -> None:
     async def body(store: Store) -> None:
         await store.save_interventions([intervention(n) for n in range(60)])
@@ -312,11 +374,13 @@ def test_migrations_run_once(postgres_url: str) -> None:
         assert first == [
             "001_requests_and_interventions.sql",
             "002_jev_assessments.sql",
+            "003_releases.sql",
         ]
         assert second == []
         assert sorted(rows) == [
             (1, "001_requests_and_interventions.sql"),
             (2, "002_jev_assessments.sql"),
+            (3, "003_releases.sql"),
         ]
 
     asyncio.run(main())

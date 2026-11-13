@@ -27,6 +27,15 @@ class Settings(BaseSettings):
     labels_path: Path = Path("config/labels.json")
     policy_cards_path: Path = Path("config/policy_cards.json")
     backends_path: Path = Path("config/backends.json")
+    # Canary releases (release.py). This release applies until one is saved
+    # through PUT /v1/release; after that the store's latest release wins.
+    versions_path: Path = Path("config/versions.json")
+    stable_version: str = "v1"
+    canary_version: str | None = None
+    canary_percent: int = Field(default=0, ge=0, le=100)
+    # Bearer token for operator routes (PUT /v1/release today). Unset turns
+    # them off.
+    operator_token: SecretStr | None = None
     request_store_limit: int = Field(default=1000, ge=1, le=100000)
     jev_timeout_seconds: float = Field(default=2, gt=0, le=30)
     rule_router_complex_min_words: int = Field(default=20, ge=1, le=2000)
@@ -85,6 +94,18 @@ class Settings(BaseSettings):
                     "env/compose.defaults.env; set your own in env/.env and "
                     "env/postgres.env (README, Storage)"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def release_settings(self) -> "Settings":
+        # An empty value in an env file means unset.
+        if self.canary_version == "":
+            self.canary_version = None
+        token = self.operator_token
+        if token is not None and not token.get_secret_value():
+            self.operator_token = None
+        elif token is not None and len(token.get_secret_value()) < 16:
+            raise ValueError("APP_OPERATOR_TOKEN must be at least 16 characters")
         return self
 
     @model_validator(mode="after")

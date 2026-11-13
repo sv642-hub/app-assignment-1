@@ -19,9 +19,11 @@ def fetch(path, payload=None):
 assert b'id="root"' in fetch("/"), "React app not served at /"
 with urlopen(base + "/", timeout=15) as page:
     assert page.headers["Cache-Control"] == "no-cache", "index.html must be rechecked"
-for path in ["/docs", "/openapi.json", "/v1/health"]:
+for path in ["/docs", "/openapi.json", "/v1/health", "/v1/release"]:
     assert fetch(path), path
 assert "controller" in json.loads(fetch("/v1/health"))
+release = json.loads(fetch("/v1/release"))
+assert release["current"]["stable"] in {v["id"] for v in release["versions"]}, release
 # /metrics is internal: through the proxy it must be the React app, not metrics.
 metrics_page = fetch("/metrics")
 assert b"# TYPE" not in metrics_page and b"gateway_" not in metrics_page, "/metrics"
@@ -37,8 +39,9 @@ for message, intent, model in [
     assert result["trace"]["format_check"] == "passed", result
     assert result["trace"]["mocked"] is True
     assert result["trace"]["router"] == "mock_jev"
+    assert result["trace"]["version_id"], result
     if intent == "unknown":
         assert result["trace"]["reply_source"] == "no_match"
     assert json.loads(fetch("/v1/requests/" + result["id"])) == result
     print(f"PASS: {intent} -> {model} ({result['trace']['latency_ms']} ms)")
-print("PASS: frontend, docs, health, chat and history through " + base)
+print("PASS: frontend, docs, health, release, chat and history through " + base)
