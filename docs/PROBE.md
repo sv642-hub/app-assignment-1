@@ -26,7 +26,7 @@ The probe passes only if all three of these hold (`gate_passes`):
 - a prompt appears in both sets, because it would inflate the probe's score;
 - a prompt appears twice in the same set, because the bootstrap and the 20-per-class check would count the copies as independent examples. In synthetic no-signal runs reported in the review of #62 (not rerun here), one wrong prompt copied 20 times passed the old gate in 37.4% of runs.
 
-`train_probe` raises an error if the training set has only one class.
+`train_probe` raises an error if the training set has only one class. `auroc` and `auroc_difference_interval` raise an error for a score that is NaN or infinite. A NaN used to make `auroc` loop forever, because NaN never equals itself.
 
 `run_gate` also raises an error if the dev set has fewer than 20 correct or 20 wrong examples, because the interval is overconfident on small or lopsided dev sets. The number 20 is a judgment from the simulation below, not a published threshold.
 

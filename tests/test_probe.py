@@ -118,6 +118,19 @@ def test_auroc_rejects_mismatched_lengths() -> None:
         auroc([0.1], [True, False])
 
 
+NONFINITE = [math.nan, math.inf, -math.inf]
+
+
+@pytest.mark.parametrize("bad", NONFINITE)
+@pytest.mark.parametrize("position", [0, 1])
+def test_auroc_rejects_nonfinite_scores(bad: float, position: int) -> None:
+    # NaN used to hang the tie loop (review of #62); it must raise instead.
+    scores = [0.0, 0.0]
+    scores[position] = bad
+    with pytest.raises(ValueError, match="finite"):
+        auroc(scores, [True, False])
+
+
 def test_auroc_matches_comparing_every_pair() -> None:
     rng = random.Random(1)
     scores = [rng.randrange(10) / 10 for _ in range(60)]
@@ -195,6 +208,16 @@ def test_difference_interval_rejects_bad_input() -> None:
         auroc_difference_interval([0.1], [0.1, 0.2], [True, False])
     with pytest.raises(ValueError, match="both"):
         auroc_difference_interval([0.1, 0.2], [0.1, 0.2], [True, True])
+
+
+@pytest.mark.parametrize("bad", NONFINITE)
+@pytest.mark.parametrize("which", ["first", "second"])
+def test_difference_interval_rejects_nonfinite_scores(bad: float, which: str) -> None:
+    good = [0.9, 0.8, 0.2, 0.1]
+    broken = [0.9, bad, 0.2, 0.1]
+    first, second = (broken, good) if which == "first" else (good, broken)
+    with pytest.raises(ValueError, match="finite"):
+        auroc_difference_interval(first, second, [True, True, False, False])
 
 
 def test_mock_extractor_is_deterministic_and_bounded() -> None:

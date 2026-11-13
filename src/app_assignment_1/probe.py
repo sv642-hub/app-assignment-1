@@ -212,10 +212,18 @@ def _class_indices(labels: Sequence[bool]) -> tuple[list[int], list[int]]:
     return positives, negatives
 
 
+def _check_finite(scores: Sequence[float]) -> None:
+    # NaN never equals itself, so the tie loop in `auroc` would never advance.
+    # Infinities sort, but a score that reaches one is a broken input too.
+    if not all(math.isfinite(score) for score in scores):
+        raise ValueError("Scores must be finite numbers.")
+
+
 def auroc(scores: Sequence[float], labels: Sequence[bool]) -> float:
     """Chance a correct example outscores a wrong one; ties count as half."""
     if len(scores) != len(labels):
         raise ValueError("Scores and labels must have the same length.")
+    _check_finite(scores)
     positives, negatives = _class_indices(labels)
 
     # Rank-based, because the bootstrap calls this thousands of times.
@@ -246,6 +254,9 @@ def auroc_difference_interval(
     """
     if not len(first) == len(second) == len(labels):
         raise ValueError("Scores and labels must have the same length.")
+    # Checked once here, so a bad score fails before the 2,000 resamples.
+    _check_finite(first)
+    _check_finite(second)
     positives, negatives = _class_indices(labels)
     resampled_labels = [True] * len(positives) + [False] * len(negatives)
 
