@@ -23,6 +23,7 @@ from app_assignment_1.records import JevAssessment, check_call
 from app_assignment_1.release import (
     Release,
     ReleaseChange,
+    ReleaseSource,
     VersionConfig,
     load_versions,
     pick_version,
@@ -68,6 +69,11 @@ class BackendUnavailable(Exception):
 
 class ReleaseNotSaved(Exception):
     """The store did not save a release change, so it was not applied."""
+
+
+class ReleaseOutcomeUnknown(Exception):
+    """A release save failed and the store could not be read to check it. The
+    change may have been saved; the gateway reloads on the next chance."""
 
 
 def _jev_error_type(exc: Exception) -> str:
@@ -187,6 +193,7 @@ class Gateway:
                 reason="Initial release from settings",
             )
         )
+        self.release_source: ReleaseSource = "settings"
         self.release_lock = asyncio.Lock()
         self.metrics = GatewayMetrics(self)
 
@@ -206,20 +213,25 @@ class Gateway:
         self.check_versions(change)
         return Release(**change.model_dump(), changed_at=datetime.now(UTC))
 
+    async def _latest_saved_release(self) -> list[Release]:
+        return await asyncio.wait_for(self.store.recent_releases(1), self.store_timeout)
+
     async def load_release(self) -> None:
         """Use the store's latest release, if it has one this gateway can run.
 
-        Call after the store is open. Otherwise the release from settings
-        stays in effect.
+        Call after the store is open. If the store cannot be read, the release
+        from settings stays in effect and `release_source` says so, so the
+        operator can see that a saved release (a rollback, say) may be
+        waiting. `ensure_release_loaded` retries.
         """
         try:
-            saved = await asyncio.wait_for(
-                self.store.recent_releases(1), self.store_timeout
-            )
+            saved = await self._latest_saved_release()
         except Exception as exc:
             logger.warning("Could not load the release (%s)", type(exc).__name__)
+            self.release_source = "settings_store_unreadable"
             return
         if not saved:
+            self.release_source = "settings"
             return
         try:
             self.check_versions(saved[0])
@@ -228,22 +240,50 @@ class Gateway:
                 "The saved release names a version that is not configured; "
                 "using the release from settings"
             )
+            self.release_source = "settings"
             return
         self.release = saved[0]
+        self.release_source = "store"
+
+    async def ensure_release_loaded(self) -> None:
+        """Retry the load if the store could not be read before."""
+        if self.release_source != "settings_store_unreadable":
+            return
+        async with self.release_lock:
+            if self.release_source == "settings_store_unreadable":
+                await self.load_release()
 
     async def set_release(self, change: ReleaseChange) -> Release:
         """Save a release change, then apply it. A change that is not saved
-        is not applied, so a restart cannot undo it silently."""
-        release = self.check_release(change)
+        is not applied, so a restart cannot undo it silently.
+
+        A failed save may still have been committed (a timeout after the
+        database wrote the row), so the latest saved release is read back
+        before reporting failure.
+        """
         async with self.release_lock:
+            # Stamped inside the lock, so saved order matches changed_at.
+            release = self.check_release(change)
             try:
                 await asyncio.wait_for(
                     self.store.save_release(release), self.store_timeout
                 )
             except Exception as exc:
                 logger.warning("Could not save release (%s)", type(exc).__name__)
-                raise ReleaseNotSaved from None
+                try:
+                    latest = await self._latest_saved_release()
+                except Exception as read_exc:
+                    logger.warning(
+                        "Could not check the release save (%s)",
+                        type(read_exc).__name__,
+                    )
+                    self.release_source = "settings_store_unreadable"
+                    raise ReleaseOutcomeUnknown from None
+                if latest != [release]:
+                    raise ReleaseNotSaved from None
+                logger.info("The release was saved despite the error")
             self.release = release
+            self.release_source = "store"
         logger.info(
             "Release changed: stable %s, canary %s at %s%%",
             release.stable,

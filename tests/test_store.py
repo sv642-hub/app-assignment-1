@@ -37,6 +37,7 @@ from app_assignment_1.store import (
     Store,
     create_store,
     migrate,
+    stored_response,
 )
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
@@ -211,6 +212,43 @@ def test_releases_read_back_newest_first(make_store: MakeStore) -> None:
         assert await store.recent_releases(0) == []
 
     run(make_store(), body)
+
+
+def test_stored_responses_ignore_fields_this_version_lacks() -> None:
+    """A row saved by a newer gateway still reads after an image rollback."""
+    saved = response().model_dump(mode="json")
+    saved["added_later"] = 1
+    saved["trace"]["also_added_later"] = {"x": 1}
+    assert stored_response(saved) == response_with_id(saved)
+    # The API models themselves stay strict.
+    with pytest.raises(ValidationError):
+        ChatResponse.model_validate(saved)
+
+
+def response_with_id(saved: dict) -> ChatResponse:
+    known = {k: v for k, v in saved.items() if k != "added_later"}
+    known["trace"] = {
+        k: v for k, v in saved["trace"].items() if k != "also_added_later"
+    }
+    return ChatResponse.model_validate(known)
+
+
+def test_postgres_reads_rows_with_unknown_trace_fields(postgres_url: str) -> None:
+    saved = response()
+
+    async def body(store: Store) -> None:
+        await store.save_request(saved)
+        async with await psycopg.AsyncConnection.connect(postgres_url) as conn:
+            await conn.execute(
+                "UPDATE requests SET response = jsonb_set(response, "
+                "'{trace,added_later}', '1') WHERE id = %s",
+                (saved.id,),
+            )
+            await conn.commit()
+        assert await store.get_request(saved.id) == saved
+        assert await store.recent_requests(1) == [saved]
+
+    run(PostgresStore(postgres_url, 10, connect_timeout=10), body)
 
 
 def test_memory_store_keeps_the_last_50_interventions() -> None:

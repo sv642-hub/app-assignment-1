@@ -12,7 +12,7 @@ import logging
 from collections import OrderedDict, deque
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
 from psycopg import AsyncConnection
@@ -22,7 +22,7 @@ from psycopg_pool import AsyncConnectionPool
 from app_assignment_1.config import PUBLIC_DATABASE_PASSWORD, Settings
 from app_assignment_1.records import JevAssessment
 from app_assignment_1.release import Release
-from app_assignment_1.schemas import ChatResponse, Intervention
+from app_assignment_1.schemas import ChatResponse, Intervention, Trace
 
 logger = logging.getLogger(__name__)
 MIGRATIONS = Path(__file__).parent / "migrations"
@@ -219,7 +219,7 @@ class PostgresStore:
                 "SELECT response FROM requests WHERE id = %s", (request_id,)
             )
             row = await cur.fetchone()
-        return None if row is None else ChatResponse.model_validate(row[0])
+        return None if row is None else stored_response(row[0])
 
     async def recent_requests(self, limit: int) -> list[ChatResponse]:
         async with self.pool.connection() as conn:
@@ -227,7 +227,7 @@ class PostgresStore:
                 "SELECT response FROM requests ORDER BY seq DESC LIMIT %s", (limit,)
             )
             rows = await cur.fetchall()
-        return [ChatResponse.model_validate(row[0]) for row in rows]
+        return [stored_response(row[0]) for row in rows]
 
     async def save_interventions(self, items: Sequence[Intervention]) -> None:
         if not items:
@@ -329,6 +329,23 @@ async def migrate(conn: AsyncConnection) -> list[str]:
     if applied_now:
         logger.info("Applied database migrations: %s", ", ".join(applied_now))
     return applied_now
+
+
+def stored_response(data: dict[str, Any]) -> ChatResponse:
+    """Read a saved ChatResponse, ignoring fields this version does not know.
+
+    A newer gateway may have saved fields that this one lacks, for example
+    after the image is rolled back. The API models stay strict; only reads
+    from the store are lenient. Images from before the canary splitter do
+    not have this, so rolling back past it breaks reads (docs/CANARY.md).
+    """
+    known = {
+        key: value for key, value in data.items() if key in ChatResponse.model_fields
+    }
+    trace = known.get("trace")
+    if isinstance(trace, dict):
+        known["trace"] = {k: v for k, v in trace.items() if k in Trace.model_fields}
+    return ChatResponse.model_validate(known)
 
 
 def create_store(settings: Settings) -> Store:

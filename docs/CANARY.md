@@ -13,7 +13,9 @@ A version is a named set of gateway config, listed in `config/versions.json` (`A
 
 ## The release
 
-The release names the stable version, an optional canary version and the canary's share of requests, from 0 to 100%. At startup the gateway uses the release from settings (`APP_STABLE_VERSION`, default `v1`; `APP_CANARY_VERSION`; `APP_CANARY_PERCENT`). After a change is saved, the store's latest release wins, so it survives a restart. A saved release that names a version no longer in `versions.json` is ignored with a warning.
+The release names the stable version, an optional canary version and the canary's share of requests, from 0 to 100%. At startup the gateway uses the release from settings (`APP_STABLE_VERSION`, default `v1`; `APP_CANARY_VERSION`; `APP_CANARY_PERCENT`). After a change is saved, the store's latest release wins, so it survives a restart. A saved release that names a version no longer in `versions.json` is ignored with a warning. Once you change releases with `PUT`, clear `APP_CANARY_VERSION` and `APP_CANARY_PERCENT` from your env, so a restart that cannot read the store does not bring back an old canary.
+
+`GET /v1/release` says where the current release came from in `source`: `store` (the latest saved change), `settings` (nothing saved yet), or `settings_store_unreadable`. The last means the store could not be read, so a saved release, such as a rollback, may be waiting there. The gateway tries again on the next `GET /v1/release`, `PUT` or `/v1/health`. Docker checks `/v1/health` every 10 seconds, so this usually clears within seconds.
 
 Each request gets a bucket from 0 to 99, taken from a hash of its request ID. Requests with a bucket below the canary's percent go to the canary. So raising the percent only moves stable requests to the canary, and the choice can be worked out again from a saved request. There is no login or session, so one customer's requests can land on different versions.
 
@@ -36,11 +38,18 @@ curl -X PUT ... -d '{"stable": "v1", "reason": "Roll back v2"}'
 curl -X PUT ... -d '{"stable": "v2-chaos", "reason": "Promote v2"}'
 ```
 
-`/v1` is public through Caddy, so a change needs the operator token (`APP_OPERATOR_TOKEN`, at least 16 characters). Without one, changes are turned off and `PUT` returns 403. A change is saved before it is applied: if the store cannot save it, `PUT` returns 503 and the release stays as it was.
+`/v1` is public through Caddy, so a change needs the operator token (`APP_OPERATOR_TOKEN`, at least 16 characters), sent as `Authorization: Bearer <token>`. Without a token set, changes are turned off and `PUT` returns 403. The token is checked before the body, so a caller without it gets 401 or 403, never the validation details. `GET /v1/release` needs no token, so anyone can read the `reason` of recent changes: keep it free of anything private.
+
+A change is saved before it is applied. If the save fails, the gateway reads the latest saved release back, because a save that timed out may still have been written:
+
+- It was written: the change is applied and `PUT` returns 200.
+- It was not: `PUT` returns 503, "The release could not be saved", and nothing changes.
+- The store cannot be read either: `PUT` returns 503, "may or may not have been saved". Check `GET /v1/release` before trying again.
 
 ## Limits
 
 - **Per-model monitor.** The monitor and controller count failures per model, not per version. A bad canary counts against its model for everyone, and at a high enough share the controller disables that model for stable traffic too. Comparing a canary with stable needs the monitor to group by `version_id` (the "Canary comparison" in the monitor records draft, #45).
 - **No automatic rollback.** Rolling back is a manual `PUT`. The controller's "Roll back" item is Sebastian's.
+- **Rolling back the gateway image.** Every request saved from this version on has `version_id` and `canary` in its trace. A gateway image from before the canary splitter rejects those fields, so after rolling back to one, `/v1/requests/{id}` and the recent requests on `/v1/health` fail for those rows. From this version on, rows are read leniently: fields a newer gateway added are ignored.
 - **One gateway process.** Each process holds the release in memory and loads it only at startup, so a change made through one process does not reach another.
 - **No screen yet.** The Deployments screen (Verness) can read `GET /v1/release`.

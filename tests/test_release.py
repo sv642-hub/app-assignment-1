@@ -289,29 +289,170 @@ def test_a_saved_release_with_a_removed_version_is_ignored(
     assert "not configured" in caplog.text
 
 
-class FailingReleaseStore(MemoryStore):
+CANARY = {
+    "stable": "v1",
+    "canary": "v2-chaos",
+    "canary_percent": 50,
+    "reason": "x",
+}
+
+
+class FlakyReleaseStore(MemoryStore):
+    """Release reads fail `read_failures` times, then work. Saves can fail
+    before writing, or after writing (a timeout once the row is committed)."""
+
+    def __init__(self, read_failures: int = 0, save: str = "ok") -> None:
+        super().__init__(100)
+        self.read_failures = read_failures
+        self.save = save
+
     async def save_release(self, release: Release) -> None:
-        raise ConnectionError("database down")
+        if self.save == "fail":
+            raise ConnectionError("database down")
+        await super().save_release(release)
+        if self.save == "commit_then_timeout":
+            raise TimeoutError
 
     async def recent_releases(self, limit: int) -> list[Release]:
-        raise ConnectionError("database down")
+        if self.read_failures:
+            self.read_failures -= 1
+            raise ConnectionError("database down")
+        return await super().recent_releases(limit)
+
+
+def saved_canary_store(read_failures: int) -> FlakyReleaseStore:
+    store = FlakyReleaseStore()
+    asyncio.run(store.save_release(release(canary="v2-chaos", canary_percent=25)))
+    store.read_failures = read_failures
+    return store
+
+
+# Finding 1: a store that cannot be read at startup must not hide a saved
+# release (such as a rollback) behind the settings release.
+
+
+def test_unreadable_store_at_startup_is_shown_then_retried(settings: Settings):
+    with TestClient(create_app(settings, store=saved_canary_store(1))) as client:
+        gateway = client.app.state.gateway
+        assert gateway.release_source == "settings_store_unreadable"
+        assert gateway.release.canary is None
+        body = client.get("/v1/release").json()
+    assert body["source"] == "store"
+    assert (body["current"]["canary"], body["current"]["canary_percent"]) == (
+        "v2-chaos",
+        25,
+    )
+
+
+def test_health_checks_retry_the_release_load(settings: Settings):
+    with TestClient(create_app(settings, store=saved_canary_store(1))) as client:
+        assert client.get("/v1/health").status_code == 200
+        gateway = client.app.state.gateway
+        assert gateway.release_source == "store"
+        assert gateway.release.canary == "v2-chaos"
+
+
+def test_release_source_without_a_saved_release(settings: Settings):
+    with TestClient(create_app(settings)) as client:
+        assert client.get("/v1/release").json()["source"] == "settings"
+        client.put("/v1/release", json=CANARY, headers=AUTH)
+        assert client.get("/v1/release").json()["source"] == "store"
+
+
+def test_a_store_that_stays_unreadable_is_reported(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+):
+    store = FlakyReleaseStore(read_failures=1000)
+    with TestClient(create_app(settings, store=store)) as client:
+        body = client.get("/v1/release").json()
+        # Chat still works on the settings release.
+        assert client.post("/v1/chat", json={"message": SMALL}).status_code == 200
+    assert body["source"] == "settings_store_unreadable"
+    assert body["history"] == []
+    assert "Could not read release history (ConnectionError)" in caplog.text
+    assert "database down" not in caplog.text
+
+
+# Finding 2: a save that fails may still have been committed.
+
+
+def test_a_save_that_committed_before_a_timeout_is_applied(settings: Settings):
+    store = FlakyReleaseStore(save="commit_then_timeout")
+    with TestClient(create_app(settings, store=store)) as client:
+        response = client.put("/v1/release", json=CANARY, headers=AUTH)
+        assert response.status_code == 200
+        assert client.app.state.gateway.release.canary == "v2-chaos"
+        assert client.get("/v1/release").json()["source"] == "store"
 
 
 def test_an_unsaved_change_is_not_applied(
     settings: Settings, caplog: pytest.LogCaptureFixture
 ):
-    change = {
-        "stable": "v1",
-        "canary": "v2-chaos",
-        "canary_percent": 50,
-        "reason": "x",
-    }
-    with TestClient(create_app(settings, store=FailingReleaseStore(100))) as client:
-        response = client.put("/v1/release", json=change, headers=AUTH)
+    store = FlakyReleaseStore(save="fail")
+    with TestClient(create_app(settings, store=store)) as client:
+        response = client.put("/v1/release", json=CANARY, headers=AUTH)
         assert response.status_code == 503
+        assert response.json()["detail"] == "The release could not be saved"
         assert client.app.state.gateway.release.canary is None
-        # Chat still works while release state cannot be read or saved.
-        assert client.post("/v1/chat", json={"message": SMALL}).status_code == 200
-    assert "Could not load the release (ConnectionError)" in caplog.text
+        assert client.get("/v1/release").json()["source"] == "settings"
     assert "Could not save release (ConnectionError)" in caplog.text
     assert "database down" not in caplog.text
+
+
+def test_an_unknown_save_outcome_is_reported_and_reloaded(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+):
+    store = FlakyReleaseStore(save="fail")
+    with TestClient(create_app(settings, store=store)) as client:
+        store.read_failures = 1  # the check after the failed save
+        response = client.put("/v1/release", json=CANARY, headers=AUTH)
+        assert response.status_code == 503
+        assert "may or may not" in response.json()["detail"]
+        gateway = client.app.state.gateway
+        assert gateway.release.canary is None
+        assert gateway.release_source == "settings_store_unreadable"
+        # The next read finds nothing saved and settles the state.
+        assert client.get("/v1/release").json()["source"] == "settings"
+    assert "Could not check the release save (ConnectionError)" in caplog.text
+
+
+# Finding 3: the token is checked before the body.
+
+
+@pytest.mark.parametrize("body", [{}, {"stable": "../v1"}, "not json"])
+def test_the_token_is_checked_before_the_body(settings: Settings, body: object):
+    off = settings.model_copy(update={"operator_token": None})
+    with TestClient(create_app(off)) as client:
+        response = client.put("/v1/release", json=body, headers=AUTH)
+        assert response.status_code == 403
+        assert "detail" in response.json()
+        assert "loc" not in response.text
+    with TestClient(create_app(settings)) as client:
+        response = client.put("/v1/release", json=body)
+        assert response.status_code == 401
+        assert "loc" not in response.text
+        # With the token, the body is validated as before.
+        assert client.put("/v1/release", json=body, headers=AUTH).status_code == 422
+
+
+@pytest.mark.parametrize(
+    "header",
+    [f"bearer {TOKEN}", f"BEARER {TOKEN}", f"Bearer  {TOKEN} "],
+)
+def test_the_bearer_scheme_is_case_insensitive(settings: Settings, header: str):
+    with TestClient(create_app(settings)) as client:
+        response = client.put(
+            "/v1/release", json=CANARY, headers={"Authorization": header}
+        )
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "header", [TOKEN, f"Basic {TOKEN}", f"Bearer {TOKEN}x", "Bearer", ""]
+)
+def test_other_authorization_values_are_refused(settings: Settings, header: str):
+    with TestClient(create_app(settings)) as client:
+        response = client.put(
+            "/v1/release", json=CANARY, headers={"Authorization": header}
+        )
+    assert response.status_code == 401

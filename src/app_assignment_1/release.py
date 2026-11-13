@@ -14,7 +14,7 @@ import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
 from uuid import UUID
 
 from pydantic import Field, StringConstraints, TypeAdapter, model_validator
@@ -65,10 +65,19 @@ class Release(ReleaseChange):
     changed_at: datetime
 
 
+# Where the release in effect came from. `settings_store_unreadable` means
+# the store could not be read, so a saved release may be waiting there; the
+# gateway retries on the next GET /v1/release, PUT or /v1/health.
+ReleaseSource = Literal["store", "settings", "settings_store_unreadable"]
+
+
 class ReleaseStatus(StrictModel):
     current: Release
+    source: ReleaseSource
     versions: list[VersionInfo]
-    history: list[Release] = Field(description="Newest first.")
+    history: list[Release] = Field(
+        description="Newest first. Empty if the store could not be read."
+    )
 
 
 def load_versions(path: Path) -> list[VersionConfig]:
