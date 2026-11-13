@@ -190,7 +190,7 @@ components:
     owner: Jackson
     style: stretch
     items:
-      - todo: Skeleton and gate check
+      - built: Skeleton and gate check
       - todo: Load Qwen3-1.7B outside vLLM; real activations
       - todo: Gate run due Friday, November 20
 
