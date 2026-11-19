@@ -219,7 +219,7 @@ components:
       - todo: Official test set primary; fresh set as a check
       - todo: Baselines and the oracle router
       - todo: 300 messages, 150 grades; split not agreed
-      - todo: Banking77 development split
+      - built: Banking77 development split (seeded, 20% per intent)
 
   reports:
     title: Reports and artifacts
