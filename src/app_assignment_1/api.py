@@ -16,7 +16,7 @@ from app_assignment_1.schemas import (
     JevBreakerStatus,
     RecentRequest,
 )
-from app_assignment_1.service import BackendUnavailable, Gateway
+from app_assignment_1.service import BackendUnavailable, DeadlineExceeded, Gateway
 from app_assignment_1.store import Store, create_store
 
 
@@ -61,7 +61,12 @@ def create_app(
         try:
             return await gateway.chat(payload.message)
         except BackendUnavailable as exc:
-            raise HTTPException(503, "No mock backend is available") from exc
+            detail = (
+                "deadline_exceeded"
+                if isinstance(exc, DeadlineExceeded)
+                else "No mock backend is available"
+            )
+            raise HTTPException(503, detail) from exc
 
     @app.get("/v1/requests/{request_id}", response_model=ChatResponse)
     async def get_request(request_id: UUID, request: Request) -> ChatResponse:

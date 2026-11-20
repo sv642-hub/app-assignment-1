@@ -19,7 +19,7 @@ After `APP_JEV_BREAKER_FAILURES` failed Jev calls in a row (default 5), a circui
 
 If the backend detects no intent, it returns intent `unknown` with a reply asking the customer to describe their banking problem (`reply_source: "no_match"`). A real backend must keep this behaviour. Vague and off-topic messages currently get the same reply. If a backend returns one of the 67 Banking77 intents that has no policy card, it must send an empty reply and no policy facts. The gateway then replies that the demo does not cover that topic (`reply_source: "unsupported_topic"`). The mock backends only match the 10 carded intents, so they never take this path. If the selected backend is marked unavailable, the other is used only when available (`selected_backend_unavailable`). When both are unavailable, every message returns HTTP 503. When Jev fails and the backend falls back, `fallback_reason` lists both reasons.
 
-If the selected backend's call raises an error, or returns a reply that does not match the backend reply schema, the request is tried once on the other usable backend (`selected_backend_error`). Both cases count as failed calls (`call_errors`), not format failures. When no backend can answer, the message returns HTTP 503. The log records the backend and error type, not the message or the provider's error text. The gateway sets no time limit on a backend call yet, so a call that hangs is not treated as a failure; the real client must time out and raise.
+If the selected backend's call raises an error, or returns a reply that does not match the backend reply schema, the request is tried once on the other usable backend (`selected_backend_error`). Both cases count as failed calls (`call_errors`), not format failures. When no backend can answer, the message returns HTTP 503. The log records the backend and error type, not the message or the provider's error text. Each chat request gets `APP_REQUEST_DEADLINE_SECONDS` in all, counted from before the Jev call. When the other backend is usable, the first attempt gets the time left minus `APP_ALTERNATE_RESERVE_SECONDS`, so the other backend still has time to answer. A first attempt that runs out of time counts as a failed call for its backend. If the other backend is then cut short by the deadline, the message returns HTTP 503 with detail `deadline_exceeded`; that call counts in `deadline_exceeded_calls` in `/v1/health`, not as a failed call. When only one backend is usable, it gets all the time left. If it runs out, that counts as a failed call and the message returns the usual 503, not `deadline_exceeded`.
 
 Confidence is a keyword heuristic, not a calibrated probability. Measured latency includes the simulated wait. A failed format check returns a safe apology (`reply_source: "format_fallback"`) with `format_check: "failed"` and reasons in `format_errors`. The malformed reply is not returned or stored. A passed format check does not establish semantic correctness.
 
@@ -189,8 +189,8 @@ Pydantic Settings reads `.env` then `env/.env` in native local runs. Process env
 | `APP_JEV_INPUT_PRICE_PER_MILLION_USD` | unset | Jev input token price for cost estimates; Jev does not charge for output tokens. Cost stays null while unset |
 | `APP_JEV_BREAKER_FAILURES` | `5` | Consecutive Jev failures before the circuit breaker skips Jev (not used yet) |
 | `APP_JEV_BREAKER_COOLDOWN_SECONDS` | `30` | How long the breaker skips Jev (not used yet) |
-| `APP_REQUEST_DEADLINE_SECONDS` | `45` | Total time for one chat request (not used yet) |
-| `APP_ALTERNATE_RESERVE_SECONDS` | `15` | Part of the deadline kept for the alternate backend (not used yet); with the Jev timeout, must stay below the deadline |
+| `APP_REQUEST_DEADLINE_SECONDS` | `45` | Total time for one chat request, including the Jev call. A first attempt that runs out of time counts as a failed call; an alternate cut short gives a 503 with `deadline_exceeded` |
+| `APP_ALTERNATE_RESERVE_SECONDS` | `15` | Part of the deadline held back from the first attempt for the other backend, only when the other backend is usable; with the Jev timeout, must stay below the deadline |
 
 Paths are relative to the working directory: run native commands from the repo root. In Docker the working directory is `/app`; use paths under the mounted `config/` directory. The gateway validates JSON and matching intent/policy-card coverage at startup. Both mock backends must be configured. Set `available` to `false` in `config/backends.json` to try fallback.
 
@@ -275,7 +275,7 @@ curl -fsS "http://localhost:8080/v1/requests/$REQUEST_ID"
 
 | Endpoint | Behavior |
 | --- | --- |
-| `POST /v1/chat` | 200 validated reply; 422 invalid input; 503 no backend available or able to answer |
+| `POST /v1/chat` | 200 validated reply; 422 invalid input; 503 no backend available or able to answer, or `deadline_exceeded` |
 | `GET /v1/requests/{id}` | 200 stored response; 404 missing, evicted, or lost in a restart with the memory store; 422 invalid UUID |
 | `GET /v1/health` | Typed Pydantic response documented in OpenAPI; 200 with backend config, monitor statistics, recent interventions, recent requests (`recent_requests`) and per-model call totals (`usage`); `degraded` when any backend is unavailable or disabled by the controller |
 | `GET /docs`, `/redoc`, `/openapi.json` | Interactive documentation and API schema |
