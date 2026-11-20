@@ -60,8 +60,8 @@ These are proposals for team review, fixed before any real run. Nothing here has
 - **Controls:** the report adds a text-only classifier, a per-intent accuracy prior and AUROC within each intent. They do not change the pass rule. They decide what a pass may claim, because a text-only classifier can match a probe on in-distribution data (Moreno Cencerrado et al., 2025).
 - **Routing analysis:** alongside the gate, also score the cases where the small model is wrong and the large model is right, because escalating only helps there. This needs Qwen3-4B outputs on the same dev data. It does not change the pass rule.
 - **Escalation curve:** report the share of wrong outputs caught at each escalation rate, alongside AUROC. AUROC shows the ranking is good, but not what a threshold would do in a live system.
-- **Data split:** Jackson owns this. Use one fixed, seeded split, stratified by intent. The human grades draw from the same data, so agree it once with Sebastian and Yanzhen.
+- **Data split:** Eric owns the Banking77 development split (`docs/TEAM_PLAN.md`; proposed in #89). Use one fixed, seeded split, stratified by intent. The human grades draw from the same data, so agree it once with Sebastian and Yanzhen.
 
 ## Gate date
 
-The gate run is due **Friday, November 20, 2026**, as set in `docs/TEAM_PLAN.md`. If the probe does not pass by then, it is reported as an offline result and stays out of the live system.
+The gate run is due **within one week after both of these are ready**, as set in `docs/TEAM_PLAN.md`: Qwen3-1.7B runs on the GPU host, and the Banking77 development split exists. If the probe does not pass by then, it is reported as an offline result and stays out of the live system. The earlier date, Friday, November 20, 2026, moved because the GPU host is not deployed yet.
