@@ -33,7 +33,7 @@ function formatTime(iso) {
 export function describeModels(health) {
   const monitors = Object.fromEntries(health.monitor.map((m) => [m.name, m]));
   const models = health.backends.map((b) => {
-    const m = monitors[b.name] ?? { samples: 0, format_failures: 0, call_errors: 0, failure_rate: null };
+    const m = monitors[b.name] ?? { samples: 0, format_failures: 0, call_errors: 0, failure_rate: null, answering: false };
     const usable = b.available && !m.disabled_by_controller;
     return { ...b, ...m, usable };
   });
@@ -71,15 +71,28 @@ function scored(model) {
   return model.agreements + model.disagreements;
 }
 
-// One sentence per model whose disagreement with Jev is above the baseline.
-function semanticText(health) {
-  const baseline = health.semantic_rules?.baseline_disagreement_rate;
+// One sentence per model whose disagreement with Jev is above the baseline,
+// plus what the controller did about it.
+function semanticText(health, models) {
+  const rules = health.semantic_rules;
+  const disabled = new Set(models.filter((m) => m.disabled_by_controller).map((m) => m.name));
   return (health.semantic ?? [])
     .filter((m) => m.status === "above_baseline")
-    .map(
-      (m) =>
-        `${m.name}'s intent differs from Jev's on ${finePercent(m.disagreement_rate)} of recent replies (${m.disagreements} of ${scored(m)}), above the ${finePercent(baseline)} baseline. These replies pass the format check, so the controller takes no action.`,
-    )
+    .map((m) => {
+      const found = `${m.name}'s intent differs from Jev's on ${finePercent(m.disagreement_rate)} of recent replies (${m.disagreements} of ${scored(m)}), above the ${finePercent(rules.baseline_disagreement_rate)} baseline.`;
+      if (!rules.actions_enabled) return `${found} These replies pass the format check, and semantic actions are off, so the controller takes no action.`;
+      // The model-down sentence already says the controller disabled it.
+      if (disabled.has(m.name)) return found;
+      // The controller only acts while the other model is serving and has
+      // answered recently without failing. The gateway reports that as
+      // `answering`, so the banner never works it out from a rounded rate.
+      const other = models.find((o) => o.name !== m.name);
+      if (!other?.usable) return `${found} The controller keeps it in service because the other model is not available.`;
+      if (!other.answering) {
+        return `${found} The controller keeps it in service until ${other.name} has answered recently without failing.`;
+      }
+      return `${found} The controller takes it out of service on its next reply.`;
+    })
     .join(" ");
 }
 
@@ -87,7 +100,7 @@ function bannerFor(health, models) {
   // `status` is about the models only. A skipped Jev is a neutral note: the
   // models still answer, and keyword rules pick the route.
   const jev = breakerText(health.jev_breaker);
-  const semantic = semanticText(health);
+  const semantic = semanticText(health, models);
   if (health.status === "ok") {
     if (semantic) return { tone: "bad", title: "Possible wrong intents", text: [semantic, jev].filter(Boolean).join(" ") };
     if (jev) return { tone: "note", title: "Keyword rules are routing while Jev is skipped", text: `Both models are serving. ${jev}` };
@@ -98,11 +111,12 @@ function bannerFor(health, models) {
     return { tone: "bad", title: "No model available", text: "Chat requests return an error until a model comes back." };
   }
   const up = models.find((m) => m.usable);
-  const parts = down.map((m) =>
-    m.disabled_by_controller
-      ? `${m.name} was disabled by the controller. ${m.route[0].toUpperCase() + m.route.slice(1)} requests are going to ${up.name} until the cooldown ends.`
-      : `${m.name} is marked unavailable in the config. Its requests are going to ${up.name}.`,
-  );
+  const parts = down.map((m) => {
+    if (!m.disabled_by_controller) return `${m.name} is marked unavailable in the config. Its requests are going to ${up.name}.`;
+    const moved = `${m.name} was disabled by the controller. ${m.route[0].toUpperCase() + m.route.slice(1)} requests are going to ${up.name} until the cooldown ends.`;
+    // Disabled only for its intents: it still answers when the other model fails.
+    return m.disabled_for === "semantic" ? `${moved} If ${up.name} fails a request, ${m.name} still answers it as a last resort.` : moved;
+  });
   if (semantic) parts.push(semantic);
   if (jev) parts.push(jev);
   return { tone: "bad", title: "Degraded", text: parts.join(" ") };
@@ -115,7 +129,10 @@ function SemanticCard({ semantic, rules }) {
       <h2>Semantic monitor</h2>
       <p className="muted small">
         A model can give a well-formed reply for the wrong intent, which the format check cannot see. For each reply that passed the format check, the
-        monitor compares the model&apos;s intent with Jev&apos;s, over the last {rules.window} replies per model. It only reports; it takes no action.
+        monitor compares the model&apos;s intent with Jev&apos;s, over the last {rules.window} replies per model.{" "}
+        {rules.actions_enabled
+          ? "Semantic actions are on: when a model is above the baseline, the controller takes it out of service, with the same cooldown and last-model rule as format failures."
+          : "Semantic actions are off, so it only reports and the controller takes no action."}
       </p>
       <div className="table-scroll">
         <table className="log" aria-label="Semantic monitor">
