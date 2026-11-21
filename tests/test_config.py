@@ -44,3 +44,23 @@ def test_cache_requires_clear(monkeypatch, tmp_path):
 def test_invalid_settings(field, value):
     with pytest.raises(ValidationError):
         Settings(_env_file=None, **{field: value})
+
+
+def test_vllm_urls_default_to_unset():
+    settings = Settings(_env_file=None)
+    assert settings.vllm_small_base_url is None
+    assert settings.vllm_large_base_url is None
+
+
+def test_vllm_urls_from_env(monkeypatch):
+    monkeypatch.setenv("APP_VLLM_SMALL_BASE_URL", "http://10.0.12.34:8001")
+    monkeypatch.setenv("APP_VLLM_LARGE_BASE_URL", "http://10.0.12.34:8002")
+    settings = Settings(_env_file=None)
+    assert str(settings.vllm_small_base_url) == "http://10.0.12.34:8001/"
+    assert settings.vllm_large_base_url is not None
+    assert settings.vllm_large_base_url.port == 8002
+
+
+def test_vllm_url_must_be_a_url():
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, vllm_small_base_url="not a url")

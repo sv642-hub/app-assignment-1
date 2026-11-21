@@ -35,6 +35,7 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 - `scripts/render_architecture.py`: draws `docs/architecture.svg` from `docs/architecture.yaml`; `--check` fails if they differ.
 - `env/`: `.env.example`, `.env.production.example` and `postgres.env.example` templates. Real `env/.env` and `env/postgres.env` are optional and ignored by git. `compose.defaults.env` holds public throwaway values (store and database password) so Compose and CI start without private files; never use it for a deployment.
 - `compose.yml`: `gateway`, `postgres` (named volume `postgres-data`), `proxy` and `prometheus` services; only `proxy` publishes a port. `compose.chaos.yml`: override that makes the small model corrupt every reply. `compose.outage.yml`: override that makes every call to the small model raise an error. `compose.labelswap.yml`: override that makes the small model answer with the wrong intent, for the semantic monitor.
+- `compose.gpu.yml`: a separate Compose project for the GPU host. `vllm-small` (Qwen3-1.7B, port 8001) and `vllm-large` (Qwen3-4B, port 8002), with pinned vLLM and model revisions. The model cache is a host directory, `MODEL_CACHE_DIR` (an attached volume on Jetstream2). Each binds only to `VLLM_BIND_IP` from `env/gpu.env`; both settings are required (template `env/gpu.env.example`; the real file is ignored by git). `tests/test_compose_ports.py` checks the port rules.
 - `Caddyfile`: serves the React app on port 8080 and proxies `/v1`, `/docs`, `/redoc` and `/openapi.json` to the gateway. Never add `/metrics`.
 - `prometheus/prometheus.yml`: Prometheus scrape config; scrapes `gateway:8000/metrics` on the Compose network.
 - `docs/TEAM_PLAN.md`: who owns what. `USER_BRIEF.md`: guide for beta testers.
@@ -91,7 +92,7 @@ docker compose down
 
 - Work on a branch and open a pull request; never push to main.
 - Run the tests and pre-commit before committing; keep CI green.
-- Only port 8080 (Caddy) is published. Never publish gateway, database, Prometheus or vLLM ports.
+- Only port 8080 (Caddy) is published. Never publish gateway, database, Prometheus or vLLM ports. The one exception is vLLM on the GPU host (`compose.gpu.yml`): it binds only to that host's private IP, so only the CPU instance can reach it. Never bind it to 0.0.0.0 or the public IP.
 - Settings come from Pydantic Settings and env/ files. Never commit secrets or a real .env. Only `APP_` keys belong in `env/.env`; the Postgres container's password goes in `env/postgres.env`.
 - Never store the customer's message text. `ChatResponse` has no message field; keep it that way.
 - Mocks sit behind interfaces (router, backends). Replace them by adding a real implementation, not by editing callers.

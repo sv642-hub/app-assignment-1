@@ -213,6 +213,8 @@ Pydantic Settings reads `.env` then `env/.env` in native local runs. Process env
 | `APP_JEV_INPUT_PRICE_PER_MILLION_USD` | unset | Jev input token price for cost estimates; Jev does not charge for output tokens. Cost stays null while unset |
 | `APP_JEV_BREAKER_FAILURES` | `5` | Consecutive Jev failures before the circuit breaker skips Jev (not used yet) |
 | `APP_JEV_BREAKER_COOLDOWN_SECONDS` | `30` | How long the breaker skips Jev (not used yet) |
+| `APP_VLLM_SMALL_BASE_URL` | unset | Qwen3-1.7B server on the GPU host's private IP, for example `http://10.0.12.34:8001` (not used yet) |
+| `APP_VLLM_LARGE_BASE_URL` | unset | Qwen3-4B server on the GPU host's private IP, for example `http://10.0.12.34:8002` (not used yet) |
 | `APP_REQUEST_DEADLINE_SECONDS` | `45` | Total time for one chat request (not used yet) |
 | `APP_ALTERNATE_RESERVE_SECONDS` | `15` | Part of the deadline kept for the alternate backend (not used yet); with the Jev timeout, must stay below the deadline |
 
@@ -386,6 +388,60 @@ curl -fsS http://YOUR_INSTANCE_IP:8080/v1/chat \
 
 Open `http://YOUR_INSTANCE_IP:8080` and send a chat message. Leave Compose running for grading. Local verification does not confirm instance deployment or external reachability.
 
+## GPU host (vLLM)
+
+The two Qwen models run on a separate Jetstream2 GPU instance, using [`compose.gpu.yml`](compose.gpu.yml). The gateway does not call them yet: it still uses the mock backends until the Qwen backends are wired in. This section sets up the servers, so the client and the probe have something real to test against.
+
+| Server | Model and pinned revision | Served name | Address |
+| --- | --- | --- | --- |
+| `vllm-small` | `Qwen/Qwen3-1.7B` @ `70d244cc86ccca08cf5af4e1e306ecf908b1ad5e` | `qwen3-1.7b` | `http://GPU_PRIVATE_IP:8001` |
+| `vllm-large` | `Qwen/Qwen3-4B` @ `1cfa9a7208912126459214e8b04321603b3df60c` | `qwen3-4b` | `http://GPU_PRIVATE_IP:8002` |
+
+Both run vLLM `v0.33.0` (image pinned by digest) with `--max-model-len 4096` on one GPU. The served names match `config/backends.json`.
+
+**Network.** vLLM is reachable only from the CPU instance, over the Jetstream2 private network. Each server binds to the GPU host's private IP (`VLLM_BIND_IP`), and Compose will not start without it. Do not bind to `0.0.0.0` or the public IP. Do not open 8001–8002 to the internet.
+
+**Allocate the instance** (once):
+
+1. Create a GPU instance in the same project and private network as the CPU instance. Pick a GPU with at least 20 GB of memory: the two models' bf16 weights are about 12 GB together, and the rest goes to KV cache. The settings in `compose.gpu.yml` are sized for the GRID A100X-20C vGPU, where about 2.16 GiB of the 20 GiB is reserved and not shown by `nvidia-smi`. The vLLM image alone takes about 37 GB of the root disk, so attach a separate Jetstream2 volume (50 GB is plenty) for the model weights, for example at `/media/volume/gpu-models`.
+2. Add a security group that keeps SSH and allows TCP 8001–8002 **only from the CPU instance's private IP**.
+3. Install Docker with Compose 2.24+ and the NVIDIA Container Toolkit. Check with `docker run --rm --gpus all ubuntu nvidia-smi`.
+
+**Start the servers** on the GPU instance:
+
+```bash
+git clone --branch main --single-branch \
+  https://github.com/sv642-hub/app-assignment-1.git smart-ai-gateway-prototype
+cd smart-ai-gateway-prototype
+cp env/gpu.env.example env/gpu.env   # set VLLM_BIND_IP (ip -4 addr) and MODEL_CACHE_DIR (the attached volume)
+docker compose -f compose.gpu.yml --env-file env/gpu.env -p smart-gateway-gpu up -d --wait
+docker compose -f compose.gpu.yml --env-file env/gpu.env -p smart-gateway-gpu ps
+nvidia-smi
+```
+
+The first start downloads both models (about 12 GB) into `MODEL_CACHE_DIR`, which can take several minutes. `vllm-large` starts only after `vllm-small` is healthy. If `vllm-small` runs out of GPU memory, add `--enforce-eager` to it, or adjust `--gpu-memory-utilization` (0.33 and 0.54; together they must fit in the memory CUDA reports free, not the full 20 GiB), in `compose.gpu.yml` through a pull request.
+
+**Check from the CPU instance**, in a checkout with `uv sync --extra dev --frozen`:
+
+```bash
+uv run python scripts/smoke_vllm.py --route standard --base-url http://GPU_PRIVATE_IP:8001 --model qwen3-1.7b
+uv run python scripts/smoke_vllm.py --route complex  --base-url http://GPU_PRIVATE_IP:8002 --model qwen3-4b
+```
+
+**Check that the servers are not public**, from your laptop. This must fail:
+
+```bash
+curl --max-time 5 http://GPU_PUBLIC_IP:8001/health
+```
+
+**Stop the servers**, or shelve the instance to save allocation when nobody is using it:
+
+```bash
+docker compose -f compose.gpu.yml --env-file env/gpu.env -p smart-gateway-gpu down
+```
+
+`down` leaves `MODEL_CACHE_DIR` alone, so the next start skips the download.
+
 ## Tests and project layout
 
 ```bash
@@ -410,7 +466,7 @@ CI runs these checks, the frontend tests and build, a Compose smoke test through
 - `src/app_assignment_1/`: settings, API contracts, routing interface, mock service, the monitor and controller, Prometheus metrics, and the request store (`store.py`, with SQL migrations in `migrations/`).
 - `frontend/`: the React + Vite app (`src/components/ChatView.jsx`, `HealthView.jsx`, `Sidebar.jsx`) and its Dockerfile. Jev and Dashboard screens are listed as coming soon.
 - `config/`: validated mock behavior, editable without Python changes.
-- `Dockerfile` (gateway), `frontend/Dockerfile` (proxy and app), `compose.yml` (gateway, postgres, proxy, prometheus), `Caddyfile`, `prometheus/prometheus.yml`: deployment with one published port.
+- `Dockerfile` (gateway), `frontend/Dockerfile` (proxy and app), `compose.yml` (gateway, postgres, proxy, prometheus), `Caddyfile`, `prometheus/prometheus.yml`: deployment with one published port. `compose.gpu.yml` (vllm-small, vllm-large): the GPU host, bound to its private IP.
 - `tests/`: unit and API tests. `scripts/smoke_compose.py`: public-proxy smoke test.
 - `discussion.md`, `problem2-local-run.md`, benchmark results: historical Assignment 2 records. The original SmolLM2 implementation and measurement scripts remain in Git history before this prototype.
 

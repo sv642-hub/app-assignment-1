@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     jev_input_price_per_million_usd: float | None = Field(default=None, ge=0)
     jev_breaker_failures: int = Field(default=5, ge=1, le=1000)
     jev_breaker_cooldown_seconds: float = Field(default=30, gt=0, le=3600)
+    # The two vLLM servers on the GPU host's private IP (compose.gpu.yml), for
+    # example http://10.0.12.34:8001. Unset until the backends are wired in.
+    vllm_small_base_url: AnyHttpUrl | None = None
+    vllm_large_base_url: AnyHttpUrl | None = None
     request_deadline_seconds: float = Field(default=45, gt=0, le=600)
     alternate_reserve_seconds: float = Field(default=15, gt=0, le=600)
 

@@ -16,6 +16,7 @@ wheels/
 !.env.example
 !.env.production.example
 env/postgres.env
+env/gpu.env
 
 # Test / coverage / type-check artifacts
 .coverage
