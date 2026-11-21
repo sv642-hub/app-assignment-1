@@ -66,7 +66,7 @@ components:
       - simulated: One route and intent call, 2 s timeout
       - built: Rule router on Jev timeout, error or invalid route
       - built: Circuit breaker, 5 failures, 30 s
-      - todo: Real Jev client in the app
+      - built: Real Jev with APP_JEV_MODE=real
 
   canary_splitter:
     title: Canary splitter
@@ -106,7 +106,7 @@ components:
     items:
       - built: Gateway saves both records
       - simulated: Intent in the routing call, 11 options
-      - todo: 78 options in the routing call
+      - built: 78 options when Jev is real
 
   semantic_monitor:
     title: Semantic monitor
@@ -182,9 +182,9 @@ components:
     title: Jev API (external)
     owner: "Verness · Pavlos: key"
     items:
-      - simulated: Routing call is a local JSON mock
-      - built: "TypeSafe client code: plain httpx, jev-1.14.0"
-      - todo: Real mode in the app; 300-call check on Jetstream2
+      - simulated: "Default: routing call is a local JSON mock"
+      - built: "TypeSafe client in the app: httpx, jev-1.14.0"
+      - todo: First live run in the app; 300-call check on Jetstream2
 
   probe:
     title: Probe (stretch, offline)

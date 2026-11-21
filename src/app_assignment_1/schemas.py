@@ -40,7 +40,8 @@ class BackendReply(StrictModel):
 
 
 class Trace(StrictModel):
-    router: Literal["mock_jev", "rule_router"]
+    # jev: the real TypeSafe Jev answered the route question.
+    router: Literal["mock_jev", "jev", "rule_router"]
     jev_choice: Route | None
     route: Route
     model: BackendName
@@ -54,6 +55,7 @@ class Trace(StrictModel):
     format_errors: list[str] = Field(default_factory=list)
     fallback_reason: str | None = None
     controller_action: str | None = None
+    # The reply came from a mock Qwen backend; router says whether Jev was real.
     mocked: Literal[True] = True
 
 
@@ -205,8 +207,10 @@ class HealthResponse(StrictModel):
     recent_requests: list[RecentRequest] = Field(default_factory=list)
     usage: list[ModelUsage] = Field(default_factory=list)
     status: Literal["ok", "degraded"]
+    # mode is the Qwen backends; jev_mode and router are Jev.
     mode: Literal["mock"] = "mock"
-    router: Literal["mock_jev"] = "mock_jev"
+    jev_mode: Literal["mock", "real"] = "mock"
+    router: Literal["mock_jev", "jev"] = "mock_jev"
     backends: list[BackendConfig]
     monitor: list[BackendMonitor]
     interventions: list[Intervention]

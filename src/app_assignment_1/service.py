@@ -327,7 +327,9 @@ class Gateway:
         request_id = uuid4()
         start = perf_counter()
         reasons: list[str] = []
-        router_name: Literal["mock_jev", "rule_router"] = "mock_jev"
+        router_name: Literal["mock_jev", "jev", "rule_router"] = (
+            "mock_jev" if self.jev_mocked else "jev"
+        )
         decision: RoutingDecision | None = None
         result, jev = await self._call_jev(request_id, message, reasons)
         if result is not None:

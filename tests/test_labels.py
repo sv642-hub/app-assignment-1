@@ -136,22 +136,25 @@ def test_empty_reply_for_a_carded_intent_still_fails():
 def test_env_templates_parse(path):
     settings = Settings(_env_file=path)
     assert settings.provider_mode == "mock"
+    assert settings.jev_mode == "mock"
     assert settings.jev_model == "jev-1.14.0"
     assert settings.jev_api_key is None
 
 
-def test_real_mode_needs_a_key():
+@pytest.mark.parametrize("mode", ["jev_mode", "provider_mode"])
+def test_real_mode_needs_a_key(mode):
+    with pytest.raises(ValidationError, match=f"{mode} 'real' needs APP_JEV_API_KEY"):
+        Settings(_env_file=None, **{mode: "real"})
     with pytest.raises(ValidationError, match="APP_JEV_API_KEY"):
-        Settings(_env_file=None, provider_mode="real")
-    with pytest.raises(ValidationError, match="APP_JEV_API_KEY"):
-        Settings(_env_file=None, provider_mode="real", jev_api_key="")
+        Settings(_env_file=None, jev_api_key="", **{mode: "real"})
 
 
-def test_real_mode_needs_an_https_jev_url():
+@pytest.mark.parametrize("mode", ["jev_mode", "provider_mode"])
+def test_real_mode_needs_an_https_jev_url(mode):
     with pytest.raises(ValidationError, match="https APP_JEV_BASE_URL"):
         Settings(
             _env_file=None,
-            provider_mode="real",
+            **{mode: "real"},
             jev_api_key="test-key",
             jev_base_url="http://api.example.com",
         )

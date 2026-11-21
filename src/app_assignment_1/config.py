@@ -48,8 +48,10 @@ class Settings(BaseSettings):
     # Longest wait for one store write before the reply goes out without it.
     store_timeout_seconds: float = Field(default=2, gt=0, le=30)
 
-    # Real providers (docs/JEV_QWEN_INTEGRATION_PLAN.md). Mock is the default;
-    # real mode is rejected at startup until the clients exist.
+    # Real providers (docs/JEV_QWEN_INTEGRATION_PLAN.md). Mock is the default.
+    # jev_mode=real sends each message to TypeSafe. provider_mode covers the
+    # Qwen backends; its real mode is rejected until the vLLM client is wired.
+    jev_mode: Literal["mock", "real"] = "mock"
     provider_mode: Literal["mock", "real"] = "mock"
     jev_base_url: AnyHttpUrl = AnyHttpUrl("https://api.typesafe.ai")
     jev_api_key: SecretStr | None = None
@@ -111,17 +113,25 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def real_mode_needs_a_jev_key(self) -> "Settings":
-        if self.provider_mode == "real" and (
-            self.jev_api_key is None or not self.jev_api_key.get_secret_value()
+        for name, mode in (
+            ("jev_mode", self.jev_mode),
+            ("provider_mode", self.provider_mode),
         ):
-            raise ValueError("provider_mode 'real' needs APP_JEV_API_KEY")
+            if mode == "real" and (
+                self.jev_api_key is None or not self.jev_api_key.get_secret_value()
+            ):
+                raise ValueError(f"{name} 'real' needs APP_JEV_API_KEY")
         return self
 
     @model_validator(mode="after")
     def real_mode_needs_https(self) -> "Settings":
         # The client sends the API key with every request.
-        if self.provider_mode == "real" and self.jev_base_url.scheme != "https":
-            raise ValueError("provider_mode 'real' needs an https APP_JEV_BASE_URL")
+        for name, mode in (
+            ("jev_mode", self.jev_mode),
+            ("provider_mode", self.provider_mode),
+        ):
+            if mode == "real" and self.jev_base_url.scheme != "https":
+                raise ValueError(f"{name} 'real' needs an https APP_JEV_BASE_URL")
         return self
 
 

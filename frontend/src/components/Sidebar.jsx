@@ -58,7 +58,11 @@ export default function Sidebar({ view, onNavigate, onNewChat, health, healthErr
           <span className={`dot dot-${status.tone}`} aria-hidden="true" />
           {status.text}
         </span>
-        <span className="muted">Mock mode: Jev and Qwen are simulated</span>
+        <span className="muted">
+          {health?.jev_mode === "real"
+            ? "Real Jev (TypeSafe); Qwen is simulated"
+            : "Mock mode: Jev and Qwen are simulated"}
+        </span>
       </div>
     </aside>
   );

@@ -357,6 +357,16 @@ describe("Issue 31", () => {
     expect(within(rows[1]).getAllByRole("cell").map((c) => c.textContent)).toEqual(["qwen3-1.7b", "7", "2", "5"]);
     expect(within(rows[2]).getAllByRole("cell").map((c) => c.textContent)).toEqual(["qwen3-4b", "9", "9", "0"]);
   });
+
+  it("says Jev calls go to TypeSafe when Jev is real", async () => {
+    const health = { ...healthyHealth, jev_mode: "real", router: "jev" };
+    const user = renderWith(fakeGateway({ health }));
+    expect(await screen.findByText("Real Jev (TypeSafe); Qwen is simulated")).toBeInTheDocument();
+    expect(screen.queryByText(/Mock mode: Jev and Qwen/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Health" }));
+    expect(await screen.findByText(/Jev calls go to TypeSafe/)).toBeInTheDocument();
+    expect(screen.queryByText(/Mock mode: token usage/)).not.toBeInTheDocument();
+  });
 });
 
 describe("Issue 32", () => {

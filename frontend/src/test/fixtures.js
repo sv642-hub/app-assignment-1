@@ -9,6 +9,7 @@ const RULES = { window: 20, min_samples: 5, failure_threshold: 0.5, cooldown_sec
 export const healthyHealth = {
   status: "ok",
   mode: "mock",
+  jev_mode: "mock",
   router: "mock_jev",
   backends: BACKENDS,
   monitor: [

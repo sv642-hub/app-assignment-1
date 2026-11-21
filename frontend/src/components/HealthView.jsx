@@ -356,7 +356,12 @@ function HealthBody({ health }) {
 
       <section className="card">
         <h2>Usage since gateway startup</h2>
-        <p>Mock mode: token usage and estimated cost are unavailable. No model-provider inference calls are made. Infrastructure costs are not measured; these figures cannot establish routing savings.</p>
+        <p>
+          {health.jev_mode === "real"
+            ? "Jev calls go to TypeSafe, but their tokens and cost are not shown here yet. The Qwen models are mocks, so their token usage and cost are unavailable."
+            : "Mock mode: token usage and estimated cost are unavailable. No model-provider inference calls are made."}{" "}
+          Infrastructure costs are not measured; these figures cannot establish routing savings.
+        </p>
         <p className="muted small">Totals include fallback attempts and do not expire with the monitoring window. A completed call may still fail the format check. In-flight or cancelled calls can leave attempts greater than completed plus failed calls. Resets on restart.</p>
         <div className="table-scroll">
           <table className="log" aria-label="Usage since gateway startup">

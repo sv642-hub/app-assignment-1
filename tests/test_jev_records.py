@@ -566,3 +566,73 @@ def test_a_record_problem_does_not_fail_the_request(
     assert saved(store) == []
     assert "Could not build Jev records (ValueError)" in caplog.text
     assert "card_arrival" not in caplog.text
+
+
+def real_jev_app(
+    settings: Settings, server: FakeJev, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Any, list[httpx.AsyncClient]]:
+    """An app with APP_JEV_MODE=real whose HTTP client talks to a fake TypeSafe."""
+    from app_assignment_1 import api
+
+    clients: list[httpx.AsyncClient] = []
+
+    def client_for(configured: Settings) -> httpx.AsyncClient:
+        clients.append(create_jev_http_client(configured, httpx.MockTransport(server)))
+        return clients[-1]
+
+    monkeypatch.setattr(api, "create_jev_http_client", client_for)
+    real = Settings(
+        _env_file=None,
+        backends_path=settings.backends_path,
+        jev_mode="real",
+        jev_api_key="tsk-test",
+    )
+    return create_app(real), clients
+
+
+def test_jev_mode_real_routes_through_the_typesafe_client(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = FakeJev()
+    app, clients = real_jev_app(settings, server, monkeypatch)
+    with TestClient(app) as client:
+        response = client.post("/v1/chat", json={"message": MESSAGE})
+        assert response.status_code == 200
+        trace = response.json()["trace"]
+        assert trace["router"] == "jev"
+        assert trace["jev_choice"] == "complex"
+        assert trace["mocked"] is True  # the Qwen reply is still a mock
+        health = client.get("/v1/health").json()
+        assert (health["mode"], health["jev_mode"], health["router"]) == (
+            "mock",
+            "real",
+            "jev",
+        )
+        records = saved(app.state.gateway.store)
+        assert [r.mocked for r in records] == [False, False]
+        assert {r.option_set_version for r in records} == {LABELS.option_set_version}
+    assert server.calls == 1
+    assert len(clients) == 1 and clients[0].is_closed
+
+
+def test_jev_mode_real_falls_back_to_the_rule_router_on_an_error(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = FakeJev()
+    server.status = 500
+    app, _ = real_jev_app(settings, server, monkeypatch)
+    with TestClient(app) as client:
+        trace = client.post("/v1/chat", json={"message": MESSAGE}).json()["trace"]
+    assert (trace["router"], trace["fallback_reason"]) == ("rule_router", "jev_error")
+
+
+def test_jev_mode_mock_is_the_default(settings: Settings) -> None:
+    assert settings.jev_mode == "mock"
+    with TestClient(create_app(settings)) as client:
+        health = client.get("/v1/health").json()
+        trace = client.post("/v1/chat", json={"message": MESSAGE}).json()["trace"]
+    assert (health["jev_mode"], health["router"], trace["router"]) == (
+        "mock",
+        "mock_jev",
+        "mock_jev",
+    )

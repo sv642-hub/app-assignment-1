@@ -1,13 +1,15 @@
 """Smart AI Gateway mocked midpoint API."""
 
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from prometheus_client import CONTENT_TYPE_LATEST
 
 from app_assignment_1.config import Settings, get_settings
+from app_assignment_1.jev import TypeSafeJevRouter, create_jev_http_client
+from app_assignment_1.labels import load_labels
 from app_assignment_1.router import MockJevRouter, Router
 from app_assignment_1.schemas import (
     ChatRequest,
@@ -29,25 +31,37 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         configured = settings or get_settings()
         opened = store or create_store(configured)
-        gateway = Gateway(
-            configured,
-            router or MockJevRouter(configured.intents_path),
-            store=opened,
-        )
-        await opened.open()
-        app.state.gateway = gateway
-        try:
-            yield
-        finally:
-            # Save anything noticed since the last request, such as a re-enable
-            # seen by a /metrics scrape.
-            await gateway.save_interventions()
-            await opened.close()
+        async with AsyncExitStack() as stack:
+            if router is not None:
+                chosen: Router = router
+            elif configured.jev_mode == "real":
+                # One shared client for the app's lifetime, closed on exit.
+                client = await stack.enter_async_context(
+                    create_jev_http_client(configured)
+                )
+                chosen = TypeSafeJevRouter(
+                    client, configured.jev_model, load_labels(configured.labels_path)
+                )
+            else:
+                chosen = MockJevRouter(configured.intents_path)
+            gateway = Gateway(configured, chosen, store=opened)
+            await opened.open()
+            app.state.gateway = gateway
+            try:
+                yield
+            finally:
+                # Save anything noticed since the last request, such as a
+                # re-enable seen by a /metrics scrape.
+                await gateway.save_interventions()
+                await opened.close()
 
     app = FastAPI(
         title="Smart AI Gateway (mock prototype)",
         version="0.2.0",
-        description="Fictional policy replies. No Jev, Qwen or GPU calls.",
+        description=(
+            "Fictional policy replies from mock Qwen backends. Jev is a local "
+            "mock unless APP_JEV_MODE=real, which sends each message to TypeSafe."
+        ),
         lifespan=lifespan,
     )
 
@@ -84,6 +98,8 @@ def create_app(
         await gateway.save_interventions()
         return HealthResponse(
             status="ok" if healthy else "degraded",
+            jev_mode="mock" if gateway.jev_mocked else "real",
+            router="mock_jev" if gateway.jev_mocked else "jev",
             recent_requests=[
                 RecentRequest(
                     completed_at=r.completed_at,

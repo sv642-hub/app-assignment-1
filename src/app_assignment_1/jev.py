@@ -3,9 +3,8 @@
 `route` picks standard or complex; `intent` picks one of the 78 labels. Each
 answer is checked on its own, so a bad intent answer does not lose the route.
 A failure of the whole call raises `JevCallError`, and the gateway falls back to
-the rule router. Not wired into the app yet: APP_PROVIDER_MODE=real is still
-rejected, because the Qwen clients and the real-mode trace fields (plan step C5)
-are not built.
+the rule router. The app uses it when APP_JEV_MODE=real; the Qwen backends stay
+mocked until APP_PROVIDER_MODE=real is built.
 
 TypeSafe docs: https://docs.typesafe.ai/primitives/choice and
 https://docs.typesafe.ai/api/errors
