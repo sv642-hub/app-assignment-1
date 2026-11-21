@@ -118,6 +118,23 @@ class BackendConfig(StrictModel):
     label_swap_rate: float = Field(default=0, ge=0, le=1)
 
 
+FaultKind = Literal["none", "outage", "bad_format", "label_swap"]
+
+
+class FaultRequest(StrictModel):
+    """Set one simulated fault on one mock model. `none` clears all three."""
+
+    model: BackendName
+    fault: FaultKind
+    # Share of calls the fault hits; ignored for `none`.
+    rate: float = Field(default=1, ge=0, le=1)
+
+
+class OperatorRequest(StrictModel):
+    # Saved in the intervention log; never put customer data here.
+    reason: str = Field(default="operator request", min_length=1, max_length=200)
+
+
 class BackendMonitor(StrictModel):
     name: BackendName
     samples: int = Field(ge=0)
@@ -125,13 +142,24 @@ class BackendMonitor(StrictModel):
     call_errors: int = Field(ge=0)
     failure_rate: float | None = Field(ge=0, le=1)
     disabled_by_controller: bool
+    # Held by POST /v1/operator/models/{name}/disable until an operator enables it.
+    disabled_by_operator: bool = False
     disabled_for_seconds: float | None = Field(default=None, ge=0)
+
+
+InterventionAction = Literal[
+    "disabled",
+    "re-enabled",
+    "kept_last_backend",
+    "operator_disabled",
+    "operator_enabled",
+]
 
 
 class Intervention(StrictModel):
     at: datetime
     backend: BackendName
-    action: Literal["disabled", "re-enabled", "kept_last_backend"]
+    action: InterventionAction
     reason: str
 
 

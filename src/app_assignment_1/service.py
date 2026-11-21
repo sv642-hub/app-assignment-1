@@ -23,8 +23,10 @@ from app_assignment_1.records import JevAssessment, check_call
 from app_assignment_1.router import JevAnswer, JevResult, Router, RuleRouter
 from app_assignment_1.schemas import (
     BackendConfig,
+    BackendName,
     BackendReply,
     ChatResponse,
+    FaultRequest,
     ModelUsage,
     PolicyCard,
     RoutingDecision,
@@ -58,6 +60,14 @@ def check_reply(reply: str) -> list[str]:
 
 class BackendUnavailable(Exception):
     """No configured backend is available or able to answer."""
+
+
+class LastUsableBackend(Exception):
+    """An operator asked to disable the only backend still answering."""
+
+
+class NotAMock(Exception):
+    """A fault was asked for on a backend that is not a mock."""
 
 
 def _jev_error_type(exc: Exception) -> str:
@@ -167,6 +177,38 @@ class Gateway:
 
     def others_usable(self, backend: Backend) -> bool:
         return any(self.usable(b) for b in self.backends if b is not backend)
+
+    def backend(self, name: BackendName) -> Backend:
+        return next(b for b in self.backends if b.config.name == name)
+
+    def operator_disable(self, name: BackendName, reason: str) -> None:
+        """Hold a model disabled until operator_enable. Like the controller, it
+        never disables the last usable model."""
+        if not self.others_usable(self.backend(name)):
+            raise LastUsableBackend(name)
+        self.controller.operator_disable(name, reason)
+
+    def operator_enable(self, name: BackendName, reason: str) -> None:
+        self.controller.operator_enable(name, reason)
+
+    def set_fault(self, request: FaultRequest) -> BackendConfig:
+        """Change a mock model's simulated fault rates while it runs."""
+        backend = self.backend(request.model)
+        if not isinstance(backend, MockBackend):
+            raise NotAMock(request.model)
+        config = backend.config
+        if request.fault == "none":
+            config.error_rate = config.fault_rate = config.label_swap_rate = 0
+        elif request.fault == "outage":
+            config.error_rate = request.rate
+        elif request.fault == "bad_format":
+            config.fault_rate = request.rate
+        else:
+            config.label_swap_rate = request.rate
+        logger.info(
+            "Operator set fault %s=%s on %s", request.fault, request.rate, request.model
+        )
+        return config
 
     async def save_interventions(self) -> None:
         """Move the controller's new interventions to the store, in order."""

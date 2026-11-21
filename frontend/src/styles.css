@@ -566,7 +566,8 @@ p {
 }
 
 .pill-good,
-.action-re-enabled {
+.action-re-enabled,
+.action-operator_enabled {
   background: var(--good-bg);
   color: var(--good-ink);
 }
@@ -577,7 +578,8 @@ p {
 }
 
 .pill-bad,
-.action-disabled {
+.action-disabled,
+.action-operator_disabled {
   background: var(--bad-bg);
   color: var(--bad);
 }

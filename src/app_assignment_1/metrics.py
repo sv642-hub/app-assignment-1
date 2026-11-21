@@ -6,18 +6,19 @@ reason, action). Never add message text, replies or request IDs as labels.
 """
 
 from collections.abc import Iterable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, get_args
 
 from prometheus_client import CollectorRegistry, Counter, Histogram, generate_latest
 from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily, Metric
 from prometheus_client.registry import Collector
 
+from app_assignment_1.schemas import InterventionAction
 from app_assignment_1.semantic import SAMPLES
 
 if TYPE_CHECKING:
     from app_assignment_1.service import Gateway
 
-ACTIONS = ("disabled", "re-enabled", "kept_last_backend")
+ACTIONS = get_args(InterventionAction)
 JEV_FALLBACK_REASONS = (
     "jev_timeout",
     "jev_error",

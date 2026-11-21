@@ -47,6 +47,18 @@ export const degradedHealth = {
   ],
 };
 
+export const operatorHeldHealth = {
+  ...healthyHealth,
+  status: "degraded",
+  monitor: [
+    { name: "qwen3-1.7b", samples: 0, format_failures: 0, call_errors: 0, failure_rate: null, disabled_by_controller: false, disabled_by_operator: true, disabled_for_seconds: null },
+    { name: "qwen3-4b", samples: 12, format_failures: 0, call_errors: 0, failure_rate: 0, disabled_by_controller: false, disabled_by_operator: false, disabled_for_seconds: null },
+  ],
+  interventions: [
+    { at: "2026-11-20T14:19:51Z", backend: "qwen3-1.7b", action: "operator_disabled", reason: "draining for a deploy" },
+  ],
+};
+
 export const outageHealth = {
   ...healthyHealth,
   status: "degraded",

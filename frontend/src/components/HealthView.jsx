@@ -2,6 +2,8 @@ const ACTION_LABELS = {
   disabled: "disabled",
   "re-enabled": "re-enabled",
   kept_last_backend: "kept last backend",
+  operator_disabled: "disabled by operator",
+  operator_enabled: "enabled by operator",
 };
 
 function percent(value) {
@@ -34,7 +36,7 @@ export function describeModels(health) {
   const monitors = Object.fromEntries(health.monitor.map((m) => [m.name, m]));
   const models = health.backends.map((b) => {
     const m = monitors[b.name] ?? { samples: 0, format_failures: 0, call_errors: 0, failure_rate: null };
-    const usable = b.available && !m.disabled_by_controller;
+    const usable = b.available && !m.disabled_by_controller && !m.disabled_by_operator;
     return { ...b, ...m, usable };
   });
   return models.map((model) => {
@@ -99,7 +101,9 @@ function bannerFor(health, models) {
   }
   const up = models.find((m) => m.usable);
   const parts = down.map((m) =>
-    m.disabled_by_controller
+    m.disabled_by_operator
+      ? `${m.name} was disabled by an operator. ${m.route[0].toUpperCase() + m.route.slice(1)} requests are going to ${up.name} until an operator enables it.`
+      : m.disabled_by_controller
       ? `${m.name} was disabled by the controller. ${m.route[0].toUpperCase() + m.route.slice(1)} requests are going to ${up.name} until the cooldown ends.`
       : `${m.name} is marked unavailable in the config. Its requests are going to ${up.name}.`,
   );
@@ -192,8 +196,11 @@ function JevCard({ breaker }) {
 
 function ModelCard({ model, threshold }) {
   const rate = model.failure_rate ?? 0;
-  const status = model.disabled_by_controller ? "Disabled" : model.available ? "Serving" : "Unavailable";
-  const extra = model.disabled_by_controller
+  const disabled = model.disabled_by_controller || model.disabled_by_operator;
+  const status = disabled ? "Disabled" : model.available ? "Serving" : "Unavailable";
+  const extra = model.disabled_by_operator
+    ? ["Re-enables", "when an operator enables it"]
+    : model.disabled_by_controller
     ? ["Re-enables in", `${Math.ceil(model.disabled_for_seconds ?? 0)} s`]
     : model.covering.length
       ? ["Also serving", `${model.covering.join(", ")} (rerouted)`]

@@ -57,7 +57,7 @@ components:
     items:
       - built: "POST /v1/chat, GET /v1/requests/{id}, GET /v1/health (recent requests, usage), /docs"
       - built: GET /metrics, internal (not via Caddy)
-      - todo: Operator routes and operator token
+      - built: Operator token; disable or enable a model
 
   router_client:
     title: Router client
@@ -98,7 +98,7 @@ components:
     items:
       - built: Outage, bad format and label swap, by Compose override
       - todo: Bad prompt
-      - todo: POST /v1/faults with operator token
+      - built: POST /v1/faults with operator token
 
   jev_intent:
     title: Jev intent question
@@ -246,8 +246,8 @@ layout:
     team_app: [30, 340, 215, 110]
     proxy: [300, 190, 270, 135]
     frontend: [300, 345, 270, 285]
-    api_routes: [620, 240, 340, 175]
-    router_client: [965, 240, 340, 175]
+    api_routes: [620, 240, 340, 180]
+    router_client: [965, 240, 340, 180]
     canary_splitter: [620, 425, 340, 150]
     backend_client: [965, 425, 340, 150]
     format_validation: [620, 585, 340, 160]
