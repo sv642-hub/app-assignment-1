@@ -294,9 +294,7 @@ def test_real_vllm_clients_are_reused_and_closed(
         clients.append(client)
         return client
 
-    monkeypatch.setattr(
-        "app_assignment_1.real_backends.httpx.AsyncClient", make_client
-    )
+    monkeypatch.setattr("app_assignment_1.real_backends.httpx.AsyncClient", make_client)
 
     configured = Settings(
         **{
