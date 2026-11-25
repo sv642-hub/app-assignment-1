@@ -1,0 +1,14 @@
+# Real Qwen: the gateway calls the two vLLM servers on the GPU host.
+# The vLLM key stays in ~/.vllm_api_key on the CPU instance and is never
+# written to an env file; it is passed in from the shell when Compose starts:
+#
+#   APP_VLLM_API_KEY="$(cat ~/.vllm_api_key)" \
+#     docker compose -f compose.yml -f compose.real.yml up -d --wait
+#
+# APP_VLLM_SMALL_BASE_URL and APP_VLLM_LARGE_BASE_URL (not secret) go in
+# env/.env. Compose refuses to start without the key.
+services:
+  gateway:
+    environment:
+      APP_PROVIDER_MODE: real
+      APP_VLLM_API_KEY: ${APP_VLLM_API_KEY:?set APP_VLLM_API_KEY from ~/.vllm_api_key first}
