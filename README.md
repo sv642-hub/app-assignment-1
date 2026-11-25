@@ -551,7 +551,7 @@ On the real models, from the CPU instance (the GPU servers accept no other host)
 export VLLM_API_KEY=$(cat ~/.vllm_api_key)
 uv run python scripts/run_eval.py run --target small --base-url http://GPU_PRIVATE_IP:8001 --out eval/test-small.jsonl
 uv run python scripts/run_eval.py run --target large --base-url http://GPU_PRIVATE_IP:8002 --out eval/test-large.jsonl
-uv run python scripts/run_eval.py score eval/test-small.jsonl eval/test-large.jsonl
+uv run python scripts/run_eval.py score eval/test-small.jsonl eval/test-large.jsonl --top 10
 uv run python scripts/run_eval.py oracle eval/test-small.jsonl eval/test-large.jsonl
 ```
 
@@ -560,6 +560,8 @@ How it scores, following the integration plan:
 - **Macro F1** averages F1 over the Banking77 intents with at least one gold message in the run; `unknown` is never one of them. On the full official test set that is all 77. On `--limit`, the dev split or the fresh set, the classes depend only on the gold labels, so every target on the same rows is averaged over the same classes, and a wrong guess outside the gold set can't score below answering `unknown`. `score --json` gives the count as `macro_f1_classes`.
 - **Per class:** `score --json` adds recall per intent. With 40 messages per intent in the official test set, one miss moves a class by 2.5 points.
 - Accuracy comes with a 95% Wilson interval, so small runs (`--limit`) show their uncertainty.
+- **What the format check cost.** For the small and large targets, `score` also prints the format failures by type, the intent accuracy before the check (the model's own intent, as if every reply passed), and how many right intents the check turned into the apology. The gateway target only returns the checked intent, so it shows the failures by type alone.
+- **Where it goes wrong:** `score --top N` lists the N intents with the lowest recall and the N most common mistakes, as gold intent and the model's own answer. `score --json` includes the top 20 mistakes (or `--top N`).
 
 Results are JSONL: a `run` line with the dataset's SHA-256, the target, the model, `option_set_version` and the git commit, then one line per message keyed by its row in the dataset. They hold **no message or reply text**. A stopped run continues when you rerun the same command from the same git commit; a different commit is refused, so one file never mixes two versions of the code. A cut-off last line (after a kill or a full disk) is dropped and that message sent again.
 
