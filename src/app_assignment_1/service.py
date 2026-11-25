@@ -113,11 +113,11 @@ class Gateway:
         clock: Callable[[], float] = time.monotonic,
         store: Store | None = None,
     ):
-        if settings.provider_mode == "real":
+        if settings.provider_mode == "real" and backends is None:
             raise ValueError(
-                "APP_PROVIDER_MODE=real is not built yet; the Jev and Qwen clients "
-                "come in later PRs"
+                "APP_PROVIDER_MODE=real requires explicitly supplied backends"
             )
+        
         self.router = router
         # Test doubles may leave these out; both real routers set them.
         self.jev_mocked: bool = getattr(router, "mocked", True)

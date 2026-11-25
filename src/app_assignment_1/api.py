@@ -4,10 +4,13 @@ from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from uuid import UUID
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from prometheus_client import CONTENT_TYPE_LATEST
+from pydantic import TypeAdapter
 
 from app_assignment_1.auth import require_operator
+from app_assignment_1.backends import Backend
 from app_assignment_1.config import Settings, get_settings
 from app_assignment_1.jev import TypeSafeJevRouter, create_jev_http_client
 from app_assignment_1.labels import load_labels
@@ -22,6 +25,7 @@ from app_assignment_1.schemas import (
     HealthResponse,
     JevBreakerStatus,
     OperatorRequest,
+    PolicyCard,
     RecentRequest,
 )
 from app_assignment_1.service import (
@@ -32,6 +36,7 @@ from app_assignment_1.service import (
     NotAMock,
 )
 from app_assignment_1.store import Store, create_store
+from app_assignment_1.vllm import VLLMBackend, build_system_prompt
 
 
 def create_app(
@@ -56,7 +61,47 @@ def create_app(
                 )
             else:
                 chosen = MockJevRouter(configured.intents_path)
-            gateway = Gateway(configured, chosen, store=opened)
+            backends: list[Backend] | None = None
+            if configured.provider_mode == "real":
+                labels = load_labels(configured.labels_path)
+                cards = TypeAdapter(dict[str, PolicyCard]).validate_json(
+                    configured.policy_cards_path.read_text()
+                )
+                configs = TypeAdapter(list[BackendConfig]).validate_json(
+                    configured.backends_path.read_text()
+                )
+                prompt = build_system_prompt(labels, cards)
+                key = configured.vllm_api_key
+                assert key is not None
+                token = key.get_secret_value().strip()
+
+                urls = {
+                    "standard": configured.vllm_small_base_url,
+                    "complex": configured.vllm_large_base_url,
+                }
+                backends = []
+                for config in configs:
+                    url = urls[config.route]
+                    assert url is not None
+                    http_client = await stack.enter_async_context(
+                        httpx.AsyncClient(
+                            base_url=str(url),
+                            headers={"Authorization": f"Bearer {token}"},
+                            timeout=configured.request_deadline_seconds,
+                            trust_env=False,
+                        )
+                    )
+                    backends.append(
+                        VLLMBackend(
+                            config,
+                            http_client,
+                            model=config.name,
+                            system_prompt=prompt,
+                            labels=labels,
+                        )
+                    )
+
+            gateway = Gateway(configured, chosen, backends=backends, store=opened)
             await opened.open()
             app.state.gateway = gateway
             app.state.operator_token = configured.operator_token

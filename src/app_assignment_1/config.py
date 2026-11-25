@@ -153,25 +153,33 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def real_mode_needs_a_jev_key(self) -> "Settings":
-        for name, mode in (
-            ("jev_mode", self.jev_mode),
-            ("provider_mode", self.provider_mode),
+        if self.jev_mode == "real" and (
+            self.jev_api_key is None or not self.jev_api_key.get_secret_value().strip()
         ):
-            if mode == "real" and (
-                self.jev_api_key is None or not self.jev_api_key.get_secret_value()
-            ):
-                raise ValueError(f"{name} 'real' needs APP_JEV_API_KEY")
+            raise ValueError("jev_mode 'real' needs APP_JEV_API_KEY")
         return self
 
     @model_validator(mode="after")
     def real_mode_needs_https(self) -> "Settings":
-        # The client sends the API key with every request.
-        for name, mode in (
-            ("jev_mode", self.jev_mode),
-            ("provider_mode", self.provider_mode),
+        if self.jev_mode == "real" and self.jev_base_url.scheme != "https":
+            raise ValueError("jev_mode 'real' needs an https APP_JEV_BASE_URL")
+        return self
+
+    @model_validator(mode="after")
+    def real_provider_needs_vllm_settings(self) -> "Settings":
+        if self.provider_mode != "real":
+            return self
+
+        if self.vllm_small_base_url is None:
+            raise ValueError("provider_mode 'real' needs APP_VLLM_SMALL_BASE_URL")
+        if self.vllm_large_base_url is None:
+            raise ValueError("provider_mode 'real' needs APP_VLLM_LARGE_BASE_URL")
+        if (
+            self.vllm_api_key is None
+            or not self.vllm_api_key.get_secret_value().strip()
         ):
-            if mode == "real" and self.jev_base_url.scheme != "https":
-                raise ValueError(f"{name} 'real' needs an https APP_JEV_BASE_URL")
+            raise ValueError("provider_mode 'real' needs APP_VLLM_API_KEY")
+
         return self
 
 

@@ -228,3 +228,107 @@ def test_health_has_documented_response_model(settings):
         assert response["content"]["application/json"]["schema"]["$ref"].endswith(
             "/HealthResponse"
         )
+
+
+@pytest.mark.parametrize(
+    "message,intent,model,host",
+    [
+        (
+            "My card has not arrived",
+            "card_arrival",
+            "qwen3-1.7b",
+            "small.test",
+        ),
+        (
+            "I lost my card",
+            "lost_or_stolen_card",
+            "qwen3-4b",
+            "large.test",
+        ),
+    ],
+)
+def test_real_vllm_clients_are_reused_and_closed(
+    settings, monkeypatch, message, intent, model, host
+):
+    original_client = httpx.AsyncClient
+    clients = []
+    requests = []
+    cards = json.loads(settings.policy_cards_path.read_text())
+    facts = cards[intent]["facts"]
+
+    def handler(request):
+        assert request.method == "POST"
+        assert request.url.path == "/v1/chat/completions"
+        assert request.headers["Authorization"] == "Bearer test-vllm-key"
+
+        body = json.loads(request.content)
+        assert body["model"] == model
+        assert body["messages"][0]["role"] == "system"
+        assert "Allowed intents:" in body["messages"][0]["content"]
+        assert body["messages"][1]["role"] == "user"
+        assert body["response_format"]["type"] == "json_schema"
+        requests.append(request)
+
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "intent": intent,
+                                    "reply": " ".join(facts),
+                                    "policy_facts": facts,
+                                }
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    def make_client(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        client = original_client(*args, **kwargs)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr("app_assignment_1.api.httpx.AsyncClient", make_client)
+
+    configured = Settings(
+        **{
+            **settings.model_dump(),
+            "provider_mode": "real",
+            "jev_mode": "mock",
+            "jev_api_key": None,
+            "vllm_small_base_url": "http://small.test:8001",
+            "vllm_large_base_url": "http://large.test:8002",
+            "vllm_api_key": "test-vllm-key",
+        },
+        _env_file=None,
+    )
+
+    with TestClient(create_app(configured)) as client:
+        assert len(clients) == 2
+        assert {item.base_url.host for item in clients} == {
+            "small.test",
+            "large.test",
+        }
+        assert all(not item.is_closed for item in clients)
+
+        for _ in range(2):
+            response = client.post(
+                "/v1/chat",
+                json={"message": message},
+            )
+            assert response.status_code == 200
+            result = ChatResponse.model_validate(response.json())
+            assert result.intent == intent
+            assert result.trace.model == model
+
+        assert len(clients) == 2
+        assert len(requests) == 2
+        assert all(request.url.host == host for request in requests)
+
+    assert all(item.is_closed for item in clients)
