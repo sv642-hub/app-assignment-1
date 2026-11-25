@@ -247,7 +247,7 @@ layout:
   # Dashed hosts, solid groups and the testing band, drawn behind the boxes.
   areas:
     - {at: [22, 1345, 1956, 270], style: band, title: Testing and evaluation, note: "Smoke tests prove the parts connect; correctness and probe accuracy need offline evaluation"}
-    - {at: [270, 150, 1075, 1170], style: host, title: Jetstream2 CPU instance, note: "Compose runs proxy, gateway, postgres and prometheus: 4 of 6 planned services · host: Pavlos"}
+    - {at: [270, 150, 1075, 1170], style: host, title: Jetstream2 CPU instance, note: "Compose runs proxy, gateway, postgres and prometheus: 4 of 6 planned services · starts at boot · host: Pavlos"}
     - {at: [1395, 150, 420, 640], style: host, title: Jetstream2 GPU instance, note: "A100X-20C · Pavlos"}
     - {at: [605, 190, 715, 565], style: group, title: gateway, note: "FastAPI · :8000 · monitor state in memory · owner: Verness"}
     - {at: [605, 800, 715, 285], style: group, title: monitor, note: "Runs inside the gateway for now · owner: Sebastian"}
@@ -281,6 +281,7 @@ layout:
 
   notes:
     - {at: [1420, 672, 370], color: red, text: "One GPU host: once the gateway uses it, if it fails, both backends fail and the gateway returns 503."}
+    - {at: [1420, 752, 370], text: "Starts both servers at boot, in order."}
 
   # kind: live (works today), planned, async, control or probe.
   arrows:
