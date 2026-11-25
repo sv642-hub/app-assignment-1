@@ -680,9 +680,15 @@ class Gateway:
             and intent not in self.cards
         )
         if uncarded:
-            # The reply text is discarded, so it is not checked. Facts must be
-            # empty: there is no card to ground them.
-            format_errors = ["uncarded_policy_facts"] if facts else []
+            # Nothing the model wrote is shown: the reply becomes the fixed
+            # uncarded text and its facts are dropped, since no card grounds
+            # them. So leftover facts are not a format failure; in the #109
+            # test-set run they failed 36-39% of real replies, most with the
+            # right intent. They are counted on their own instead.
+            format_errors = []
+            if facts:
+                self.metrics.uncarded_facts_dropped.labels(backend.config.name).inc()
+                facts = []
             reply = UNCARDED_REPLY
         else:
             format_errors = check_reply(reply)

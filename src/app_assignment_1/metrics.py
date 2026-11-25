@@ -68,6 +68,16 @@ class GatewayMetrics:
             for sample in SAMPLES:
                 for traffic in ("own", "rerouted"):
                     self.semantic_samples.labels(backend.config.name, sample, traffic)
+        self.uncarded_facts_dropped = Counter(
+            "gateway_uncarded_facts_dropped",
+            "Replies for an intent with no policy card that listed policy facts "
+            "anyway. The facts are dropped and the fixed uncarded reply is shown, "
+            "so these pass the format check.",
+            ["model"],
+            registry=self.registry,
+        )
+        for backend in gateway.backends:
+            self.uncarded_facts_dropped.labels(backend.config.name)
         self.semantic_not_compared = Counter(
             "gateway_semantic_not_compared",
             "Replies that passed the format check but were not scored against "

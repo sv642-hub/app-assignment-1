@@ -146,6 +146,48 @@ def test_unknown_and_uncarded_replies_keep_their_sources(settings, servers, clie
         assert chat(client)["trace"]["reply_source"] == "unsupported_topic"
 
 
+def uncarded_with_facts() -> str:
+    # What the #109 run saw: an intent with no card, its facts list filled anyway.
+    return json.dumps(
+        {
+            "intent": "activate_my_card",
+            "reply": "To activate your card, open the app.",
+            "policy_facts": ["Cards are activated in the app."],
+        }
+    )
+
+
+def test_uncarded_replies_with_facts_pass_and_are_counted(settings, servers, clients):
+    servers[SMALL].content = uncarded_with_facts()
+    with TestClient(create_app(settings)) as client:
+        body = chat(client)
+        text = client.get("/metrics").text
+    assert body["intent"] == "activate_my_card"
+    assert body["policy_facts"] == []
+    assert "open the app" not in body["reply"]
+    trace = body["trace"]
+    assert (trace["reply_source"], trace["format_check"]) == (
+        "unsupported_topic",
+        "passed",
+    )
+    assert 'gateway_uncarded_facts_dropped_total{model="qwen3-1.7b"} 1.0' in text
+    assert 'gateway_uncarded_facts_dropped_total{model="qwen3-4b"} 0.0' in text
+
+
+def test_uncarded_facts_do_not_disable_a_model(settings, servers, clients):
+    # Before this fix, these replies were format failures, so a full window of
+    # them crossed the controller's 0.5 threshold and disabled a healthy model.
+    servers[SMALL].content = uncarded_with_facts()
+    with TestClient(create_app(settings)) as client:
+        for _ in range(settings.monitor_window):
+            assert chat(client)["trace"]["model"] == SMALL
+        small = {m["name"]: m for m in client.get("/v1/health").json()["monitor"]}[
+            SMALL
+        ]
+    assert small["format_failures"] == 0
+    assert small["disabled_by_controller"] is False
+
+
 def test_faults_are_refused_on_a_real_model(settings, servers, clients):
     with TestClient(create_app(settings)) as client:
         response = client.post(
