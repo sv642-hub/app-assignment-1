@@ -141,20 +141,18 @@ def test_env_templates_parse(path):
     assert settings.jev_api_key is None
 
 
-@pytest.mark.parametrize("mode", ["jev_mode", "provider_mode"])
-def test_real_mode_needs_a_key(mode):
-    with pytest.raises(ValidationError, match=f"{mode} 'real' needs APP_JEV_API_KEY"):
-        Settings(_env_file=None, **{mode: "real"})
+def test_real_jev_needs_a_key():
+    with pytest.raises(ValidationError, match="jev_mode 'real' needs APP_JEV_API_KEY"):
+        Settings(_env_file=None, jev_mode="real")
     with pytest.raises(ValidationError, match="APP_JEV_API_KEY"):
-        Settings(_env_file=None, jev_api_key="", **{mode: "real"})
+        Settings(_env_file=None, jev_api_key="", jev_mode="real")
 
 
-@pytest.mark.parametrize("mode", ["jev_mode", "provider_mode"])
-def test_real_mode_needs_an_https_jev_url(mode):
+def test_real_jev_needs_an_https_jev_url():
     with pytest.raises(ValidationError, match="https APP_JEV_BASE_URL"):
         Settings(
             _env_file=None,
-            **{mode: "real"},
+            jev_mode="real",
             jev_api_key="test-key",
             jev_base_url="http://api.example.com",
         )
@@ -167,10 +165,36 @@ def test_jev_output_price_is_not_a_setting():
         Settings(_env_file=None, jev_output_price_per_million_usd=1)
 
 
-def test_real_mode_is_rejected_until_the_clients_exist():
-    settings = Settings(_env_file=None, provider_mode="real", jev_api_key="test-key")
-    assert "test-key" not in repr(settings)
-    with pytest.raises(ValueError, match="not built yet"):
+VLLM = {
+    "vllm_small_base_url": "http://10.0.0.5:8001",
+    "vllm_large_base_url": "http://10.0.0.5:8002",
+    "vllm_api_key": "vllm-test-key",
+}
+
+
+@pytest.mark.parametrize(
+    ("missing", "message"),
+    [
+        ("vllm_small_base_url", "APP_VLLM_SMALL_BASE_URL"),
+        ("vllm_large_base_url", "APP_VLLM_LARGE_BASE_URL"),
+        ("vllm_api_key", "APP_VLLM_API_KEY"),
+    ],
+)
+def test_real_qwen_needs_both_urls_and_a_key(missing, message):
+    values = {k: v for k, v in VLLM.items() if k != missing}
+    with pytest.raises(ValidationError, match=message):
+        Settings(_env_file=None, provider_mode="real", **values)
+
+
+def test_real_qwen_does_not_need_a_jev_key():
+    settings = Settings(_env_file=None, provider_mode="real", **VLLM)
+    assert settings.jev_api_key is None
+    assert "vllm-test-key" not in repr(settings)
+
+
+def test_the_gateway_refuses_real_qwen_with_mock_backends():
+    settings = Settings(_env_file=None, provider_mode="real", **VLLM)
+    with pytest.raises(ValueError, match="needs the real vLLM backends"):
         Gateway(settings, MockJevRouter(settings.intents_path))
 
 

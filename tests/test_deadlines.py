@@ -63,6 +63,42 @@ def test_first_timeout_preserves_alternate_and_scores_correctly(alternate):
             assert response.json()["detail"] == "deadline_exceeded"
 
 
+@pytest.mark.parametrize("lone", ["small", "large"])
+def test_a_lone_model_timeout_gives_the_usual_503(lone):
+    # The other model is failure-disabled, so the selected model gets all the
+    # time and its timeout is a model failure. The other model's cooldown ends
+    # during that call, but no time is left for it. Nothing was cut short by
+    # the deadline, so this is the usual 503, not deadline_exceeded. With the
+    # large model selected, the small one comes back in the second pass.
+    settings = Settings(
+        _env_file=None,
+        jev_timeout_seconds=0.01,
+        request_deadline_seconds=0.3,
+        alternate_reserve_seconds=0.1,
+        # One word is enough for "complex", so "card" goes to the large model.
+        rule_router_complex_min_words=1 if lone == "large" else 20,
+    )
+
+    async def hung(message):
+        await asyncio.Event().wait()
+
+    with TestClient(create_app(settings, ImmediateRouter())) as client:
+        gateway = client.app.state.gateway
+        small, large = gateway.backends
+        on, off = (small, large) if lone == "small" else (large, small)
+        gateway.controller.disabled_until[off.config.name] = (
+            gateway.controller.clock() + 0.1
+        )
+        on.generate = hung
+        response = client.post("/v1/chat", json={"message": "card"})
+        assert response.status_code == 503
+        assert response.json()["detail"] == "No mock backend is available"
+        usage = {row["name"]: row for row in client.get("/v1/health").json()["usage"]}
+        assert usage[on.config.name]["failed_calls"] == 1
+        assert usage[on.config.name]["deadline_exceeded_calls"] == 0
+        assert usage[off.config.name]["attempted_calls"] == 0
+
+
 @pytest.mark.parametrize("disabled", ["selected", "alternate"])
 def test_only_usable_model_gets_the_full_remaining_time(disabled):
     # With the reserve held back, the only usable model would get 0.4 s and

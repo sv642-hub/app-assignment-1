@@ -4,6 +4,10 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# Alerts show in Prometheus at /alerts; there is no Alertmanager yet.
+rule_files:
+  - alerts.yml
+
 scrape_configs:
   - job_name: gateway
     metrics_path: /metrics
