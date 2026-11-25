@@ -557,7 +557,7 @@ uv run python scripts/run_eval.py oracle eval/test-small.jsonl eval/test-large.j
 
 How it scores, following the integration plan:
 - **Accuracy.** A failed call counts as wrong. A model called directly gets the gateway's format checks, so a reply that fails them counts as the fallback apology a customer would see, which carries `unknown`. `unknown` is wrong for a Banking77 message, and right only where the gold label is `unknown` (the fresh set has some).
-- **Macro F1** averages F1 over the Banking77 intents that appear in the run, as a gold label or a prediction (scikit-learn's default); `unknown` is never one of them. On the full official test set that is all 77. On `--limit`, the dev split or the fresh set, intents with no messages and no predictions are left out instead of adding a 0. `score --json` gives the count as `macro_f1_classes`.
+- **Macro F1** averages F1 over the Banking77 intents with at least one gold message in the run; `unknown` is never one of them. On the full official test set that is all 77. On `--limit`, the dev split or the fresh set, the classes depend only on the gold labels, so every target on the same rows is averaged over the same classes, and a wrong guess outside the gold set can't score below answering `unknown`. `score --json` gives the count as `macro_f1_classes`.
 - **Per class:** `score --json` adds recall per intent. With 40 messages per intent in the official test set, one miss moves a class by 2.5 points.
 - Accuracy comes with a 95% Wilson interval, so small runs (`--limit`) show their uncertainty.
 
