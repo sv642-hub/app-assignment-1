@@ -43,13 +43,18 @@ from app_assignment_1.service import (
     NotAMock,
     ReleaseNotSaved,
     ReleaseSaveUnknown,
+    ReleasesNotLoaded,
 )
 from app_assignment_1.store import Store, create_store
 
 UNKNOWN_SAVE = (
     "Could not confirm the release change was saved, so it was not made. The "
     "gateway saves the release it kept as a newer change once the store "
-    "answers, so a restart keeps it too"
+    "answers. Until then, a restart may serve the change"
+)
+NOT_LOADED = (
+    "The saved releases could not be read, so no release change can be made "
+    "yet; nothing changed. Try again once the store answers"
 )
 
 
@@ -224,7 +229,10 @@ def create_app(
         responses={
             404: {"description": "The model has no such version"},
             409: {"description": "The model already serves that version"},
-            503: {"description": "The change could not be saved, so it was not made"},
+            503: {
+                "description": "The change was not made: it could not be saved,"
+                " or the saved releases could not be read"
+            },
         },
     )
     async def deploy_release(
@@ -250,6 +258,8 @@ def create_app(
             ) from None
         except ReleaseSaveUnknown:
             raise HTTPException(503, UNKNOWN_SAVE) from None
+        except ReleasesNotLoaded:
+            raise HTTPException(503, NOT_LOADED) from None
 
     @app.post(
         "/v1/operator/models/{name}/rollback",
@@ -257,7 +267,10 @@ def create_app(
         dependencies=[Depends(require_operator)],
         responses={
             409: {"description": "The model has no version to roll back to"},
-            503: {"description": "The change could not be saved, so it was not made"},
+            503: {
+                "description": "The change was not made: it could not be saved,"
+                " or the saved releases could not be read"
+            },
         },
     )
     async def rollback_release(
@@ -278,6 +291,8 @@ def create_app(
             ) from None
         except ReleaseSaveUnknown:
             raise HTTPException(503, UNKNOWN_SAVE) from None
+        except ReleasesNotLoaded:
+            raise HTTPException(503, NOT_LOADED) from None
 
     @app.post(
         "/v1/faults",

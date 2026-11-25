@@ -63,7 +63,12 @@ class Store(Protocol):
         """The last `limit` interventions, oldest first."""
         ...
 
-    async def save_release_events(self, items: Sequence[ReleaseEvent]) -> None: ...
+    async def save_release_events(self, items: Sequence[ReleaseEvent]) -> None:
+        """Save release changes. Saving a change already saved is a no-op. A
+        different change saved under the same (backend, revision) is a
+        conflict: the others are saved, then RevisionTaken names the ones
+        that were not."""
+        ...
 
     async def recent_release_events(self, limit: int) -> list[ReleaseEvent]:
         """The last `limit` release changes, oldest first."""
@@ -71,8 +76,16 @@ class Store(Protocol):
 
     async def latest_release_events(self) -> list[ReleaseEvent]:
         """The release change with the highest revision for each model: what
-        it served last. Saving a change already saved is a no-op."""
+        it served last."""
         ...
+
+
+class RevisionTaken(Exception):
+    """Another release change was already saved under these revisions."""
+
+    def __init__(self, events: Sequence[ReleaseEvent]):
+        super().__init__(f"{len(events)} release revision(s) already taken")
+        self.events = list(events)
 
 
 class MemoryStore:
@@ -87,7 +100,7 @@ class MemoryStore:
         self.release_events: deque[ReleaseEvent] = deque(maxlen=RELEASE_EVENT_LIMIT)
         # Kept apart from the bounded history, so it never loses a model.
         self.latest_releases: dict[str, ReleaseEvent] = {}
-        self.saved_revisions: set[tuple[str, int]] = set()
+        self.saved_revisions: dict[tuple[str, int], ReleaseEvent] = {}
 
     async def open(self) -> None:
         pass
@@ -116,15 +129,21 @@ class MemoryStore:
         return list(self.interventions)[-limit:] if limit > 0 else []
 
     async def save_release_events(self, items: Sequence[ReleaseEvent]) -> None:
+        taken = []
         for item in items:
             key = (item.backend, item.revision)
-            if key in self.saved_revisions:
-                continue  # already saved, as ON CONFLICT DO NOTHING
-            self.saved_revisions.add(key)
+            saved = self.saved_revisions.get(key)
+            if saved is not None:
+                if saved != item:
+                    taken.append(item)
+                continue
+            self.saved_revisions[key] = item
             self.release_events.append(item)
             latest = self.latest_releases.get(item.backend)
             if latest is None or item.revision > latest.revision:
                 self.latest_releases[item.backend] = item
+        if taken:
+            raise RevisionTaken(taken)
 
     async def recent_release_events(self, limit: int) -> list[ReleaseEvent]:
         return list(self.release_events)[-limit:] if limit > 0 else []
@@ -277,6 +296,7 @@ class PostgresStore:
     async def save_release_events(self, items: Sequence[ReleaseEvent]) -> None:
         if not items:
             return
+        taken = []
         async with self.pool.connection() as conn:
             async with conn.cursor() as cur:
                 await cur.executemany(
@@ -285,6 +305,7 @@ class PostgresStore:
                         from_version, rollback_target, actor, reason, revision)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (backend, revision) DO NOTHING
+                    RETURNING backend
                     """,
                     [
                         (
@@ -300,7 +321,28 @@ class PostgresStore:
                         )
                         for e in items
                     ],
+                    returning=True,
                 )
+                written = []
+                while True:
+                    written.append(await cur.fetchone() is not None)
+                    if not cur.nextset():
+                        break
+                for item, wrote in zip(items, written, strict=True):
+                    if wrote:
+                        continue
+                    # A row was already there: the same change saved before
+                    # is fine; a different one is a conflict.
+                    await cur.execute(
+                        f"SELECT {RELEASE_COLUMNS} FROM model_releases"
+                        " WHERE backend = %s AND revision = %s",
+                        (item.backend, item.revision),
+                    )
+                    row = await cur.fetchone()
+                    if row is None or _release_event(row) != item:
+                        taken.append(item)
+        if taken:
+            raise RevisionTaken(taken)
 
     async def recent_release_events(self, limit: int) -> list[ReleaseEvent]:
         async with self.pool.connection() as conn:

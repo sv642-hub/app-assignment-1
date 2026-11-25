@@ -830,12 +830,17 @@ def test_an_unconfirmed_save_agrees_live_and_after_a_restart(tmp_path):
     fails. The operator is told the change was not made; the running gateway
     keeps the old release; and once the store answers, a restart keeps it too,
     though the store holds the disputed change."""
-    store = LateStore(readable=False)
+    store = LateStore()
     settings = make_settings(tmp_path, store_timeout_seconds=0.1)
     with TestClient(create_app(settings, store=store)) as client:
+        store.readable = False  # after the startup read
         response = deploy(client, "v2-bad-format")
         assert response.status_code == 503
-        assert "so it was not made" in response.json()["detail"]
+        detail = response.json()["detail"]
+        assert "so it was not made" in detail
+        # Review 4: the kept release is only in memory until the store
+        # answers, so the answer says a restart may serve the change.
+        assert "Until then, a restart may serve the change" in detail
         assert releases(client)[SMALL]["version"] == "base"
         # The disputed change is in the store, below the kept release.
         saved = [(e.version, e.revision) for e in store.release_events]
@@ -893,3 +898,66 @@ def test_a_rollback_chat_finishes_during_another_models_operator_save(tmp_path):
         assert (await pending).version == "v2-good"
 
     asyncio.run(main())
+
+
+class UnreadableStore(MemoryStore):
+    """Release reads fail while `readable` is False."""
+
+    def __init__(self) -> None:
+        super().__init__(100)
+        self.readable = True
+
+    async def latest_release_events(self) -> list[ReleaseEvent]:
+        if not self.readable:
+            raise ConnectionError("database down")
+        return await super().latest_release_events()
+
+
+def test_release_changes_wait_for_the_saved_releases_to_be_read(tmp_path):
+    """Review 4 of #107, item 1: when the startup read fails, the revision
+    counter is unknown. A change numbered from 0 would reuse a saved
+    revision, so changes are refused until a read works; then the saved
+    release is served and the change is numbered after it."""
+    store = UnreadableStore()
+    settings = make_settings(tmp_path)
+    with TestClient(create_app(settings, store=store)) as client:
+        assert deploy(client, "v2-good").status_code == 200
+    store.readable = False
+    with TestClient(create_app(settings, store=store)) as client:
+        assert releases(client)[SMALL]["version"] == "base"
+        response = deploy(client, "v2-label-swap")
+        assert response.status_code == 503
+        assert "could not be read" in response.json()["detail"]
+        assert rollback(client).status_code == 503
+        store.readable = True
+        response = deploy(client, "v2-label-swap")
+        assert response.status_code == 200
+        assert response.json()["rollback_target"] == "base"
+        live = releases(client)[SMALL]["version"]
+    assert live == "v2-label-swap"
+    with TestClient(create_app(settings, store=store)) as client:
+        assert releases(client)[SMALL]["version"] == live
+    latest = asyncio.run(store.latest_release_events())
+    assert [(e.version, e.revision) for e in latest] == [("v2-label-swap", 2)]
+
+
+def test_a_revision_another_gateway_took_is_not_a_success(tmp_path):
+    """Review 4 of #107, item 1: two gateways on one store, as in a rolling
+    restart, each count revisions. The second gateway's change under a taken
+    revision is refused, and its next one is numbered after it."""
+    store = MemoryStore(100)
+    settings = make_settings(tmp_path)
+    with (
+        TestClient(create_app(settings, store=store)) as first,
+        TestClient(create_app(settings, store=store)) as second,
+    ):
+        assert deploy(first, "v2-good").status_code == 200
+        response = deploy(second, "v2-label-swap")
+        assert response.status_code == 503
+        assert "nothing changed" in response.json()["detail"]
+        assert releases(second)[SMALL]["version"] == "base"
+        assert deploy(second, "v2-label-swap").status_code == 200
+    with TestClient(create_app(settings, store=store)) as client:
+        assert releases(client)[SMALL]["version"] == "v2-label-swap"
+    saved = [(e.version, e.revision) for e in store.release_events]
+    assert saved == [("v2-good", 1), ("v2-label-swap", 2)]

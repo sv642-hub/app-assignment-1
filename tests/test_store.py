@@ -33,6 +33,7 @@ from app_assignment_1.store import (
     MIGRATIONS,
     MemoryStore,
     PostgresStore,
+    RevisionTaken,
     Store,
     create_store,
     migrate,
@@ -564,6 +565,26 @@ def test_the_highest_revision_wins_and_repeats_are_ignored(
         await store.save_release_events([newer])  # a retried write
         assert await store.latest_release_events() == [newer]
         assert len(await store.recent_release_events(10)) == 2
+
+    run(make_store(), body)
+
+
+def test_a_different_change_under_a_saved_revision_is_a_conflict(
+    make_store: MakeStore,
+) -> None:
+    """Review 4 of #107: a write that the unique revision skips is reported,
+    not counted as saved. The rest of the batch is saved."""
+    saved = release_event(0, "qwen3-1.7b", "deployed", "v2-good", revision=1)
+    clash = release_event(1, "qwen3-1.7b", "deployed", "v2-label-swap", revision=1)
+    other = release_event(2, "qwen3-4b", "deployed", "v2-good", revision=1)
+
+    async def body(store: Store) -> None:
+        await store.save_release_events([saved])
+        with pytest.raises(RevisionTaken) as taken:
+            await store.save_release_events([clash, other])
+        assert taken.value.events == [clash]
+        latest = await store.latest_release_events()
+        assert sorted(latest, key=lambda e: e.backend) == [saved, other]
 
     run(make_store(), body)
 

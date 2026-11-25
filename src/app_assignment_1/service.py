@@ -46,7 +46,7 @@ from app_assignment_1.schemas import (
     Trace,
 )
 from app_assignment_1.semantic import SemanticMonitor, score
-from app_assignment_1.store import MemoryStore, Store
+from app_assignment_1.store import MemoryStore, RevisionTaken, Store
 from app_assignment_1.vllm import BackendCallError, BackendOutputError
 
 logger = logging.getLogger(__name__)
@@ -106,8 +106,13 @@ class ReleaseNotSaved(Exception):
 
 class ReleaseSaveUnknown(Exception):
     """The save failed and could not be read back. The change was not made;
-    the release the model kept waits to be saved as a newer change, so a
-    restart after that keeps it too."""
+    the release the model kept waits to be saved as a newer change. Until
+    that save works, a restart may serve the change."""
+
+
+class ReleasesNotLoaded(Exception):
+    """The saved releases could not be read, so the next revision is unknown
+    and no release change can be made yet."""
 
 
 # How often an operator change is planned again when the controller changes
@@ -245,6 +250,9 @@ class Gateway:
         self.releases.on_change.append(self._release_changed)
         # One operator release change at a time. The chat path never takes it.
         self.release_lock = asyncio.Lock()
+        # Whether the saved releases have been read. Until then the revision
+        # counter is unknown, so operator release changes are refused.
+        self.releases_loaded = False
         self.metrics = GatewayMetrics(self)
 
     def _release_changed(self, event: ReleaseEvent) -> None:
@@ -373,6 +381,12 @@ class Gateway:
         """One operator change at a time (release_lock). Only operators take
         that lock: chats never wait for an operator's store write."""
         async with self.release_lock:
+            if not self.releases_loaded:
+                # The startup read failed: try it again now, since a change
+                # numbered without it could reuse a saved revision.
+                await self.restore_releases()
+                if not self.releases_loaded:
+                    raise ReleasesNotLoaded
             # A cancel, such as a client disconnect, waits for the whole
             # change, so a saved change is never left unapplied.
             await self._finish(self._plan_save_apply(name, plan), hold=True)
@@ -415,12 +429,24 @@ class Gateway:
         back: if the store has it, the change goes ahead. Otherwise the change
         is not made, and the release the model kept is queued as a newer
         change, so even a write that lands late can't win a restart. Raises
-        ReleaseNotSaved, or ReleaseSaveUnknown if the read-back fails too."""
+        ReleaseNotSaved, or ReleaseSaveUnknown if the read-back fails too.
+
+        A different change already saved under the same revision, such as one
+        from another gateway on the same store, is a conflict: the change is
+        not made, and the counter moves past the saved revisions."""
         try:
             await asyncio.wait_for(
                 self.store.save_release_events([event]), self.store_timeout
             )
             return
+        except RevisionTaken:
+            logger.warning(
+                "Release revision %s of %s is already taken",
+                event.revision,
+                event.backend,
+            )
+            await self._skip_saved_revisions()
+            raise ReleaseNotSaved from None
         except Exception as exc:
             logger.warning("Could not save release change (%s)", type(exc).__name__)
         try:
@@ -446,9 +472,25 @@ class Gateway:
             f"change to {event.version} not confirmed as saved; kept {current}",
         )
 
+    async def _skip_saved_revisions(self) -> None:
+        """Move each model's revision counter past what the store holds."""
+        try:
+            latest = await asyncio.wait_for(
+                self.store.latest_release_events(), self.store_timeout
+            )
+        except Exception as exc:
+            logger.warning("Could not read releases (%s)", type(exc).__name__)
+            return
+        for saved in latest:
+            if saved.backend in self.releases.revision:
+                self.releases.revision[saved.backend] = max(
+                    self.releases.revision[saved.backend], saved.revision
+                )
+
     async def restore_releases(self) -> None:
         """At startup: serve the release each model had before the restart. A
-        store problem is logged and every model starts on base."""
+        store problem is logged, every model starts on base, and operator
+        release changes are refused until a later read works."""
         try:
             latest = await asyncio.wait_for(
                 self.store.latest_release_events(), self.store_timeout
@@ -457,6 +499,7 @@ class Gateway:
             logger.warning("Could not load releases (%s)", type(exc).__name__)
             return
         self.releases.restore(latest)
+        self.releases_loaded = True
 
     def set_jev_fault(self, request: JevFaultRequest) -> JevFaultConfig:
         """Change the mock Jev router's simulated faults while it runs."""
@@ -489,6 +532,12 @@ class Gateway:
             try:
                 await asyncio.wait_for(
                     self.store.save_release_events(events), self.store_timeout
+                )
+            except RevisionTaken as exc:
+                # The others were saved. Putting these back would fail forever.
+                logger.warning(
+                    "Dropped %d release change(s) whose revision was taken",
+                    len(exc.events),
                 )
             except Exception as exc:
                 self.releases.unsaved = events + self.releases.unsaved
