@@ -13,7 +13,7 @@ import asyncio
 import logging
 import os
 import time
-from collections.abc import Awaitable, Callable, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -21,19 +21,25 @@ from uuid import UUID, uuid4
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
-from psycopg import sql
 from pydantic import ValidationError
 
 from app_assignment_1.api import create_app
 from app_assignment_1.config import PUBLIC_DATABASE_PASSWORD, Settings
 from app_assignment_1.records import JevAssessment
 from app_assignment_1.router import MockJevRouter
-from app_assignment_1.schemas import ChatResponse, Intervention, MonitorSample, Trace
+from app_assignment_1.schemas import (
+    ChatResponse,
+    Intervention,
+    MonitorSample,
+    ReleaseEvent,
+    Trace,
+)
 from app_assignment_1.service import Gateway
 from app_assignment_1.store import (
     MIGRATIONS,
     MemoryStore,
     PostgresStore,
+    RevisionTaken,
     Store,
     create_store,
     migrate,
@@ -41,23 +47,6 @@ from app_assignment_1.store import (
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 MakeStore = Callable[..., Store]
-
-
-@pytest.fixture
-def postgres_url() -> Iterator[str]:
-    if not DATABASE_URL:
-        pytest.skip("Set TEST_DATABASE_URL to run the Postgres store tests")
-    schema = f"test_{uuid4().hex[:12]}"
-    with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
-        conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
-    sep = "&" if "?" in DATABASE_URL else "?"
-    try:
-        yield f"{DATABASE_URL}{sep}options=-csearch_path%3D{schema}"
-    finally:
-        with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
-            conn.execute(
-                sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema))
-            )
 
 
 @pytest.fixture(params=["memory", "postgres"])
@@ -568,6 +557,44 @@ def test_monitor_samples_keep_the_newest_per_window(make_store: MakeStore) -> No
     run(make_store(), body)
 
 
+def release_event(
+    minute: int, backend: str, action: str, version: str, revision: int = 0
+) -> ReleaseEvent:
+    return ReleaseEvent(
+        at=datetime(2026, 11, 23, 12, minute, tzinfo=UTC),
+        backend=backend,  # type: ignore[arg-type]
+        action=action,  # type: ignore[arg-type]
+        version=version,
+        from_version="base" if action != "confirmed" else None,
+        rollback_target="base" if action == "deployed" else None,
+        actor="operator",
+        reason=f"step {minute}",
+        revision=revision or minute + 1,
+    )
+
+
+def test_release_events_keep_order_and_the_latest_per_model(
+    make_store: MakeStore,
+) -> None:
+    events = [
+        release_event(0, "qwen3-1.7b", "deployed", "v2-good"),
+        release_event(1, "qwen3-4b", "deployed", "v2-good"),
+        release_event(2, "qwen3-1.7b", "rolled_back", "base"),
+    ]
+
+    async def body(store: Store) -> None:
+        assert await store.latest_release_events() == []
+        await store.save_release_events(events[:2])
+        await store.save_release_events(events[2:])
+        await store.save_release_events([])
+        assert await store.recent_release_events(10) == events
+        assert await store.recent_release_events(2) == events[1:]
+        latest = await store.latest_release_events()
+        assert sorted(latest, key=lambda e: e.backend) == [events[2], events[1]]
+
+    run(make_store(), body)
+
+
 def test_a_restarted_app_resumes_from_postgres(postgres_url: str) -> None:
     settings = Settings(
         _env_file=None,
@@ -613,3 +640,69 @@ def test_latest_operator_actions_per_model(make_store: MakeStore) -> None:
         assert await store.latest_operator_actions() == [items[0], items[2]]
 
     run(make_store(), body)
+
+
+def test_the_highest_revision_wins_and_repeats_are_ignored(
+    make_store: MakeStore,
+) -> None:
+    older = release_event(0, "qwen3-1.7b", "deployed", "v2-good", revision=1)
+    newer = release_event(1, "qwen3-1.7b", "rolled_back", "base", revision=2)
+
+    async def body(store: Store) -> None:
+        # Written newest first, as a late write can land.
+        await store.save_release_events([newer])
+        await store.save_release_events([older])
+        await store.save_release_events([newer])  # a retried write
+        assert await store.latest_release_events() == [newer]
+        assert len(await store.recent_release_events(10)) == 2
+
+    run(make_store(), body)
+
+
+def test_a_different_change_under_a_saved_revision_is_a_conflict(
+    make_store: MakeStore,
+) -> None:
+    """Review 4 of #107: a write that the unique revision skips is reported,
+    not counted as saved. The rest of the batch is saved."""
+    saved = release_event(0, "qwen3-1.7b", "deployed", "v2-good", revision=1)
+    clash = release_event(1, "qwen3-1.7b", "deployed", "v2-label-swap", revision=1)
+    other = release_event(2, "qwen3-4b", "deployed", "v2-good", revision=1)
+
+    async def body(store: Store) -> None:
+        await store.save_release_events([saved])
+        with pytest.raises(RevisionTaken) as taken:
+            await store.save_release_events([clash, other])
+        assert taken.value.events == [clash]
+        latest = await store.latest_release_events()
+        assert sorted(latest, key=lambda e: e.backend) == [saved, other]
+
+    run(make_store(), body)
+
+
+def test_postgres_release_survives_a_restart(postgres_url: str, tmp_path) -> None:
+    catalog = tmp_path / "releases.json"
+    catalog.write_text(
+        '{"qwen3-1.7b": {"v2-bad-format": '
+        '{"description": "Bad", "changes": {"fault_rate": 1}}}}'
+    )
+    settings = Settings(
+        _env_file=None,
+        releases_path=catalog,
+        operator_token="operator-token-for-tests-only-0123456789",
+    )
+    auth = {"Authorization": "Bearer operator-token-for-tests-only-0123456789"}
+    url = "/v1/operator/models/qwen3-1.7b/release"
+
+    def app() -> TestClient:
+        store = PostgresStore(postgres_url, 100, connect_timeout=10)
+        return TestClient(
+            create_app(settings, MockJevRouter(settings.intents_path), store=store)
+        )
+
+    with app() as client:
+        assert client.post(url, json={"version": "v2-bad-format"}, headers=auth)
+    with app() as client:
+        health = client.get("/v1/health").json()
+        small = {r["name"]: r for r in health["releases"]}["qwen3-1.7b"]
+        assert (small["version"], small["status"]) == ("v2-bad-format", "watching")
+        assert [e["action"] for e in health["release_history"]] == ["deployed"]

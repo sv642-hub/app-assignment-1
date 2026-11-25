@@ -21,11 +21,17 @@ from psycopg_pool import AsyncConnectionPool
 
 from app_assignment_1.config import PUBLIC_DATABASE_PASSWORD, Settings
 from app_assignment_1.records import JevAssessment
-from app_assignment_1.schemas import ChatResponse, Intervention, MonitorSample
+from app_assignment_1.schemas import (
+    ChatResponse,
+    Intervention,
+    MonitorSample,
+    ReleaseEvent,
+)
 
 logger = logging.getLogger(__name__)
 MIGRATIONS = Path(__file__).parent / "migrations"
 INTERVENTION_LIMIT = 50
+RELEASE_EVENT_LIMIT = 200
 # Any fixed number works; it only has to be the same for every gateway process.
 MIGRATION_LOCK = 670001
 OPERATOR_ACTIONS = ("operator_disabled", "operator_enabled")
@@ -75,6 +81,30 @@ class Store(Protocol):
         monitor and traffic), oldest first."""
         ...
 
+    async def save_release_events(self, items: Sequence[ReleaseEvent]) -> None:
+        """Save release changes. Saving a change already saved is a no-op. A
+        different change saved under the same (backend, revision) is a
+        conflict: the others are saved, then RevisionTaken names the ones
+        that were not."""
+        ...
+
+    async def recent_release_events(self, limit: int) -> list[ReleaseEvent]:
+        """The last `limit` release changes, oldest first."""
+        ...
+
+    async def latest_release_events(self) -> list[ReleaseEvent]:
+        """The release change with the highest revision for each model: what
+        it served last."""
+        ...
+
+
+class RevisionTaken(Exception):
+    """Another release change was already saved under these revisions."""
+
+    def __init__(self, events: Sequence[ReleaseEvent]):
+        super().__init__(f"{len(events)} release revision(s) already taken")
+        self.events = list(events)
+
 
 class MemoryStore:
     """Bounded, process-local history. Resets when the gateway restarts."""
@@ -87,6 +117,10 @@ class MemoryStore:
         self.jev_assessments: deque[JevAssessment] = deque(maxlen=2 * limit)
         # About two per request: a failure sample and a semantic one.
         self.monitor_samples: deque[MonitorSample] = deque(maxlen=4 * limit)
+        self.release_events: deque[ReleaseEvent] = deque(maxlen=RELEASE_EVENT_LIMIT)
+        # Kept apart from the bounded history, so it never loses a model.
+        self.latest_releases: dict[str, ReleaseEvent] = {}
+        self.saved_revisions: dict[tuple[str, int], ReleaseEvent] = {}
 
     async def open(self) -> None:
         pass
@@ -134,19 +168,42 @@ class MemoryStore:
                 kept.append(sample)
         return kept[::-1]
 
+    async def save_release_events(self, items: Sequence[ReleaseEvent]) -> None:
+        taken = []
+        for item in items:
+            key = (item.backend, item.revision)
+            saved = self.saved_revisions.get(key)
+            if saved is not None:
+                if saved != item:
+                    taken.append(item)
+                continue
+            self.saved_revisions[key] = item
+            self.release_events.append(item)
+            latest = self.latest_releases.get(item.backend)
+            if latest is None or item.revision > latest.revision:
+                self.latest_releases[item.backend] = item
+        if taken:
+            raise RevisionTaken(taken)
+
+    async def recent_release_events(self, limit: int) -> list[ReleaseEvent]:
+        return list(self.release_events)[-limit:] if limit > 0 else []
+
+    async def latest_release_events(self) -> list[ReleaseEvent]:
+        return list(self.latest_releases.values())
+
 
 class PostgresStore:
     """Requests and interventions in Postgres, through psycopg 3 and plain SQL.
 
-    Requests are bounded by the same retention limit as the memory store. The
-    intervention log is kept in full; it grows by a few rows per cooldown. Jev
-    assessments are kept in full for the monitor: two rows per request.
+    Requests are kept in full unless `limit` is set, so they can be analysed
+    later. The intervention log is kept in full; it grows by a few rows per
+    cooldown. Jev assessments are kept in full: two rows per request.
     """
 
     def __init__(
         self,
         url: str,
-        limit: int,
+        limit: int | None = None,
         connect_timeout: float = 30,
         timeout: float = 2,
     ):
@@ -181,8 +238,9 @@ class PostgresStore:
             await conn.execute(
                 """
                 INSERT INTO requests
-                    (id, completed_at, route, model, intent, format_check, response)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    (id, completed_at, route, model, intent, format_check,
+                     settings_version, response)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     response.id,
@@ -191,6 +249,7 @@ class PostgresStore:
                     response.trace.model,
                     response.intent,
                     response.trace.format_check,
+                    response.trace.settings_version,
                     Jsonb(response.model_dump(mode="json")),
                 ),
             )
@@ -200,8 +259,9 @@ class PostgresStore:
                         """
                         INSERT INTO jev_assessments
                             (request_id, call_id, question, status, finished_at,
-                             mocked, option_set_version, choice, error_type, record)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                             mocked, option_set_version, choice, error_type,
+                             option_order, record)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """,
                         [
                             (
@@ -214,19 +274,21 @@ class PostgresStore:
                                 r.option_set_version,
                                 r.choice,
                                 r.error_type,
+                                r.option_order,
                                 Jsonb(r.model_dump(mode="json")),
                             )
                             for r in jev
                         ],
                     )
-            await conn.execute(
-                """
-                DELETE FROM requests WHERE seq <= (
-                    SELECT seq FROM requests ORDER BY seq DESC OFFSET %s LIMIT 1
+            if self.limit is not None:
+                await conn.execute(
+                    """
+                    DELETE FROM requests WHERE seq <= (
+                        SELECT seq FROM requests ORDER BY seq DESC OFFSET %s LIMIT 1
+                    )
+                    """,
+                    (self.limit,),
                 )
-                """,
-                (self.limit,),
-            )
 
     async def get_request(self, request_id: UUID) -> ChatResponse | None:
         async with self.pool.connection() as conn:
@@ -323,6 +385,93 @@ class PostgresStore:
             for at, model, monitor, outcome, traffic in rows
         ]
 
+    async def save_release_events(self, items: Sequence[ReleaseEvent]) -> None:
+        if not items:
+            return
+        taken = []
+        async with self.pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.executemany(
+                    """
+                    INSERT INTO model_releases (at, backend, action, version,
+                        from_version, rollback_target, actor, reason, revision)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (backend, revision) DO NOTHING
+                    RETURNING backend
+                    """,
+                    [
+                        (
+                            e.at,
+                            e.backend,
+                            e.action,
+                            e.version,
+                            e.from_version,
+                            e.rollback_target,
+                            e.actor,
+                            e.reason,
+                            e.revision,
+                        )
+                        for e in items
+                    ],
+                    returning=True,
+                )
+                written = []
+                while True:
+                    written.append(await cur.fetchone() is not None)
+                    if not cur.nextset():
+                        break
+                for item, wrote in zip(items, written, strict=True):
+                    if wrote:
+                        continue
+                    # A row was already there: the same change saved before
+                    # is fine; a different one is a conflict.
+                    await cur.execute(
+                        f"SELECT {RELEASE_COLUMNS} FROM model_releases"
+                        " WHERE backend = %s AND revision = %s",
+                        (item.backend, item.revision),
+                    )
+                    row = await cur.fetchone()
+                    if row is None or _release_event(row) != item:
+                        taken.append(item)
+        if taken:
+            raise RevisionTaken(taken)
+
+    async def recent_release_events(self, limit: int) -> list[ReleaseEvent]:
+        async with self.pool.connection() as conn:
+            cur = await conn.execute(
+                f"""
+                SELECT {RELEASE_COLUMNS} FROM (
+                    SELECT * FROM model_releases ORDER BY seq DESC LIMIT %s
+                ) AS latest ORDER BY seq
+                """,
+                (limit,),
+            )
+            rows = await cur.fetchall()
+        return [_release_event(row) for row in rows]
+
+    async def latest_release_events(self) -> list[ReleaseEvent]:
+        async with self.pool.connection() as conn:
+            cur = await conn.execute(
+                f"""
+                SELECT DISTINCT ON (backend) {RELEASE_COLUMNS}
+                FROM model_releases ORDER BY backend, revision DESC
+                """
+            )
+            rows = await cur.fetchall()
+        return [_release_event(row) for row in rows]
+
+
+RELEASE_COLUMNS = (
+    "at, backend, action, version, from_version, rollback_target, actor, reason,"
+    " revision"
+)
+
+
+def _release_event(row: Sequence[object]) -> ReleaseEvent:
+    return ReleaseEvent.model_validate(
+        dict(zip(RELEASE_COLUMNS.split(", "), row, strict=True))
+    )
+
 
 async def migrate(conn: AsyncConnection) -> list[str]:
     """Apply numbered SQL files in migrations/ that have not run yet.
@@ -371,6 +520,8 @@ def create_store(settings: Settings) -> Store:
                 " not for deployment"
             )
         return PostgresStore(
-            url, settings.request_store_limit, timeout=settings.store_timeout_seconds
+            url,
+            settings.postgres_request_limit,
+            timeout=settings.store_timeout_seconds,
         )
     return MemoryStore(settings.request_store_limit)

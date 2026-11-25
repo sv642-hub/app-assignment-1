@@ -61,6 +61,24 @@ export const operatorHeldHealth = {
   ],
 };
 
+const VERSIONS = ["base", "v2-faster", "v2-bad-format", "v2-outage", "v2-label-swap"];
+
+export const rolledBackHealth = {
+  ...healthyHealth,
+  releases: [
+    { name: "qwen3-1.7b", version: "base", status: "rolled_back", rollback_target: null, watched_samples: 0, watch_samples: 20, since: "2026-11-23T14:31:05Z", versions: VERSIONS },
+    { name: "qwen3-4b", version: "v2-faster", status: "watching", rollback_target: "base", watched_samples: 7, watch_samples: 20, since: "2026-11-23T14:30:00Z", versions: VERSIONS },
+  ],
+  release_history: [
+    { at: "2026-11-23T14:30:00Z", backend: "qwen3-4b", action: "deployed", version: "v2-faster", from_version: "base", rollback_target: "base", actor: "operator", reason: "faster demo" },
+    { at: "2026-11-23T14:31:00Z", backend: "qwen3-1.7b", action: "deployed", version: "v2-bad-format", from_version: "base", rollback_target: "base", actor: "operator", reason: "bad release demo" },
+    { at: "2026-11-23T14:31:05Z", backend: "qwen3-1.7b", action: "rolled_back", version: "base", from_version: "v2-bad-format", rollback_target: null, actor: "controller", reason: "format failure rate 100% over last 5 calls" },
+  ],
+  interventions: [
+    { at: "2026-11-23T14:31:05Z", backend: "qwen3-1.7b", action: "rolled_back", reason: "back to base; format failure rate 100% over last 5 calls" },
+  ],
+};
+
 export const outageHealth = {
   ...healthyHealth,
   status: "degraded",
