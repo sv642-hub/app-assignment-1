@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from app_assignment_1.backends import UNKNOWN_REPLY
 from app_assignment_1.config import Settings
 from app_assignment_1.intents import load_intents
 from app_assignment_1.labels import UNKNOWN, load_labels
@@ -96,14 +97,20 @@ def test_uncarded_intent_gets_the_fixed_reply(generated):
     assert result.trace.format_check == "passed"
 
 
-def test_uncarded_intent_with_policy_facts_fails_format_check():
+def test_uncarded_intent_drops_its_policy_facts():
+    # Nothing the model wrote is shown for an uncarded intent, so leftover facts
+    # are dropped instead of failing the whole reply (#109 test-set run).
     result = chat_with(
-        BackendReply(intent="age_limit", reply="", policy_facts=["Invented fact."])
+        BackendReply(
+            intent="age_limit", reply="Ignored text.", policy_facts=["Invented fact."]
+        )
     )
-    assert result.intent == UNKNOWN
+    assert result.intent == "age_limit"
+    assert result.reply == UNCARDED_REPLY
     assert result.policy_facts == []
-    assert result.trace.reply_source == "format_fallback"
-    assert result.trace.format_errors == ["uncarded_policy_facts"]
+    assert result.trace.reply_source == "unsupported_topic"
+    assert result.trace.format_check == "passed"
+    assert result.trace.format_errors == []
 
 
 def test_unknown_with_policy_facts_fails_format_check():
@@ -125,6 +132,25 @@ def test_unknown_without_policy_facts_still_passes():
     assert result.reply == "Please describe it."
     assert result.trace.reply_source == "no_match"
     assert result.trace.format_check == "passed"
+
+
+@pytest.mark.parametrize("empty", ["", "   "])
+def test_unknown_with_an_empty_reply_gets_the_no_match_reply(empty):
+    # The small model did this on 304 of 3,080 messages in the #109 run.
+    result = chat_with(BackendReply(intent=UNKNOWN, reply=empty, policy_facts=[]))
+    assert result.intent == UNKNOWN
+    assert result.reply == UNKNOWN_REPLY
+    assert result.policy_facts == []
+    assert result.trace.reply_source == "no_match"
+    assert result.trace.format_check == "passed"
+
+
+def test_unknown_with_an_empty_reply_and_facts_still_fails():
+    result = chat_with(
+        BackendReply(intent=UNKNOWN, reply="", policy_facts=["Invented."])
+    )
+    assert result.trace.format_check == "failed"
+    assert "unknown_policy_facts" in result.trace.format_errors
 
 
 def test_empty_reply_for_a_carded_intent_still_fails():
