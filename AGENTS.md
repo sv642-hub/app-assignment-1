@@ -8,7 +8,7 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 
 ## Layout
 
-- `src/app_assignment_1/api.py`: FastAPI app, the `/v1/chat`, `/v1/requests/{id}` and `/v1/health` routes, the operator routes (`/v1/operator/models/{name}/disable` and `/enable`, `/v1/faults` and `/v1/faults/jev`, behind `APP_OPERATOR_TOKEN`), and the internal `/metrics` route.
+- `src/app_assignment_1/api.py`: FastAPI app, the `/v1/chat`, `/v1/requests/{id}` and `/v1/health` routes, the operator routes (`/v1/operator/models/{name}/disable`, `/enable`, `/release` and `/rollback`, `/v1/faults` and `/v1/faults/jev`, behind `APP_OPERATOR_TOKEN`), and the internal `/metrics` route.
 - `src/app_assignment_1/auth.py`: `require_operator`, the operator token check every operator route uses (403 while `APP_OPERATOR_TOKEN` is unset, 401 for a missing or wrong token).
 - `src/app_assignment_1/service.py`: gateway flow and reply format checks; saves requests and interventions to the store.
 - `src/app_assignment_1/store.py`: `Store` interface, `MemoryStore` (default) and `PostgresStore` (psycopg 3, plain SQL), plus the migration runner.
@@ -21,7 +21,8 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 - `src/app_assignment_1/backends.py`: `Backend` interface and `MockBackend` (the mock Qwen backends).
 - `src/app_assignment_1/intents.py`: keyword matching over the configured intents, shared by the mocks.
 - `src/app_assignment_1/labels.py`: loads the shared labels (77 Banking77 intents plus `unknown`) and derives `option_set_version`.
-- `src/app_assignment_1/monitor.py`: in-memory failure monitor (format failures and failed calls) and `Controller`; new interventions wait in `unsaved` until the gateway stores them.
+- `src/app_assignment_1/monitor.py`: in-memory failure monitor (format failures and failed calls) and `Controller`; new interventions wait in `unsaved` until the gateway stores them. While a new release is watched, the controller rolls it back instead of disabling the model.
+- `src/app_assignment_1/releases.py`: model releases: the version each model serves (`base` or one from `config/releases.json`), the rollback target, and the release events saved through `Store` and reloaded at startup.
 - `src/app_assignment_1/probe.py`: offline linear probe skeleton and gate check; not used by the gateway. See `docs/PROBE.md`.
 - `src/app_assignment_1/records.py`: `JevAssessment` records for the semantic monitor and the checks on them. The gateway builds two records per request and saves them with the request through `Store`.
 - `src/app_assignment_1/semantic.py`: in-memory semantic monitor; scores each model's intent against Jev's intent answer, per model, with coverage and a baseline; only when Jev and the model are both mocks or both real (`Backend.mocked`). The controller acts on it only with `APP_SEMANTIC_ACTIONS_ENABLED` (off by default).
@@ -30,7 +31,7 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 - `src/app_assignment_1/config.py`: cached Pydantic Settings.
 - `src/app_assignment_1/__init__.py`: package version.
 - `frontend/`: React (Vite) app with Chat and Health screens; `frontend/Dockerfile` builds it into the Caddy image.
-- `config/`: `labels.json` (the 78 labels Jev and Qwen classify into), `intents.json`, `policy_cards.json`, `backends.json`, plus `backends.chaos.json`, `backends.outage.json` and `backends.labelswap.json` for simulated faults.
+- `config/`: `labels.json` (the 78 labels Jev and Qwen classify into), `intents.json`, `policy_cards.json`, `backends.json`, `releases.json` (versions an operator can deploy to each model), plus `backends.chaos.json`, `backends.outage.json` and `backends.labelswap.json` for simulated faults.
 - `tests/`: pytest suite. Frontend tests are in `frontend/src/App.test.jsx`.
 - `scripts/smoke_compose.py`: smoke test against the public proxy.
 - `scripts/probe_false_pass.py`: simulates how often the probe gate passes with no signal (see `docs/PROBE.md`).

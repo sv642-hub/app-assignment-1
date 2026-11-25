@@ -83,6 +83,28 @@ docker compose -f compose.yml -f compose.labelswap.yml up -d --build --wait
 
 Send one complex message first, such as "My card was stolen", so the controller has seen `qwen3-4b` answer. Then send ten standard messages, such as "My card has not arrived". Each one gets a well-formed reply about a lost or stolen card, and every format check passes. The tenth puts `qwen3-1.7b` at a disagreement rate of 1.0, status `above_baseline`, and the controller disables it. The eleventh is answered correctly by `qwen3-4b`, with `fallback_reason: "selected_backend_disabled"`. The **Health** screen shows the banner, the disabled model and the intervention. To watch the monitor only report, add `APP_SEMANTIC_ACTIONS_ENABLED: "false"` to the override. Return to normal with `docker compose up -d --wait`.
 
+### Releases and rollback
+
+Each model serves a **release**: a named version of its config. Every model starts on `base`, its entry in `APP_BACKENDS_PATH`. The catalog in [`config/releases.json`](config/releases.json) (`APP_RELEASES_PATH`) lists the other versions per model, each a set of changes to `base`. With the mock backends a version can only change mock settings (latency and the three simulated faults), so a release is simulated; once the Qwen backends are real it should also carry a prompt version. The shipped catalog has one good demo release per model, `v2-faster`, and three bad ones, `v2-bad-format`, `v2-outage` and `v2-label-swap`.
+
+- **Deploy:** an operator deploys a version with `POST /v1/operator/models/{name}/release` and `{"version": "v2-faster", "reason": "..."}`. The model's failure and semantic windows start empty, since calls to the old version say nothing about the new one. A version is the whole config, so a deploy also replaces any fault set with `/v1/faults`.
+- **Watch:** for the next `APP_RELEASE_WATCH_SAMPLES` calls to the model on its own route (default 20, never fewer than `APP_MONITOR_MIN_SAMPLES`, nor than `APP_SEMANTIC_MIN_SAMPLES` while semantic actions are on), the release is `watching`. Rerouted calls can still roll a release back, but they don't count toward the watch, because the semantic check never sees them. A call that started before a deploy or rollback still answers its customer, but the monitors skip it: it ran on the old version. If the model's failure rate reaches the threshold in that time, the controller **rolls the release back** instead of disabling the model: the model serves its rollback target again at once, with empty windows, and the intervention log says `rolled_back`. With semantic actions on, a model above the semantic baseline is rolled back the same way. When semantic actions apply to the model, confirmation waits for enough comparable intent replies within the configured baseline. The release then becomes `stable`, and a later failure uses the usual disable rules.
+- **Last usable model:** the controller never disables the last usable model, but it can roll one back. A bad release on the only model left ends after `APP_MONITOR_MIN_SAMPLES` failed calls, instead of lasting until an operator acts.
+- **Rollback target:** the last version known to be good. A deploy sets it to the current version if that one is `stable` or `rolled_back`; a release still under watch is no target, so deploying over it keeps the target it had. So every release under watch has a target. A rollback, by the controller or by an operator with `POST /v1/operator/models/{name}/rollback`, leaves the model with no target. Deploying the target while a release is under watch is a rollback.
+- **History and restarts:** every deploy, confirmation and rollback is saved as a release event (see [Storage](#storage)). An operator's change is saved before it applies; if the save fails, the route answers 503 and nothing changes. A save that times out is read back first: if the store has it, the change applies. If it can't be read back, the route answers 503 with "Could not confirm": the running gateway doesn't change, and it saves the release it kept as a newer change once the store answers. Until that save works, the kept release is only in memory, so if the gateway stops first, a restart may serve the change the operator was told wasn't made. Chats never wait for an operator's save. If the controller rolls back or confirms the model during the save, the change is planned again on the new state and saved again, so the operator's answer is what the store holds. The controller's rollbacks apply at once and are saved with its interventions. With Postgres, a restarted gateway serves the release each model had. Each release event carries a revision number per model, taken when the change is planned, and a restart serves the event with the highest revision, whatever order the writes reached the store in. The counter starts from the saved revisions, so if the gateway can't read them at startup, it serves `base` and answers release changes with 503 until a read works. The read is tried again on each release change, and when it works the model goes back to its saved release before the change is made. A different change already saved under the same revision, for example by another gateway on the same store, is refused with 503 and nothing changes; the next try gets a newer revision. A release that was still under watch is watched again from zero. A saved version that is no longer in the catalog is skipped with a warning, and that model starts on `base`.
+- **Visibility:** `GET /v1/health` has `releases` (per model: `version`, `status`, `rollback_target`, `watched_samples` of `watch_samples`, and the versions it can be deployed to) and `release_history`, the last 20 events. The reasons are public, like the intervention reasons. `/metrics` has `gateway_model_release{model, version, status}`, and rollbacks count in `gateway_controller_interventions_total{action="rolled_back"}`. The **Health** screen has a Releases card.
+
+To see a rollback, start the stack with an operator token in `env/.env`, deploy a bad release to the small model, and send five standard messages. All five fail the format check, and the fifth rolls `qwen3-1.7b` back to `base`. The sixth is answered by `qwen3-1.7b` again, and passes:
+
+```bash
+TOKEN='your-operator-token'
+curl -fsS -X POST http://localhost:8080/v1/operator/models/qwen3-1.7b/release \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"version": "v2-bad-format", "reason": "rollback demo"}'
+```
+
+Compare with the chaos override above, where the same fault on `base` gets the model disabled for the cooldown. This is a mock: the release, the fault and the timing are all simulated, and nothing here has been measured on a real model.
+
 ### Operator routes
 
 Operators can act on the models without restarting the stack. Every operator route needs the header `Authorization: Bearer <APP_OPERATOR_TOKEN>`. While `APP_OPERATOR_TOKEN` is unset, which is the default, the routes answer 403. A missing or wrong token gets 401. Caddy proxies `/v1`, so the token is the only guard: set a long random one (at least 16 characters; leading and trailing spaces are dropped) only in `env/.env`, and never share it with testers.
@@ -91,6 +113,7 @@ Operators can act on the models without restarting the stack. Every operator rou
 - `POST /v1/operator/models/{name}/enable` lifts an operator hold, and also ends a controller cooldown early. The model starts with an empty window.
 - Holds live in gateway memory. After a restart every held model serves again, even though the last stored intervention for it still says `operator_disabled`. Disable it again after a restart.
 - Both take an optional JSON body `{"reason": "..."}` (up to 200 characters), saved in the intervention log as `operator_disabled` or `operator_enabled`. The reason is public: `GET /v1/health` lists it without a token. Do not put customer data or anything private in it. Both return the monitor rows; `disabled_by_operator` shows a hold.
+- `POST /v1/operator/models/{name}/release` deploys a version and `/rollback` puts the model back on its rollback target; see [Releases and rollback](#releases-and-rollback). Both take a public `reason` too.
 - `POST /v1/faults` sets a simulated fault on a mock model while it runs, in place of restarting with a Compose override. The body is `{"model": "qwen3-1.7b", "fault": "outage", "rate": 1}`. `fault` is `outage` (sets `error_rate`), `bad_format` (`fault_rate`), `label_swap` (`label_swap_rate`) or `none` (clears all three). `rate` is 0–1 and defaults to 1. It returns the model's config. Faults reset when the gateway restarts.
 - `POST /v1/faults/jev` does the same for the mock Jev router. The body is `{"fault": "outage", "rate": 1}`. `fault` is `outage` (sets `error_rate`: the call fails, the gateway uses the rule router with `fallback_reason: "jev_error"`, and 5 failures in a row open the circuit breaker), `slow` (sets `slow_rate` and `slow_seconds`: each call it hits is held for `seconds` more, above 0 and up to 120, which `slow` requires; past `APP_JEV_TIMEOUT_SECONDS`, 2 s by default, the gateway uses the rule router with `jev_timeout`) or `none` (clears both). It returns the Jev fault settings. With `APP_JEV_MODE=real` it answers 409: real Jev can't be faulted.
 
@@ -132,7 +155,8 @@ In Compose, request history and interventions are kept in Postgres and survive a
 The gateway keeps three kinds of records behind a small `Store` interface ([`store.py`](src/app_assignment_1/store.py)):
 
 - **Completed requests:** each `ChatResponse` (reply, intent, policy facts, trace), which `GET /v1/requests/{id}` and the Health screen's recent requests read. Postgres keeps every request, so they can be analysed later; set `APP_POSTGRES_REQUEST_LIMIT` to keep only the newest ones. The memory store keeps the most recent `APP_REQUEST_STORE_LIMIT` (default 1,000). Requests that end in a 503 are not stored. Each request's trace has `settings_version`, a short ID of the settings and config files that answered it, so statistics can be grouped by setup. A fault set through `/v1/faults` changes it, and clearing the fault changes it back. Secrets, the user and password in a URL, and how a config path is spelled are left out of it.
-- **Controller interventions:** every `disabled`, `re-enabled` and `kept_last_backend` entry. `GET /v1/health` shows the last 50.
+- **Controller interventions:** every `disabled`, `re-enabled`, `kept_last_backend` and `rolled_back` entry, and the operator's holds. `GET /v1/health` shows the last 50.
+- **Release events:** every deploy, confirmation and rollback, in the `model_releases` table. The one with the highest revision per model is what a restarted gateway serves; writing the same event again is ignored, and a different event under a saved revision is refused. Postgres keeps them all; the memory store keeps the last 200.
 - **Jev assessments:** two per request, one for the route question and one for the intent question, for the semantic monitor. They are saved in the same write as their request, so a request that ends in a 503 or is cancelled saves none. Postgres keeps them all, also after their request is deleted; the memory store keeps the last 2 × `APP_REQUEST_STORE_LIMIT`. The route record has `option_order`, the order Jev was shown the route options in, for the position-bias study (#86). The intent options follow `config/labels.json`, whose order is part of `option_set_version`.
 - **Export for analysis:** `APP_DATABASE_URL=... uv run python scripts/export_analysis.py --out exports/<name>` writes `requests.jsonl` and `jev_assessments.jsonl`, which join on the request ID. Reply text and policy facts are left out. `exports/` is ignored by git.
 
@@ -185,7 +209,8 @@ The `prometheus` service (Prometheus 3.15.1, config in [`prometheus/prometheus.y
 | `gateway_uncarded_facts_dropped_total` | `model` | Replies for an intent with no policy card that listed policy facts anyway; the facts are dropped and the reply still passes |
 | `gateway_model_disabled` | `model` | 1 while the controller has the model disabled |
 | `gateway_monitor_failure_rate`, `gateway_monitor_window_samples` | `model` | Failure rate and number of calls in the monitor window (rate is 0 when the window is empty) |
-| `gateway_controller_interventions_total` | `action`, `model` | Controller actions: `disabled`, `re-enabled`, `kept_last_backend` |
+| `gateway_controller_interventions_total` | `action`, `model` | Controller and operator actions: `disabled`, `re-enabled`, `kept_last_backend`, `rolled_back`, `operator_disabled`, `operator_enabled` |
+| `gateway_model_release` | `model`, `version`, `status` | 1 for the version each model serves now, with `stable`, `watching` or `rolled_back`; versions come from the release catalog |
 | `gateway_jev_answered_calls_total` | `mocked` | Jev calls that returned an answer; each call counts once, not once per question |
 | `gateway_jev_tokens_total` | `direction`, `mocked` | Input and output tokens of answered Jev calls |
 | `gateway_jev_estimated_cost_usd_total` | `mocked` | Input tokens times `APP_JEV_INPUT_PRICE_PER_MILLION_USD`; absent while the price is unset, so an unknown price never reads as $0 |
@@ -258,7 +283,8 @@ Pydantic Settings reads `.env` then `env/.env` in native local runs. Process env
 | `APP_INTENTS_PATH` | `config/intents.json` | Intent keywords and mock complexity |
 | `APP_LABELS_PATH` | `config/labels.json` | The 77 Banking77 intents plus `unknown` that Jev and Qwen classify into; every intent with a policy card must be one of them |
 | `APP_POLICY_CARDS_PATH` | `config/policy_cards.json` | Fictional facts and `{facts}` reply templates |
-| `APP_BACKENDS_PATH` | `config/backends.json` | Backend names, routes, delay and availability |
+| `APP_BACKENDS_PATH` | `config/backends.json` | Backend names, routes, delay and availability; each model's `base` release |
+| `APP_RELEASES_PATH` | `config/releases.json` | Versions an operator can deploy to each model; a missing file means `base` only |
 | `APP_REQUEST_STORE_LIMIT` | `1000` | Number of successful requests the memory store keeps |
 | `APP_POSTGRES_REQUEST_LIMIT` | unset | Unset keeps every request in Postgres, for analysis; a number keeps only the newest ones |
 | `APP_JEV_TIMEOUT_SECONDS` | `2` | Wait for the Jev routing call before using the rule router |
@@ -267,6 +293,7 @@ Pydantic Settings reads `.env` then `env/.env` in native local runs. Process env
 | `APP_MONITOR_MIN_SAMPLES` | `5` | Calls needed before the controller may act; at most the window |
 | `APP_MONITOR_FAILURE_THRESHOLD` | `0.5` | Failure rate (failed format checks plus failed calls) that disables a backend |
 | `APP_CONTROLLER_COOLDOWN_SECONDS` | `60` | How long a disabled backend stays out |
+| `APP_RELEASE_WATCH_SAMPLES` | `20` | Minimum own-route calls before a release can be confirmed. Never fewer than `APP_MONITOR_MIN_SAMPLES` or the semantic minimum when semantic actions are on |
 | `APP_STORE` | `memory` | `memory` (lost on restart) or `postgres`; Compose sets `postgres` |
 | `APP_DATABASE_URL` | none | Postgres URL, required when `APP_STORE=postgres`; a secret, hidden in logs and settings output |
 | `APP_STORE_TIMEOUT_SECONDS` | `2` | Longest wait for one store write before the reply goes out without it |
@@ -372,6 +399,8 @@ curl -fsS "http://localhost:8080/v1/requests/$REQUEST_ID"
 | `GET /v1/requests/{id}` | 200 stored response; 404 missing, evicted, or lost in a restart with the memory store; 422 invalid UUID |
 | `GET /v1/health` | Typed Pydantic response documented in OpenAPI; 200 with backend config, monitor statistics, recent interventions, recent requests (`recent_requests`) and per-model call totals (`usage`); `degraded` when any backend is unavailable or disabled by the controller or an operator |
 | `POST /v1/operator/models/{name}/disable`, `/enable` | Operator token required. 200 monitor rows; 401 missing or wrong token; 409 last usable model (disable); 422 unknown model; 403 `APP_OPERATOR_TOKEN` unset |
+| `POST /v1/operator/models/{name}/release` | Operator token required. 200 the model's release; 404 no such version; 409 already serving it; 503 not saved, or saved releases not read yet; nothing changed; 401, 403 and 422 as above |
+| `POST /v1/operator/models/{name}/rollback` | Operator token required. 200 the model's release; 409 nothing to roll back to; 503 not saved, or saved releases not read yet; nothing changed |
 | `POST /v1/faults` | Operator token required. 200 the model's config; 401, 403 and 422 as above |
 | `POST /v1/faults/jev` | Operator token required. 200 the Jev fault settings; 409 when Jev is real; 401, 403 and 422 as above |
 | `GET /docs`, `/redoc`, `/openapi.json` | Interactive documentation and API schema |
