@@ -29,7 +29,9 @@ def generate(handler: Callable[[httpx.Request], httpx.Response]) -> BackendReply
     async def run() -> BackendReply:
         config = BackendConfig(name="qwen3-1.7b", route="standard", latency_ms=0)
         async with httpx.AsyncClient(
-            base_url="http://vllm.test", transport=httpx.MockTransport(handler)
+            headers={"Authorization": "Bearer test-key"},
+            base_url="http://vllm.test",
+            transport=httpx.MockTransport(handler),
         ) as client:
             backend = VLLMBackend(
                 config,
@@ -46,9 +48,17 @@ def generate(handler: Callable[[httpx.Request], httpx.Response]) -> BackendReply
 def test_request_and_valid_reply() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
+
+        assert request.headers["Authorization"] == "Bearer test-key"
+
         assert request.url.path == "/v1/chat/completions"
         body = json.loads(request.content)
         assert body["model"] == "served-qwen"
+
+        assert body["max_tokens"] == 512
+        assert body["temperature"] == 0.0
+        assert body["chat_template_kwargs"] == {"enable_thinking": False}
+
         system, user = body["messages"]
         assert system["role"] == "system"
         assert "Allowed intents:" in system["content"]
@@ -74,6 +84,14 @@ def test_http_503_is_a_call_error() -> None:
         return httpx.Response(503, json={"error": MESSAGE})
 
     with pytest.raises(BackendCallError, match=r"^Backend returned HTTP 503$"):
+        generate(handler)
+
+
+def test_http_401_is_a_call_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": "Unauthorized"})
+
+    with pytest.raises(BackendCallError, match=r"^Backend returned HTTP 401$"):
         generate(handler)
 
 

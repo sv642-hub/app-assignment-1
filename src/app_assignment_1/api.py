@@ -1,19 +1,22 @@
 """Smart AI Gateway mocked midpoint API."""
 
+import math
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
+from typing import Any
 from uuid import UUID
 
-import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST
-from pydantic import TypeAdapter
 
 from app_assignment_1.auth import require_operator
-from app_assignment_1.backends import Backend
 from app_assignment_1.config import Settings, get_settings
 from app_assignment_1.jev import TypeSafeJevRouter, create_jev_http_client
 from app_assignment_1.labels import load_labels
+from app_assignment_1.real_backends import open_vllm_backends
 from app_assignment_1.router import MockJevRouter, Router
 from app_assignment_1.schemas import (
     BackendConfig,
@@ -24,8 +27,9 @@ from app_assignment_1.schemas import (
     FaultRequest,
     HealthResponse,
     JevBreakerStatus,
+    JevFaultConfig,
+    JevFaultRequest,
     OperatorRequest,
-    PolicyCard,
     RecentRequest,
 )
 from app_assignment_1.service import (
@@ -36,7 +40,6 @@ from app_assignment_1.service import (
     NotAMock,
 )
 from app_assignment_1.store import Store, create_store
-from app_assignment_1.vllm import VLLMBackend, build_system_prompt
 
 
 def create_app(
@@ -61,47 +64,12 @@ def create_app(
                 )
             else:
                 chosen = MockJevRouter(configured.intents_path)
-            backends: list[Backend] | None = None
-            if configured.provider_mode == "real":
-                labels = load_labels(configured.labels_path)
-                cards = TypeAdapter(dict[str, PolicyCard]).validate_json(
-                    configured.policy_cards_path.read_text()
-                )
-                configs = TypeAdapter(list[BackendConfig]).validate_json(
-                    configured.backends_path.read_text()
-                )
-                prompt = build_system_prompt(labels, cards)
-                key = configured.vllm_api_key
-                assert key is not None
-                token = key.get_secret_value().strip()
-
-                urls = {
-                    "standard": configured.vllm_small_base_url,
-                    "complex": configured.vllm_large_base_url,
-                }
-                backends = []
-                for config in configs:
-                    url = urls[config.route]
-                    assert url is not None
-                    http_client = await stack.enter_async_context(
-                        httpx.AsyncClient(
-                            base_url=str(url),
-                            headers={"Authorization": f"Bearer {token}"},
-                            timeout=configured.request_deadline_seconds,
-                            trust_env=False,
-                        )
-                    )
-                    backends.append(
-                        VLLMBackend(
-                            config,
-                            http_client,
-                            model=config.name,
-                            system_prompt=prompt,
-                            labels=labels,
-                        )
-                    )
-
-            gateway = Gateway(configured, chosen, backends=backends, store=opened)
+            backends = (
+                await open_vllm_backends(configured, stack)
+                if configured.provider_mode == "real"
+                else None
+            )
+            gateway = Gateway(configured, chosen, backends, store=opened)
             await opened.open()
             app.state.gateway = gateway
             app.state.operator_token = configured.operator_token
@@ -120,6 +88,17 @@ def create_app(
         ),
         lifespan=lifespan,
     )
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        """The default 422, except that a NaN or Infinity the client sent is
+        echoed as text: JSON can't hold it, and writing it gave a 500."""
+        return JSONResponse(
+            status_code=422,
+            content={"detail": _finite(jsonable_encoder(exc.errors()))},
+        )
 
     @app.post(
         "/v1/chat",
@@ -159,6 +138,9 @@ def create_app(
         await gateway.save_interventions()
         return HealthResponse(
             status="ok" if healthy else "degraded",
+            mode="mock"
+            if all(getattr(b, "mocked", True) for b in gateway.backends)
+            else "real",
             jev_mode="mock" if gateway.jev_mocked else "real",
             router="mock_jev" if gateway.jev_mocked else "jev",
             recent_requests=[
@@ -182,6 +164,7 @@ def create_app(
                 failure_limit=breaker.failure_limit,
                 cooldown_seconds=breaker.cooldown,
             ),
+            settings_version=gateway.settings_version,
             semantic=gateway.semantic.stats(),
             semantic_rules=gateway.semantic.rules,
             jev_usage=gateway.jev_usage(),
@@ -235,6 +218,23 @@ def create_app(
         except NotAMock:
             raise HTTPException(409, f"{payload.model} is not a mock model") from None
 
+    @app.post(
+        "/v1/faults/jev",
+        response_model=JevFaultConfig,
+        dependencies=[Depends(require_operator)],
+        responses={409: {"description": "Jev is real, not the mock"}},
+    )
+    async def set_jev_fault(
+        payload: JevFaultRequest, request: Request
+    ) -> JevFaultConfig:
+        """Set a simulated fault on the mock Jev router while it runs: `outage`
+        makes calls fail, `slow` holds them for `seconds` more. Lost on restart."""
+        gateway: Gateway = request.app.state.gateway
+        try:
+            return gateway.set_jev_fault(payload)
+        except NotAMock:
+            raise HTTPException(409, "Jev is real, not the mock") from None
+
     # Internal only: Caddy does not proxy /metrics, and it stays out of /v1 and
     # the OpenAPI docs. Prometheus scrapes it on the Compose network.
     @app.get("/metrics", include_in_schema=False)
@@ -243,6 +243,17 @@ def create_app(
         return Response(gateway.metrics.render(), media_type=CONTENT_TYPE_LATEST)
 
     return app
+
+
+def _finite(value: Any) -> Any:
+    """Copy `value` with each non-finite float replaced by its text."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _finite(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_finite(item) for item in value]
+    return value
 
 
 app = create_app()

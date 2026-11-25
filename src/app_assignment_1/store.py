@@ -103,15 +103,15 @@ class MemoryStore:
 class PostgresStore:
     """Requests and interventions in Postgres, through psycopg 3 and plain SQL.
 
-    Requests are bounded by the same retention limit as the memory store. The
-    intervention log is kept in full; it grows by a few rows per cooldown. Jev
-    assessments are kept in full for the monitor: two rows per request.
+    Requests are kept in full unless `limit` is set, so they can be analysed
+    later. The intervention log is kept in full; it grows by a few rows per
+    cooldown. Jev assessments are kept in full: two rows per request.
     """
 
     def __init__(
         self,
         url: str,
-        limit: int,
+        limit: int | None = None,
         connect_timeout: float = 30,
         timeout: float = 2,
     ):
@@ -146,8 +146,9 @@ class PostgresStore:
             await conn.execute(
                 """
                 INSERT INTO requests
-                    (id, completed_at, route, model, intent, format_check, response)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    (id, completed_at, route, model, intent, format_check,
+                     settings_version, response)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     response.id,
@@ -156,6 +157,7 @@ class PostgresStore:
                     response.trace.model,
                     response.intent,
                     response.trace.format_check,
+                    response.trace.settings_version,
                     Jsonb(response.model_dump(mode="json")),
                 ),
             )
@@ -165,8 +167,9 @@ class PostgresStore:
                         """
                         INSERT INTO jev_assessments
                             (request_id, call_id, question, status, finished_at,
-                             mocked, option_set_version, choice, error_type, record)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                             mocked, option_set_version, choice, error_type,
+                             option_order, record)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """,
                         [
                             (
@@ -179,19 +182,21 @@ class PostgresStore:
                                 r.option_set_version,
                                 r.choice,
                                 r.error_type,
+                                r.option_order,
                                 Jsonb(r.model_dump(mode="json")),
                             )
                             for r in jev
                         ],
                     )
-            await conn.execute(
-                """
-                DELETE FROM requests WHERE seq <= (
-                    SELECT seq FROM requests ORDER BY seq DESC OFFSET %s LIMIT 1
+            if self.limit is not None:
+                await conn.execute(
+                    """
+                    DELETE FROM requests WHERE seq <= (
+                        SELECT seq FROM requests ORDER BY seq DESC OFFSET %s LIMIT 1
+                    )
+                    """,
+                    (self.limit,),
                 )
-                """,
-                (self.limit,),
-            )
 
     async def get_request(self, request_id: UUID) -> ChatResponse | None:
         async with self.pool.connection() as conn:
@@ -284,6 +289,8 @@ def create_store(settings: Settings) -> Store:
                 " not for deployment"
             )
         return PostgresStore(
-            url, settings.request_store_limit, timeout=settings.store_timeout_seconds
+            url,
+            settings.postgres_request_limit,
+            timeout=settings.store_timeout_seconds,
         )
     return MemoryStore(settings.request_store_limit)
