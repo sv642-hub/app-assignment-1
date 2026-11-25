@@ -203,6 +203,8 @@ InterventionAction = Literal[
     "kept_last_backend",
     "operator_disabled",
     "operator_enabled",
+    # The controller put a model back on its rollback target (see releases.py).
+    "rolled_back",
 ]
 
 
@@ -211,6 +213,73 @@ class Intervention(StrictModel):
     backend: BackendName
     action: InterventionAction
     reason: str
+
+
+# The version every model starts on: its entry in APP_BACKENDS_PATH.
+BASE_VERSION = "base"
+VERSION_PATTERN = r"^[a-z0-9][a-z0-9._-]{0,63}$"
+ReleaseStatus = Literal["stable", "watching", "rolled_back"]
+ReleaseAction = Literal["deployed", "confirmed", "rolled_back"]
+ReleaseActor = Literal["operator", "controller"]
+
+
+class ReleaseChanges(StrictModel):
+    """What a version changes in a model's base config. Mock settings only
+    for now; a prompt version joins them once the Qwen backends are real."""
+
+    latency_ms: int | None = Field(default=None, ge=0, le=5000)
+    fault_rate: float | None = Field(default=None, ge=0, le=1)
+    error_rate: float | None = Field(default=None, ge=0, le=1)
+    label_swap_rate: float | None = Field(default=None, ge=0, le=1)
+
+
+class ReleaseVersion(StrictModel):
+    description: str = Field(min_length=1, max_length=200)
+    changes: ReleaseChanges
+
+
+class ModelRelease(StrictModel):
+    """The version a model serves now, and where a rollback would take it."""
+
+    name: BackendName
+    version: str
+    # stable: base or confirmed. watching: deployed and not yet confirmed; the
+    # controller rolls it back instead of disabling the model. rolled_back:
+    # back on the rollback target after a failed release.
+    status: ReleaseStatus
+    rollback_target: str | None = None
+    # Calls counted since the deploy, while watching; the release is
+    # confirmed at watch_samples.
+    watched_samples: int = Field(default=0, ge=0)
+    watch_samples: int = Field(ge=1)
+    since: datetime | None = None
+    versions: list[str] = Field(default_factory=list)
+
+
+class ReleaseEvent(StrictModel):
+    """One change to a model's release, saved in the release history."""
+
+    at: datetime
+    backend: BackendName
+    action: ReleaseAction
+    # What the model serves after this event.
+    version: str
+    # What it served before, for a deploy or a rollback.
+    from_version: str | None = None
+    # Where a rollback would take it after this event.
+    rollback_target: str | None = None
+    actor: ReleaseActor
+    # Public through /v1/health; never put customer data here.
+    reason: str = Field(min_length=1, max_length=300)
+    # Per model, one higher for each change, in the order the gateway made
+    # them. A restart loads the highest, whatever order the writes landed in.
+    revision: int = Field(ge=1)
+
+
+class ReleaseRequest(StrictModel):
+    version: str = Field(pattern=VERSION_PATTERN)
+    # Saved in the release history; never put customer data here.
+    reason: str = Field(default="operator request", min_length=1, max_length=200)
 
 
 class ControllerRules(StrictModel):
@@ -307,6 +376,9 @@ class SemanticRules(StrictModel):
 
 class HealthResponse(StrictModel):
     recent_requests: list[RecentRequest] = Field(default_factory=list)
+    releases: list[ModelRelease] = Field(default_factory=list)
+    # The last release changes, oldest first.
+    release_history: list[ReleaseEvent] = Field(default_factory=list)
     usage: list[ModelUsage] = Field(default_factory=list)
     status: Literal["ok", "degraded"]
     # mode is the Qwen backends; jev_mode and router are Jev.
