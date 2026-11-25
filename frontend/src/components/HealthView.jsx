@@ -126,7 +126,7 @@ function bannerFor(health, models) {
   return { tone: "bad", title: "Degraded", text: parts.join(" ") };
 }
 
-function SemanticCard({ semantic, rules }) {
+export function SemanticCard({ semantic, rules }) {
   const baseline = rules.baseline_disagreement_rate;
   return (
     <section className="card" aria-label="Semantic monitor">
@@ -203,7 +203,7 @@ function costText(usage) {
   return "$" + cost.toFixed(4);
 }
 
-function JevCard({ breaker, usage }) {
+export function JevCard({ breaker, usage }) {
   const pill = BREAKER_PILLS[breaker.state];
   return (
     <section className="card model-card" aria-label="Jev router">

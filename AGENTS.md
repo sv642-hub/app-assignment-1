@@ -29,7 +29,7 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 - `src/app_assignment_1/schemas.py`: Pydantic API contracts and config models.
 - `src/app_assignment_1/config.py`: cached Pydantic Settings.
 - `src/app_assignment_1/__init__.py`: package version.
-- `frontend/`: React (Vite) app with Chat and Health screens; `frontend/Dockerfile` builds it into the Caddy image.
+- `frontend/`: React (Vite) app with Chat, Health and Jev screens; `frontend/Dockerfile` builds it into the Caddy image.
 - `config/`: `labels.json` (the 78 labels Jev and Qwen classify into), `intents.json`, `policy_cards.json`, `backends.json`, plus `backends.chaos.json`, `backends.outage.json` and `backends.labelswap.json` for simulated faults.
 - `tests/`: pytest suite. Frontend tests are in `frontend/src/App.test.jsx`.
 - `scripts/smoke_compose.py`: smoke test against the public proxy.
