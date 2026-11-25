@@ -18,7 +18,7 @@ from app_assignment_1.config import Settings, settings_version
 from app_assignment_1.intents import load_intents
 from app_assignment_1.labels import UNKNOWN, load_labels
 from app_assignment_1.metrics import GatewayMetrics
-from app_assignment_1.monitor import SEMANTIC_REASON, Controller
+from app_assignment_1.monitor import RESTORE_ACTIONS, SEMANTIC_REASON, Controller
 from app_assignment_1.records import JevAssessment, check_call
 from app_assignment_1.releases import Releases, load_catalog
 from app_assignment_1.router import (
@@ -52,9 +52,10 @@ from app_assignment_1.vllm import BackendCallError, BackendOutputError
 logger = logging.getLogger(__name__)
 QUESTIONS: tuple[Literal["route", "intent"], ...] = ("route", "intent")
 MAX_REPLY_LENGTH = 4000
+# Release changes read at startup to find each model's last deploy or rollback.
+RESTORE_RELEASE_EVENTS = 500
 # Enough of the intervention log to find each model's last disable and
 # re-enable when restoring after a restart.
-RESTORE_INTERVENTIONS = 500
 # For a recognized intent that has no policy card. The backend sends an empty
 # reply for these; the gateway never shows generated text for them.
 UNCARDED_REPLY = (
@@ -585,29 +586,30 @@ class Gateway:
 
     async def restore(self) -> None:
         """Rebuild the monitor windows and running cooldowns from the store,
-        at startup. A store problem is logged, and the windows start empty."""
+        at startup, after `restore_releases`. A store problem is logged, and
+        the windows start empty."""
         per_window = max(self.controller.window, self.semantic.rules.window)
         try:
+            # Each model's newest reset and hold, however old, so a long run
+            # of newer interventions on the other model can't hide them.
             interventions = await asyncio.wait_for(
-                self.store.recent_interventions(RESTORE_INTERVENTIONS),
+                self.store.latest_interventions(RESTORE_ACTIONS),
                 self.store_timeout,
             )
             samples = await asyncio.wait_for(
                 self.store.recent_monitor_samples(per_window), self.store_timeout
             )
-            # Read apart, so a hold older than the newest interventions counts.
-            operator_actions = await asyncio.wait_for(
-                self.store.latest_operator_actions(), self.store_timeout
-            )
+            resets = await self._release_resets()
         except Exception as exc:
             logger.warning("Could not restore monitor state (%s)", type(exc).__name__)
             return
         cutoffs = self.controller.restore(
-            interventions, samples, datetime.now(UTC), operator_actions
+            interventions, samples, datetime.now(UTC), resets
         )
-        # With actions off, a re-enable never resets the semantic window.
+        # With actions off, a re-enable never resets the semantic window, but
+        # a release change does (_release_changed).
         actions = self.semantic.rules.actions_enabled
-        self.semantic.restore(samples, cutoffs if actions else None)
+        self.semantic.restore(samples, cutoffs if actions else resets)
         if samples or self.controller.disabled_until or self.controller.held:
             logger.info(
                 "Restored %d monitor samples; %d model(s) still cooling down, "
@@ -616,6 +618,22 @@ class Gateway:
                 len(self.controller.disabled_until),
                 len(self.controller.held),
             )
+
+    async def _release_resets(self) -> dict[BackendName, datetime]:
+        """When each model's windows were last cleared by a release change: a
+        deploy or a rollback, not a confirmation. Samples from before it
+        describe the version the model served then."""
+        if not self.releases_loaded:
+            return {}
+        events = await asyncio.wait_for(
+            self.store.recent_release_events(RESTORE_RELEASE_EVENTS),
+            self.store_timeout,
+        )
+        resets: dict[BackendName, datetime] = {}
+        for event in events:
+            if event.action != "confirmed":
+                resets[event.backend] = event.at
+        return resets
 
     async def _save_interventions(self) -> None:
         if not self.controller.unsaved:

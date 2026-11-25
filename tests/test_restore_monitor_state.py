@@ -10,7 +10,7 @@ import pytest
 from app_assignment_1.config import Settings
 from app_assignment_1.monitor import Controller
 from app_assignment_1.router import MockJevRouter
-from app_assignment_1.schemas import Intervention, MonitorSample
+from app_assignment_1.schemas import Intervention, MonitorSample, ReleaseEvent
 from app_assignment_1.service import Gateway
 from app_assignment_1.store import MemoryStore
 
@@ -428,3 +428,102 @@ def test_a_hold_older_than_the_restored_interventions_comes_back():
         return g
 
     assert asyncio.run(go()).controller.held == {SMALL}
+
+
+def test_a_reset_older_than_the_newest_interventions_still_clears_the_window():
+    # Audit of #100: after 600 newer interventions on the other model, the
+    # bounded read missed the small model's operator enable, so failures it
+    # had cleared came back.
+    settings = Settings(_env_file=None)
+    store = MemoryStore(settings.request_store_limit, intervention_limit=1000)
+    old = NOW - timedelta(days=30)
+    noise = [
+        event(old + timedelta(minutes=i + 1), "kept_last_backend", LARGE)
+        for i in range(600)
+    ]
+
+    async def go() -> Gateway:
+        await store.save_monitor_samples(
+            [failure(old - timedelta(seconds=i), "format_failure") for i in (3, 2, 1)]
+        )
+        await store.save_interventions([event(old, "operator_enabled"), *noise])
+        g = gateway(settings, store)
+        await g.restore()
+        return g
+
+    assert list(asyncio.run(go()).controller.windows[SMALL]) == []
+
+
+def test_a_sample_save_retried_after_a_cancel_is_stored_once():
+    # Audit of #100: a cancel that lands after the store committed puts the
+    # batch back, and the next save wrote the same samples again.
+    class CancelAfterCommit(MemoryStore):
+        slow = True
+
+        async def save_monitor_samples(self, items):
+            await super().save_monitor_samples(items)
+            if CancelAfterCommit.slow:
+                await asyncio.sleep(10)
+
+    settings = Settings(_env_file=None)
+    store = CancelAfterCommit(settings.request_store_limit)
+    g = gateway(settings, store)
+    g.controller.record(SMALL, failed=False, can_disable=True)
+
+    async def go() -> None:
+        task = asyncio.create_task(g.save_interventions())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        CancelAfterCommit.slow = False
+        await g.save_interventions()
+
+    asyncio.run(go())
+    assert [s.outcome for s in store.monitor_samples] == ["ok"]
+
+
+def test_a_release_change_clears_the_restored_windows():
+    # A deploy or rollback clears both windows live (_release_changed), so
+    # samples from the version served before it don't come back.
+    settings = Settings(_env_file=None)
+    store = MemoryStore(settings.request_store_limit)
+    deploy = ReleaseEvent(
+        at=NOW - timedelta(minutes=5),
+        backend=SMALL,
+        action="deployed",
+        version="v2-faster",
+        from_version="base",
+        rollback_target="base",
+        actor="operator",
+        reason="test",
+        revision=1,
+    )
+    confirm = deploy.model_copy(
+        update={
+            "at": NOW - timedelta(minutes=1),
+            "action": "confirmed",
+            "from_version": None,
+            "revision": 2,
+        }
+    )
+
+    async def go() -> Gateway:
+        await store.save_monitor_samples(
+            [
+                failure(NOW - timedelta(minutes=6), "format_failure"),
+                semantic(NOW - timedelta(minutes=6), "disagree"),
+                failure(NOW - timedelta(minutes=3), "ok"),
+                semantic(NOW - timedelta(minutes=3), "agree"),
+            ]
+        )
+        await store.save_release_events([deploy, confirm])
+        g = gateway(settings, store)
+        await g.restore_releases()
+        await g.restore()
+        return g
+
+    g = asyncio.run(go())
+    # The cut is at the deploy, not the later confirmation.
+    assert list(g.controller.windows[SMALL]) == ["ok"]
+    assert list(g.semantic.windows[SMALL]) == ["agree"]

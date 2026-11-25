@@ -550,8 +550,10 @@ def test_monitor_samples_keep_the_newest_per_window(make_store: MakeStore) -> No
     async def body(store: Store) -> None:
         await store.save_monitor_samples(samples[:3])
         await store.save_monitor_samples(samples[3:])
+        await store.save_monitor_samples(samples[3:4])  # a retried save
         newest = await store.recent_monitor_samples(per_window=2)
-        # The oldest failure sample drops out; the rest come back oldest first.
+        # The oldest failure sample drops out; the rest come back oldest first,
+        # and the retried one only once.
         assert newest == samples[2:]
 
     run(make_store(), body)
@@ -616,7 +618,7 @@ def test_a_restarted_app_resumes_from_postgres(postgres_url: str) -> None:
     ]
 
 
-def test_latest_operator_actions_per_model(make_store: MakeStore) -> None:
+def test_latest_interventions_per_model_and_action(make_store: MakeStore) -> None:
     start = datetime(2026, 11, 22, 12, tzinfo=UTC)
 
     def item(seconds: int, backend: str, action: str) -> Intervention:
@@ -633,11 +635,15 @@ def test_latest_operator_actions_per_model(make_store: MakeStore) -> None:
         item(2, "qwen3-4b", "operator_enabled"),
         item(3, "qwen3-4b", "disabled"),
         item(4, "qwen3-1.7b", "kept_last_backend"),
+        item(5, "qwen3-4b", "operator_disabled"),
     ]
 
     async def body(store: Store) -> None:
         await store.save_interventions(items)
-        assert await store.latest_operator_actions() == [items[0], items[2]]
+        latest = await store.latest_interventions(
+            ["operator_disabled", "operator_enabled", "disabled"]
+        )
+        assert latest == [items[0], items[2], items[3], items[5]]
 
     run(make_store(), body)
 

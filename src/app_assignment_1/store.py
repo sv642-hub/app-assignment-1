@@ -34,7 +34,6 @@ INTERVENTION_LIMIT = 50
 RELEASE_EVENT_LIMIT = 200
 # Any fixed number works; it only has to be the same for every gateway process.
 MIGRATION_LOCK = 670001
-OPERATOR_ACTIONS = ("operator_disabled", "operator_enabled")
 
 
 class Store(Protocol):
@@ -69,9 +68,10 @@ class Store(Protocol):
         """The last `limit` interventions, oldest first."""
         ...
 
-    async def latest_operator_actions(self) -> list[Intervention]:
-        """Each model's newest operator_disabled or operator_enabled, however
-        old, oldest first."""
+    async def latest_interventions(self, actions: Sequence[str]) -> list[Intervention]:
+        """Each model's newest intervention of each of `actions`, however old,
+        oldest first. Restore reads resets and holds from this, so a long run
+        of newer interventions on the other model can't hide them."""
         ...
 
     async def save_monitor_samples(self, items: Sequence[MonitorSample]) -> None: ...
@@ -117,6 +117,7 @@ class MemoryStore:
         self.jev_assessments: deque[JevAssessment] = deque(maxlen=2 * limit)
         # About two per request: a failure sample and a semantic one.
         self.monitor_samples: deque[MonitorSample] = deque(maxlen=4 * limit)
+        self.monitor_sample_ids: set[UUID] = set()
         self.release_events: deque[ReleaseEvent] = deque(maxlen=RELEASE_EVENT_LIMIT)
         # Kept apart from the bounded history, so it never loses a model.
         self.latest_releases: dict[str, ReleaseEvent] = {}
@@ -148,15 +149,22 @@ class MemoryStore:
     async def recent_interventions(self, limit: int) -> list[Intervention]:
         return list(self.interventions)[-limit:] if limit > 0 else []
 
-    async def latest_operator_actions(self) -> list[Intervention]:
-        latest: dict[str, Intervention] = {}
-        for item in self.interventions:
-            if item.action in OPERATOR_ACTIONS:
-                latest[item.backend] = item
-        return sorted(latest.values(), key=lambda i: i.at)
+    async def latest_interventions(self, actions: Sequence[str]) -> list[Intervention]:
+        latest: dict[tuple[str, str], int] = {}
+        items = list(self.interventions)
+        for index, item in enumerate(items):
+            if item.action in actions:
+                latest[(item.backend, item.action)] = index
+        return [items[index] for index in sorted(latest.values())]
 
     async def save_monitor_samples(self, items: Sequence[MonitorSample]) -> None:
-        self.monitor_samples.extend(items)
+        for item in items:
+            if item.id in self.monitor_sample_ids:
+                continue  # a retried save
+            if len(self.monitor_samples) == self.monitor_samples.maxlen:
+                self.monitor_sample_ids.discard(self.monitor_samples[0].id)
+            self.monitor_samples.append(item)
+            self.monitor_sample_ids.add(item.id)
 
     async def recent_monitor_samples(self, per_window: int) -> list[MonitorSample]:
         kept: list[MonitorSample] = []
@@ -333,17 +341,18 @@ class PostgresStore:
             for at, backend, action, reason in rows
         ]
 
-    async def latest_operator_actions(self) -> list[Intervention]:
+    async def latest_interventions(self, actions: Sequence[str]) -> list[Intervention]:
         async with self.pool.connection() as conn:
             cur = await conn.execute(
                 """
                 SELECT at, backend, action, reason FROM (
-                    SELECT DISTINCT ON (backend) seq, at, backend, action, reason
+                    SELECT DISTINCT ON (backend, action)
+                        seq, at, backend, action, reason
                     FROM interventions WHERE action = ANY(%s)
-                    ORDER BY backend, seq DESC
+                    ORDER BY backend, action, seq DESC
                 ) AS latest ORDER BY seq
                 """,
-                (list(OPERATOR_ACTIONS),),
+                (list(actions),),
             )
             rows = await cur.fetchall()
         return [
@@ -357,16 +366,20 @@ class PostgresStore:
         async with self.pool.connection() as conn:
             async with conn.cursor() as cur:
                 await cur.executemany(
-                    "INSERT INTO monitor_samples (at, model, monitor, outcome, traffic)"
-                    " VALUES (%s, %s, %s, %s, %s)",
-                    [(s.at, s.model, s.monitor, s.outcome, s.traffic) for s in items],
+                    "INSERT INTO monitor_samples"
+                    " (id, at, model, monitor, outcome, traffic)"
+                    " VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
+                    [
+                        (s.id, s.at, s.model, s.monitor, s.outcome, s.traffic)
+                        for s in items
+                    ],
                 )
 
     async def recent_monitor_samples(self, per_window: int) -> list[MonitorSample]:
         async with self.pool.connection() as conn:
             cur = await conn.execute(
                 """
-                SELECT at, model, monitor, outcome, traffic FROM (
+                SELECT id, at, model, monitor, outcome, traffic FROM (
                     SELECT *, row_number() OVER (
                         PARTITION BY model, monitor, traffic ORDER BY seq DESC
                     ) AS newest
@@ -380,9 +393,14 @@ class PostgresStore:
             rows = await cur.fetchall()
         return [
             MonitorSample(
-                at=at, model=model, monitor=monitor, outcome=outcome, traffic=traffic
+                id=id,
+                at=at,
+                model=model,
+                monitor=monitor,
+                outcome=outcome,
+                traffic=traffic,
             )
-            for at, model, monitor, outcome, traffic in rows
+            for id, at, model, monitor, outcome, traffic in rows
         ]
 
     async def save_release_events(self, items: Sequence[ReleaseEvent]) -> None:

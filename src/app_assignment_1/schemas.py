@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 from typing import Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -212,9 +212,11 @@ class MonitorSample(StrictModel):
 
     `failure`: the controller's outcome for one call (ok, format_failure or
     call_error). `semantic`: one reply scored against Jev (agree, disagree or
-    no_signal), with `traffic` own or rerouted. No message text.
+    no_signal), with `traffic` own or rerouted. No message text. `id` is
+    made once, so a save retried after a cancel can't store it twice.
     """
 
+    id: UUID = Field(default_factory=uuid4)
     at: datetime
     model: BackendName
     monitor: Literal["failure", "semantic"]

@@ -5,6 +5,8 @@
 
 CREATE TABLE monitor_samples (
     seq bigserial PRIMARY KEY,           -- insertion order, newest = highest
+    id uuid NOT NULL UNIQUE,             -- made by the gateway; a retried save
+                                         -- of the same sample is skipped
     at timestamptz NOT NULL,
     model text NOT NULL,
     monitor text NOT NULL,               -- failure or semantic
@@ -15,3 +17,7 @@ CREATE TABLE monitor_samples (
 
 CREATE INDEX monitor_samples_window
     ON monitor_samples (model, monitor, traffic, seq DESC);
+
+-- Restore reads each model's newest intervention of each action.
+CREATE INDEX interventions_latest
+    ON interventions (backend, action, seq DESC);

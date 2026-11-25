@@ -9,7 +9,7 @@ Postgres; `unsaved` holds the ones it has not saved yet.
 
 import time
 from collections import Counter, deque
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
@@ -27,6 +27,9 @@ Outcome = Literal["ok", "format_failure", "call_error"]
 # Interventions that start or end a cooldown. Both kinds of enable clear the
 # window; an operator enable also ends a running cooldown.
 WINDOW_EVENTS = ("disabled", "re-enabled", "operator_enabled")
+OPERATOR_ACTIONS = ("operator_disabled", "operator_enabled")
+# What a restart reads back: each model's newest of each (Store.latest_interventions).
+RESTORE_ACTIONS = tuple(dict.fromkeys(WINDOW_EVENTS + OPERATOR_ACTIONS))
 OUTCOMES: tuple[Outcome, ...] = ("ok", "format_failure", "call_error")
 DisabledFor = Literal["failure", "semantic"]
 # Every semantic disable reason starts with this (see Gateway._semantic_reason),
@@ -330,7 +333,7 @@ class Controller:
         interventions: Sequence[Intervention],
         samples: Sequence[MonitorSample],
         now: datetime,
-        operator_actions: Sequence[Intervention] | None = None,
+        resets: Mapping[BackendName, datetime] | None = None,
     ) -> dict[BackendName, datetime | None]:
         """Rebuild the windows, cooldowns and operator holds after a restart.
 
@@ -338,14 +341,15 @@ class Controller:
         left, unless an operator ended it. A re-enable, by the controller or an
         operator, clears a model's window, so only samples after the last one
         go back in, or after the end of a cooldown that ended while it was
-        stopped. A model whose last operator action was a disable is held
-        again; `operator_actions`, when given, is where that is read from, so
-        a hold older than `interventions` still counts. A resumed
-        cooldown keeps its reason, failure or semantic, so a semantic disable
-        is still a last resort.
-        `interventions` and `samples` are oldest first. Returns each model's
-        cutoff: its window starts after that time, or from the oldest sample
-        for None.
+        stopped. `resets` gives other times a model's window was cleared, such
+        as a release deploy or rollback; the latest of all of them wins. A
+        model whose last operator action was a disable is held again. A
+        resumed cooldown keeps its reason, failure or semantic, so a semantic
+        disable is still a last resort.
+        `interventions` are oldest first, and only the newest of each action
+        per model matters, so `Store.latest_interventions(RESTORE_ACTIONS)` is
+        enough. `samples` are oldest first. Returns each model's cutoff: its
+        window starts after that time, or from the oldest sample for None.
         """
         cutoffs: dict[BackendName, datetime | None] = {}
         for name, window in self.windows.items():
@@ -374,13 +378,13 @@ class Controller:
                     cutoff = last.at + timedelta(seconds=self.cooldown)
                 else:
                     cutoff = last.at
+            reset = (resets or {}).get(name)
+            if reset is not None and (cutoff is None or reset > cutoff):
+                cutoff = reset
             holds = [
                 i.action
-                for i in (
-                    interventions if operator_actions is None else operator_actions
-                )
-                if i.backend == name
-                and i.action in ("operator_disabled", "operator_enabled")
+                for i in interventions
+                if i.backend == name and i.action in OPERATOR_ACTIONS
             ]
             if holds and holds[-1] == "operator_disabled":
                 self.held.add(name)
