@@ -11,10 +11,10 @@ The stack testers use.
 | | |
 | --- | --- |
 | Checkout | `~/app-assignment-1`, on `main` |
-| Compose project | `app-assignment-1`, **not** the README's `smart-gateway-prototype`. Use `docker compose -p app-assignment-1 ...` |
+| Compose project | `app-assignment-1`, as in the README. Use `docker compose -p app-assignment-1 ...` |
 | Services | `gateway`, `postgres`, `proxy`, `prometheus`. Only the proxy publishes a port, 8080 |
 | Settings | `env/.env`: `APP_ENVIRONMENT=production` and `APP_DATABASE_URL`. `env/postgres.env`: `POSTGRES_PASSWORD`. Both are mode 600 and ignored by Git. `env/compose.defaults.env` still supplies the non-secret defaults |
-| Not set yet | `APP_OPERATOR_TOKEN`, so the operator routes answer 403. `APP_VLLM_SMALL_BASE_URL`, `APP_VLLM_LARGE_BASE_URL`, `APP_VLLM_API_KEY`, because the gateway does not call vLLM yet. `APP_JEV_MODE`, so Jev is the mock |
+| Not set yet | `APP_OPERATOR_TOKEN`, so the operator routes answer 403. `APP_PROVIDER_MODE`, so the gateway uses the mock models, and with it `APP_VLLM_SMALL_BASE_URL`, `APP_VLLM_LARGE_BASE_URL` and `APP_VLLM_API_KEY`. `APP_JEV_MODE`, so Jev is the mock |
 | Start at boot | `smart-gateway-cpu.service` (`deploy/autostart/`), installed with `PROJECT_NAME=app-assignment-1` |
 | Other stacks | `guacamole` is Jetstream2's web desktop. Leave it alone |
 
@@ -61,6 +61,6 @@ Newest first. Times are UTC.
 
 ## Next changes, and who makes them
 
-- **Verness, connecting the gateway to vLLM:** set `APP_VLLM_SMALL_BASE_URL`, `APP_VLLM_LARGE_BASE_URL` and `APP_VLLM_API_KEY` in the CPU instance's `env/.env`. Pavlos does this, because he holds the key and the addresses. The deployed gateway accepts these settings now, since #96 is deployed.
+- **Pavlos, after #113 merges: reinstall both units.** The units in `main` add `--no-build --pull never`, a wait limit and a 3-try limit, and the GPU preflight now checks every file of both models. Run `deploy/autostart/gpu-preflight.sh && echo ready` on the GPU host first, then the README's install steps on each instance.
+- **Real models on the deployment:** main can now call vLLM (#117) with `APP_PROVIDER_MODE=real`, `APP_VLLM_SMALL_BASE_URL`, `APP_VLLM_LARGE_BASE_URL` and `APP_VLLM_API_KEY` in the CPU instance's `env/.env`. Pavlos sets them, because he holds the key and the addresses, once the team agrees testers should get the real models. The GPU host must then be up whenever the CPU stack is, or every chat answers 503.
 - **The operator token:** if operators need the routes on the deployment, set a long random `APP_OPERATOR_TOKEN` in `env/.env`. Never use the demo token; the gateway refuses it in production.
-- **README deploy steps:** they still name `~/smart-ai-gateway-prototype` and project `smart-gateway-prototype`. Either the steps change to match the instance, or the instance moves to match them.

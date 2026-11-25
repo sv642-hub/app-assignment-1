@@ -11,9 +11,13 @@ Description=Smart AI Gateway vLLM servers (compose.gpu.yml)
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target
-# Up to 10 tries, 30 seconds apart, while the volume, network or GPU comes up.
-StartLimitIntervalSec=15min
-StartLimitBurst=10
+# 3 tries in all. The preflight already waits up to 5 minutes for the IP,
+# the volume and the GPU, and `up` gives up after 20 minutes, so one try takes
+# at most about 26 minutes. The interval is longer than 3 tries, so a slow
+# failure still counts towards the limit and the unit stops after the third:
+# `systemctl reset-failed` clears it.
+StartLimitIntervalSec=2h
+StartLimitBurst=3
 
 [Service]
 Type=oneshot
@@ -21,9 +25,10 @@ RemainAfterExit=yes
 WorkingDirectory=CHECKOUT_DIR
 ExecStartPre=CHECKOUT_DIR/deploy/autostart/gpu-preflight.sh
 ExecStartPre=/usr/bin/docker compose -f compose.gpu.yml --env-file env/gpu.env -p smart-gateway-gpu down
-ExecStart=/usr/bin/docker compose -f compose.gpu.yml --env-file env/gpu.env -p smart-gateway-gpu up -d --wait
+ExecStart=/usr/bin/docker compose -f compose.gpu.yml --env-file env/gpu.env -p smart-gateway-gpu up -d --wait --wait-timeout 1200 --no-build --pull never
 ExecStop=/usr/bin/docker compose -f compose.gpu.yml --env-file env/gpu.env -p smart-gateway-gpu down
-# Loading both models from the cache takes a few minutes.
+# Loading both models from the cache takes about 3 minutes; this covers the
+# preflight's wait and `up`'s own 20-minute limit.
 TimeoutStartSec=30min
 Restart=on-failure
 RestartSec=30s

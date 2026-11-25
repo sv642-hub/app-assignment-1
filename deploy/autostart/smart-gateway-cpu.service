@@ -6,21 +6,25 @@
 #
 # Starting through Compose keeps depends_on (Postgres healthy before the
 # gateway) and --wait reports a stack that never gets healthy as a failure.
-# It does not build: it starts the images from the last deploy.
+# It never builds or pulls: it starts the images from the last deploy, and
+# fails if one is missing.
 [Unit]
 Description=Smart AI Gateway stack (compose.yml)
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target
-StartLimitIntervalSec=15min
-StartLimitBurst=10
+# 3 tries in all, 30 seconds apart; one try takes at most about 6 minutes,
+# so the interval covers all three and the unit then stops. `systemctl
+# reset-failed` clears it.
+StartLimitIntervalSec=1h
+StartLimitBurst=3
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=CHECKOUT_DIR
 ExecStartPre=/usr/bin/docker compose -p PROJECT_NAME down
-ExecStart=/usr/bin/docker compose -p PROJECT_NAME up -d --wait
+ExecStart=/usr/bin/docker compose -p PROJECT_NAME up -d --wait --wait-timeout 300 --no-build --pull never
 ExecStop=/usr/bin/docker compose -p PROJECT_NAME down
 TimeoutStartSec=10min
 Restart=on-failure

@@ -425,16 +425,16 @@ On the instance:
 ```bash
 df -h /
 git clone --branch main --single-branch \
-  https://github.com/sv642-hub/app-assignment-1.git smart-ai-gateway-prototype
-cd smart-ai-gateway-prototype
+  https://github.com/sv642-hub/app-assignment-1.git
+cd app-assignment-1
 docker compose version
 ```
 
 Before starting Compose, set your own database password as described in [Storage](#storage) and set `APP_ENVIRONMENT=production` in `env/.env`. The production template sets this for you. The gateway then refuses the public database password and demo operator token. Keep `compose.demo.yml` on the local demo stack.
 
 ```bash
-docker compose -p smart-gateway-prototype up -d --build --wait
-docker compose -p smart-gateway-prototype ps
+docker compose -p app-assignment-1 up -d --build --wait
+docker compose -p app-assignment-1 ps
 curl -fsS http://127.0.0.1:8080/v1/health
 python3 scripts/smoke_compose.py http://127.0.0.1:8080
 ```
@@ -442,9 +442,9 @@ python3 scripts/smoke_compose.py http://127.0.0.1:8080
 These deployment commands target `main` after this PR is merged. For updates:
 
 ```bash
-cd ~/smart-ai-gateway-prototype
+cd ~/app-assignment-1
 git pull --ff-only
-docker compose -p smart-gateway-prototype up -d --build --wait
+docker compose -p app-assignment-1 up -d --build --wait
 ```
 
 Allow inbound TCP **8080** in the instance's security group and host firewall. Keep the existing SSH access rule. Do not publish the gateway or database ports. If 8080 is already occupied, identify that service before stopping anything.
@@ -546,10 +546,10 @@ Both instances get shelved to save allocation. A systemd unit on each starts its
 
 Each unit runs `down` and then `up -d --wait`, so Compose starts the services in order and waits until they are healthy. That matters most on the GPU host. Docker restarts containers at boot by itself, but all at once and ignoring `depends_on`, so both vLLM servers would claim GPU memory together. Before starting, the GPU unit runs [`gpu-preflight.sh`](deploy/autostart/gpu-preflight.sh), which checks three things:
 - `VLLM_BIND_IP` is still this host's address
-- `MODEL_CACHE_DIR` holds the weights, so the volume is mounted
+- `MODEL_CACHE_DIR` is mounted and holds both pinned models in full: every file of the revisions in `compose.gpu.yml`, with no unfinished download
 - `nvidia-smi` sees the GPU
 
-If any of these is not ready, the unit tries again every 30 seconds, up to 10 times. Each unit also runs `down` at shutdown.
+It gives the IP, the volume and the GPU up to 5 minutes to appear after boot. If they don't, or a stack doesn't get healthy (5 minutes on the CPU instance, 20 on the GPU host), the unit tries again 30 seconds later, 3 tries in all, and then stops. A stopped unit needs `sudo systemctl reset-failed` before it can be started by hand. The units never build or pull images: they start the ones from the last deploy, and fail if one is missing. Each unit also runs `down` at shutdown.
 
 **Install**, once per instance, from its checkout. Starting the unit restarts that stack once: a few seconds on the CPU instance, a few minutes on the GPU host while the models load.
 
@@ -557,7 +557,7 @@ On the CPU instance, first run `docker compose ls`. Note the stack's NAME, and t
 
 ```bash
 # CPU instance, in the folder that `docker compose ls` shows; PROJECT is its NAME
-PROJECT=smart-gateway-prototype
+PROJECT=app-assignment-1
 sed -e "s|CHECKOUT_DIR|$PWD|g" -e "s|PROJECT_NAME|$PROJECT|g" \
   deploy/autostart/smart-gateway-cpu.service \
   | sudo tee /etc/systemd/system/smart-gateway-cpu.service >/dev/null
@@ -578,9 +578,16 @@ systemctl status smart-gateway-gpu --no-pager      # or smart-gateway-cpu
 sudo journalctl -u smart-gateway-gpu -b --no-pager # what happened at this boot (needs sudo)
 ```
 
-If the unit failed, the log names the reason, for example `VLLM_BIND_IP=... is not an address of this host`. Fix it, then run `sudo systemctl restart smart-gateway-gpu`.
+If the unit failed, the log names the reason, for example `VLLM_BIND_IP=... is not an address of this host`. Fix it, then start it again:
 
-Deploying an update does not change: `git pull` and `docker compose -p smart-gateway-prototype up -d --build --wait` as above. The next boot starts the newly built images. To stop a stack until the next boot, run `sudo systemctl stop smart-gateway-cpu` (or `-gpu`). To stop it starting at boot, run `sudo systemctl disable smart-gateway-cpu`.
+```bash
+sudo systemctl reset-failed smart-gateway-gpu   # clears the 3-try limit
+sudo systemctl restart smart-gateway-gpu
+```
+
+To run the GPU checks by hand, from the checkout: `deploy/autostart/gpu-preflight.sh && echo ready`.
+
+Deploying an update does not change: `git pull` and `docker compose -p app-assignment-1 up -d --build --wait` as above. The next boot starts the newly built images. To stop a stack until the next boot, run `sudo systemctl stop smart-gateway-cpu` (or `-gpu`). To stop it starting at boot, run `sudo systemctl disable smart-gateway-cpu`.
 
 ## Tests and project layout
 
