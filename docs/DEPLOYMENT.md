@@ -37,11 +37,20 @@ The two vLLM servers. Only the CPU instance can reach them, over the private net
 | Servers | `vllm-small` (Qwen3-1.7B) on 8001 and `vllm-large` (Qwen3-4B) on 8002, bound to the private IP only |
 | Settings | `env/gpu.env`: `VLLM_BIND_IP`, `MODEL_CACHE_DIR`, `VLLM_API_KEY`, and `HF_HUB_OFFLINE=1`, so starts never contact Hugging Face. Ignored by Git |
 | Model weights | The attached volume at `/media/volume/gpu-models` (`MODEL_CACHE_DIR`) |
-| Start at boot | `smart-gateway-gpu.service`. It checks the bind IP, the volume and the GPU, then starts `vllm-small`, then `vllm-large`. About 3 minutes |
+| Start at boot | `smart-gateway-gpu.service`, the version from `b9a93b7`. It checks the bind IP, both pinned models in full and the GPU, then starts `vllm-small`, then `vllm-large`, with no build or pull. About 3 minutes |
 
 ## Change log
 
 Newest first. Times are UTC.
+
+### 2026-11-25
+
+- **GPU: shelved, and could not be unshelved for a while.** Jetstream2 had no GPU capacity. Once it came back, the unit started both servers at boot with nobody logged in.
+- **GPU: new start-at-boot unit installed** from `feat/autostart` at `b9a93b7` (#113 review fixes). Before installing:
+  - `gpu-preflight.sh`, run by hand, printed `ready` against the real cache, so both pinned snapshots are complete, `tokenizer.json` included.
+  - This host's Compose supports `--no-build`, `--pull never` and `--wait-timeout`.
+
+  After `systemctl restart`, the unit reached `active (exited)`: the preflight passed as root, then `down`, then `up` waited until both servers were healthy.
 
 ### 2026-11-24
 
@@ -61,6 +70,6 @@ Newest first. Times are UTC.
 
 ## Next changes, and who makes them
 
-- **Pavlos, after #113 merges: reinstall both units.** The units in `main` add `--no-build --pull never`, a wait limit and a 3-try limit, and the GPU preflight now checks every file of both models. Run `deploy/autostart/gpu-preflight.sh && echo ready` on the GPU host first, then the README's install steps on each instance.
+- **Pavlos, after #113 merges: reinstall the CPU unit**, with the README's install steps. The new unit adds `--no-build --pull never`, a wait limit and a 3-try limit. First check that the CPU host's Compose has those flags (`docker compose up --help`). The GPU unit is already the new version; there, only `git checkout main && git pull` is left.
 - **Real models on the deployment:** main can now call vLLM (#117) with `APP_PROVIDER_MODE=real`, `APP_VLLM_SMALL_BASE_URL`, `APP_VLLM_LARGE_BASE_URL` and `APP_VLLM_API_KEY` in the CPU instance's `env/.env`. Pavlos sets them, because he holds the key and the addresses, once the team agrees testers should get the real models. The GPU host must then be up whenever the CPU stack is, or every chat answers 503.
 - **The operator token:** if operators need the routes on the deployment, set a long random `APP_OPERATOR_TOKEN` in `env/.env`. Never use the demo token; the gateway refuses it in production.
