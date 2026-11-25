@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 
 from pydantic import TypeAdapter, ValidationError
 
-from app_assignment_1.backends import Backend, MockBackend
+from app_assignment_1.backends import UNKNOWN_REPLY, Backend, MockBackend
 from app_assignment_1.breaker import CircuitBreaker
 from app_assignment_1.config import Settings, settings_version
 from app_assignment_1.intents import load_intents
@@ -685,12 +685,27 @@ class Gateway:
             format_errors = ["uncarded_policy_facts"] if facts else []
             reply = UNCARDED_REPLY
         else:
+            # The model's own text is still checked, so a malformed reply counts
+            # as a format failure. It is never shown or stored, though: it can
+            # repeat the customer's message or say things the card doesn't. The
+            # customer gets text built from approved content only.
             format_errors = check_reply(reply)
             if intent not in self.labels.names:
                 format_errors.append("unknown_label")
-            elif intent == UNKNOWN and facts:
+            elif intent == UNKNOWN:
                 # No intent means no card, so there is nothing to ground facts.
-                format_errors.append("unknown_policy_facts")
+                if facts:
+                    format_errors.append("unknown_policy_facts")
+                reply = UNKNOWN_REPLY
+            else:
+                card = self.cards[intent]
+                if not set(facts) <= set(card.facts):
+                    format_errors.append("unknown_policy_facts")
+                elif not facts:
+                    format_errors.append("missing_policy_facts")
+                # The chosen facts, in the card's order, once each.
+                facts = [fact for fact in card.facts if fact in facts]
+                reply = card.reply_template.format(facts=" ".join(facts))
         if format_errors:
             # Keep malformed generated content out of the UI and stored response.
             intent = "unknown"
@@ -754,8 +769,6 @@ class Gateway:
                     else "unsupported_topic"
                     if uncarded
                     else "policy_template"
-                    if mocked
-                    else "generated"
                 ),
                 confidence=decision.confidence,
                 latency_ms=round((perf_counter() - start) * 1000, 2),

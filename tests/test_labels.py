@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from app_assignment_1.backends import UNKNOWN_REPLY
 from app_assignment_1.config import Settings
 from app_assignment_1.intents import load_intents
 from app_assignment_1.labels import UNKNOWN, load_labels
@@ -122,13 +123,17 @@ def test_unknown_without_policy_facts_still_passes():
     result = chat_with(
         BackendReply(intent=UNKNOWN, reply="Please describe it.", policy_facts=[])
     )
-    assert result.reply == "Please describe it."
+    # The model's own text is never shown: the gateway's fixed reply is.
+    assert result.reply == UNKNOWN_REPLY
     assert result.trace.reply_source == "no_match"
     assert result.trace.format_check == "passed"
 
 
 def test_empty_reply_for_a_carded_intent_still_fails():
-    result = chat_with(BackendReply(intent="card_arrival", reply="", policy_facts=[]))
+    fact = "DemoBank standard cards arrive within 5 business days."
+    result = chat_with(
+        BackendReply(intent="card_arrival", reply="", policy_facts=[fact])
+    )
     assert result.trace.format_errors == ["empty_reply"]
 
 

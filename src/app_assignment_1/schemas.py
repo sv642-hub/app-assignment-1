@@ -45,8 +45,9 @@ class Trace(StrictModel):
     jev_choice: Route | None
     route: Route
     model: BackendName
-    # policy_template: a mock filled a card's template. generated: a real model
-    # wrote the reply.
+    # policy_template: the gateway filled the card's template with the facts the
+    # model chose, for mock and real models alike. generated: a real model's
+    # own text; no longer returned, kept so older stored requests still load.
     reply_source: Literal[
         "policy_template",
         "generated",
