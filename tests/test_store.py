@@ -13,7 +13,7 @@ import asyncio
 import logging
 import os
 import time
-from collections.abc import Awaitable, Callable, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -21,7 +21,6 @@ from uuid import UUID, uuid4
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
-from psycopg import sql
 from pydantic import ValidationError
 
 from app_assignment_1.api import create_app
@@ -31,6 +30,7 @@ from app_assignment_1.router import MockJevRouter
 from app_assignment_1.schemas import ChatResponse, Intervention, Trace
 from app_assignment_1.service import Gateway
 from app_assignment_1.store import (
+    MIGRATIONS,
     MemoryStore,
     PostgresStore,
     Store,
@@ -40,23 +40,6 @@ from app_assignment_1.store import (
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 MakeStore = Callable[..., Store]
-
-
-@pytest.fixture
-def postgres_url() -> Iterator[str]:
-    if not DATABASE_URL:
-        pytest.skip("Set TEST_DATABASE_URL to run the Postgres store tests")
-    schema = f"test_{uuid4().hex[:12]}"
-    with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
-        conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
-    sep = "&" if "?" in DATABASE_URL else "?"
-    try:
-        yield f"{DATABASE_URL}{sep}options=-csearch_path%3D{schema}"
-    finally:
-        with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
-            conn.execute(
-                sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema))
-            )
 
 
 @pytest.fixture(params=["memory", "postgres"])
@@ -309,15 +292,15 @@ def test_migrations_run_once(postgres_url: str) -> None:
             second = await migrate(conn)
             cur = await conn.execute("SELECT version, name FROM schema_migrations")
             rows = await cur.fetchall()
-        assert first == [
+        # Every file in migrations/, in order, so a new migration needs no edit.
+        files = sorted(path.name for path in MIGRATIONS.glob("*.sql"))
+        assert files[:2] == [
             "001_requests_and_interventions.sql",
             "002_jev_assessments.sql",
         ]
+        assert first == files
         assert second == []
-        assert sorted(rows) == [
-            (1, "001_requests_and_interventions.sql"),
-            (2, "002_jev_assessments.sql"),
-        ]
+        assert sorted(rows) == [(int(name.split("_", 1)[0]), name) for name in files]
 
     asyncio.run(main())
 

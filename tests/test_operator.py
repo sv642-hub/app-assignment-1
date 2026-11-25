@@ -291,10 +291,25 @@ def test_none_clears_every_fault(client):
         {"model": SMALL, "fault": "slow", "seconds": 0},
         {"model": SMALL, "fault": "slow", "seconds": 121},
         {"model": SMALL, "fault": "outage", "seconds": 5},  # only slow takes them
+        {"model": SMALL, "fault": "outage", "seconds": None},  # not even as null
     ],
 )
 def test_bad_fault_requests_are_rejected(client, body):
     assert client.post("/v1/faults", json=body, headers=AUTH).status_code == 422
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        f'{{"model": "{SMALL}", "fault": "slow", "seconds": NaN}}',
+        f'{{"model": "{SMALL}", "fault": "slow", "seconds": Infinity}}',
+        f'{{"model": "{SMALL}", "fault": "slow", "seconds": 5, "rate": NaN}}',
+        f'{{"model": "{SMALL}", "fault": "outage", "rate": Infinity}}',
+    ],
+)
+def test_nan_and_infinity_are_a_422_not_a_500(client, body):
+    headers = AUTH | {"content-type": "application/json"}
+    assert client.post("/v1/faults", content=body, headers=headers).status_code == 422
 
 
 # --- slow and bad_prompt (docs/CHAOS_SCENARIOS.md, G1 to G3) ---

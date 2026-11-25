@@ -143,6 +143,7 @@ class TypeSafeJevRouter:
             provider_request_id=response.headers.get(REQUEST_ID_HEADER) or None,
             input_tokens=parsed.usage.input_tokens,
             output_tokens=parsed.usage.output_tokens,
+            route_order=list(self.questions["route"]["criteria"]),
         )
 
 
