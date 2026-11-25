@@ -97,14 +97,20 @@ def test_uncarded_intent_gets_the_fixed_reply(generated):
     assert result.trace.format_check == "passed"
 
 
-def test_uncarded_intent_with_policy_facts_fails_format_check():
+def test_uncarded_intent_drops_its_policy_facts():
+    # Nothing the model wrote is shown for an uncarded intent, so leftover facts
+    # are dropped instead of failing the whole reply (#109 test-set run).
     result = chat_with(
-        BackendReply(intent="age_limit", reply="", policy_facts=["Invented fact."])
+        BackendReply(
+            intent="age_limit", reply="Ignored text.", policy_facts=["Invented fact."]
+        )
     )
-    assert result.intent == UNKNOWN
+    assert result.intent == "age_limit"
+    assert result.reply == UNCARDED_REPLY
     assert result.policy_facts == []
-    assert result.trace.reply_source == "format_fallback"
-    assert result.trace.format_errors == ["uncarded_policy_facts"]
+    assert result.trace.reply_source == "unsupported_topic"
+    assert result.trace.format_check == "passed"
+    assert result.trace.format_errors == []
 
 
 def test_unknown_with_policy_facts_fails_format_check():
