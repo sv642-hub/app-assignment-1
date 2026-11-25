@@ -8,13 +8,15 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 
 ## Layout
 
-- `src/app_assignment_1/api.py`: FastAPI app, the `/v1/chat`, `/v1/requests/{id}` and `/v1/health` routes, the operator routes (`/v1/operator/models/{name}/disable` and `/enable`, `/v1/faults`, behind `APP_OPERATOR_TOKEN`), and the internal `/metrics` route.
+- `src/app_assignment_1/api.py`: FastAPI app, the `/v1/chat`, `/v1/requests/{id}` and `/v1/health` routes, the operator routes (`/v1/operator/models/{name}/disable` and `/enable`, `/v1/faults` and `/v1/faults/jev`, behind `APP_OPERATOR_TOKEN`), and the internal `/metrics` route.
 - `src/app_assignment_1/auth.py`: `require_operator`, the operator token check every operator route uses (403 while `APP_OPERATOR_TOKEN` is unset, 401 for a missing or wrong token).
 - `src/app_assignment_1/service.py`: gateway flow and reply format checks; saves requests and interventions to the store.
 - `src/app_assignment_1/store.py`: `Store` interface, `MemoryStore` (default) and `PostgresStore` (psycopg 3, plain SQL), plus the migration runner.
 - `src/app_assignment_1/migrations/`: numbered SQL files applied once at startup. Add a new file for schema changes; never edit one that has run.
 - `src/app_assignment_1/router.py`: `Router` interface returning a `JevResult` (route and intent answers), `MockJevRouter`, and the fallback `RuleRouter`.
 - `src/app_assignment_1/jev.py`: the real Jev client (`TypeSafeJevRouter`), one TypeSafe call with the route and intent questions; the app uses it when `APP_JEV_MODE=real` (default `mock`).
+- `src/app_assignment_1/vllm.py`: `VLLMBackend`, the real Qwen client (one OpenAI-style chat call to vLLM with a JSON schema), and its typed failures.
+- `src/app_assignment_1/real_backends.py`: builds the two `VLLMBackend`s and their HTTP clients when `APP_PROVIDER_MODE=real`.
 - `src/app_assignment_1/breaker.py`: the Jev circuit breaker; while it is open the gateway skips Jev and uses the rule router.
 - `src/app_assignment_1/backends.py`: `Backend` interface and `MockBackend` (the mock Qwen backends).
 - `src/app_assignment_1/intents.py`: keyword matching over the configured intents, shared by the mocks.
@@ -32,14 +34,18 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 - `tests/`: pytest suite. Frontend tests are in `frontend/src/App.test.jsx`.
 - `scripts/smoke_compose.py`: smoke test against the public proxy.
 - `scripts/probe_false_pass.py`: simulates how often the probe gate passes with no signal (see `docs/PROBE.md`).
+- `scripts/export_analysis.py`: exports requests and Jev assessments from Postgres as JSON Lines for analysis, without reply text.
 - `scripts/jev_live_check.py`: the B6 live Jev check, run by hand with a TypeSafe key. `sample` draws messages from the Banking77 training split, `run` calls Jev once per message, and `summarize` prints the measurements. Its logs keep no message text.
+- `scripts/chaos_demo.py`: live chaos demo; injects the three faults through `/v1/faults` into a stack started with `compose.demo.yml` and prints what the controller did. Runbook: `docs/CHAOS_DEMO.md`.
 - `scripts/render_architecture.py`: draws `docs/architecture.svg` from `docs/architecture.yaml`; `--check` fails if they differ.
 - `env/`: `.env.example`, `.env.production.example` and `postgres.env.example` templates. Real `env/.env` and `env/postgres.env` are optional and ignored by git. `compose.defaults.env` holds public throwaway values (store and database password) so Compose and CI start without private files; never use it for a deployment.
-- `compose.yml`: `gateway`, `postgres` (named volume `postgres-data`), `proxy` and `prometheus` services; only `proxy` publishes a port. `compose.chaos.yml`: override that makes the small model corrupt every reply. `compose.outage.yml`: override that makes every call to the small model raise an error. `compose.labelswap.yml`: override that makes the small model answer with the wrong intent and turns semantic actions on, so the controller disables it.
+- `compose.yml`: `gateway`, `postgres` (named volume `postgres-data`), `proxy` and `prometheus` services; only `proxy` publishes a port. `compose.chaos.yml`: override that makes the small model corrupt every reply. `compose.outage.yml`: override that makes every call to the small model raise an error. `compose.labelswap.yml`: override that makes the small model answer with the wrong intent and turns semantic actions on, so the controller disables it. `compose.demo.yml`: demo-only override with a public operator token, semantic actions on and a 20 s cooldown, for `scripts/chaos_demo.py`.
 - `compose.gpu.yml`: a separate Compose project for the GPU host. `vllm-small` (Qwen3-1.7B, port 8001) and `vllm-large` (Qwen3-4B, port 8002), with pinned vLLM and model revisions. The model cache is a host directory, `MODEL_CACHE_DIR` (an attached volume on Jetstream2). Each binds only to `VLLM_BIND_IP` from `env/gpu.env` and requires the bearer key `VLLM_API_KEY` on `/v1`; all three settings are required (template `env/gpu.env.example`; the real file is ignored by git). `tests/test_compose_ports.py` checks the port rules.
 - `deploy/autostart/`: systemd units that start each instance's Compose stack at boot (`smart-gateway-cpu.service`, `smart-gateway-gpu.service`), and `gpu-preflight.sh`, which checks the private IP, the model volume and the GPU first. Install steps are in the README, Start at boot. `tests/test_autostart.py` checks the units' Compose commands.
 - `Caddyfile`: serves the React app on port 8080 and proxies `/v1`, `/docs`, `/redoc` and `/openapi.json` to the gateway. Never add `/metrics`.
-- `prometheus/prometheus.yml`: Prometheus scrape config; scrapes `gateway:8000/metrics` on the Compose network.
+- `prometheus/prometheus.yml`: Prometheus scrape config; scrapes `gateway:8000/metrics` on the Compose network. `prometheus/alerts.yml`: alert rules (no Alertmanager yet), tested by `prometheus/alerts_test.yml` with promtool and by `tests/test_alert_rules.py`.
+- `docs/MONITORING.md`: the monitoring and recovery runbook, with one section per alert; each alert's `runbook_url` links to it, and a test checks the sections match the rules.
+- `docs/CHAOS_SCENARIOS.md`: the planned chaos scenarios, what each injects, what the gateway should do and what to measure. A plan; nothing in it is measured unless it says so.
 - `docs/DEPLOYMENT.md`: what is running on each Jetstream2 instance now (checkout, Compose project, which env files and settings, start at boot) and a change log. No IPs or secret values. Update it with any change to an instance.
 - `docs/TEAM_PLAN.md`: who owns what. `USER_BRIEF.md`: guide for beta testers.
 - `docs/architecture.yaml`: what is built, simulated or planned in each part of the architecture, and who owns it. `docs/architecture.svg` is generated from it.
