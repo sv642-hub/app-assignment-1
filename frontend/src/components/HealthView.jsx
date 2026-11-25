@@ -4,7 +4,81 @@ const ACTION_LABELS = {
   kept_last_backend: "kept last backend",
   operator_disabled: "disabled by operator",
   operator_enabled: "enabled by operator",
+  rolled_back: "rolled back",
 };
+
+const RELEASE_STATUS = {
+  stable: { label: "Stable", tone: "good" },
+  watching: { label: "Watching", tone: "neutral" },
+  rolled_back: { label: "Rolled back", tone: "watch" },
+};
+
+function ReleasesCard({ releases, history }) {
+  const log = [...(history ?? [])].reverse();
+  return (
+    <section className="card">
+      <h2>Releases</h2>
+      <p className="muted small">The version each model serves. After a deploy the controller watches the model; if it crosses the failure threshold before the watch ends, the controller rolls it back to the last good version instead of disabling it. Versions change mock settings only.</p>
+      <div className="table-scroll">
+        <table className="log" aria-label="Releases">
+          <thead>
+            <tr>
+              <th scope="col">Model</th>
+              <th scope="col">Version</th>
+              <th scope="col">Status</th>
+              <th scope="col">Rollback target</th>
+            </tr>
+          </thead>
+          <tbody>
+            {releases.map((r) => {
+              const status = RELEASE_STATUS[r.status] ?? { label: r.status, tone: "neutral" };
+              return (
+                <tr key={r.name}>
+                  <td className="mono">{r.name}</td>
+                  <td className="mono">{r.version}</td>
+                  <td>
+                    <span className={`pill pill-${status.tone}`}>{status.label}</span>
+                    {r.status === "watching" && <span className="muted small"> {r.watched_samples} of {r.watch_samples} calls</span>}
+                  </td>
+                  <td className="mono">{r.rollback_target ?? "none"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {log.length > 0 && (
+        <div className="table-scroll">
+          <table className="log" aria-label="Release history">
+            <thead>
+              <tr>
+                <th scope="col">Time</th>
+                <th scope="col">Model</th>
+                <th scope="col">Change</th>
+                <th scope="col">By</th>
+                <th scope="col">Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {log.map((e) => (
+                <tr key={`${e.at}-${e.backend}-${e.action}`}>
+                  <td className="mono">{formatTime(e.at)}</td>
+                  <td className="mono">{e.backend}</td>
+                  <td>
+                    {e.action === "confirmed" ? `confirmed ${e.version}` : `${e.action === "deployed" ? "deployed" : "rolled back to"} ${e.version}`}
+                    {e.from_version && e.action !== "confirmed" && <span className="muted small"> (was {e.from_version})</span>}
+                  </td>
+                  <td>{e.actor}</td>
+                  <td>{e.reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
 
 function percent(value) {
   return `${Math.round(value * 100)}%`;
@@ -249,6 +323,21 @@ function JevCard({ breaker, usage }) {
   );
 }
 
+// What the usage table can and cannot show, for mock or real Jev and Qwen.
+function usageNote(health) {
+  const jev = health.jev_mode === "real";
+  const qwen = health.mode === "real";
+  if (!jev && !qwen) {
+    return "Mock mode: token usage and estimated cost are unavailable. No model-provider inference calls are made.";
+  }
+  return [
+    jev ? "Jev calls go to TypeSafe; their tokens and cost are on the Jev router card." : "Jev is a mock.",
+    qwen
+      ? "The Qwen models run on vLLM. Their token usage is not reported yet, and their cost is GPU time, which is not measured."
+      : "The Qwen models are mocks, so their token usage and cost are unavailable.",
+  ].join(" ");
+}
+
 function ModelCard({ model, threshold }) {
   const rate = model.failure_rate ?? 0;
   const disabled = model.disabled_by_controller || model.disabled_by_operator;
@@ -351,6 +440,8 @@ function HealthBody({ health }) {
 
       {health.semantic && health.semantic_rules && <SemanticCard semantic={health.semantic} rules={health.semantic_rules} />}
 
+      {health.releases?.length > 0 && <ReleasesCard releases={health.releases} history={health.release_history} />}
+
       <section className="card">
         <h2>Recent completed requests</h2>
         <p className="muted small">Up to 20 retained requests that got a reply, newest first, including replies that failed the format check. Requests that got no reply (HTTP 503) are not listed. Kept across gateway restarts when it uses Postgres, as in Compose.</p>
@@ -419,9 +510,7 @@ function HealthBody({ health }) {
       <section className="card">
         <h2>Usage since gateway startup</h2>
         <p>
-          {health.jev_mode === "real"
-            ? "Jev calls go to TypeSafe, but their tokens and cost are not shown here yet. The Qwen models are mocks, so their token usage and cost are unavailable."
-            : "Mock mode: token usage and estimated cost are unavailable. No model-provider inference calls are made."}{" "}
+          {usageNote(health)}{" "}
           Infrastructure costs are not measured; these figures cannot establish routing savings.
         </p>
         <p className="muted small">Totals include fallback attempts and do not expire with the monitoring window. A completed call may still fail the format check. In-flight or cancelled calls can leave attempts greater than completed plus failed calls. Resets on restart.</p>

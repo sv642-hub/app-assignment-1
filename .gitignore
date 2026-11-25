@@ -16,6 +16,7 @@ wheels/
 !.env.example
 !.env.production.example
 env/postgres.env
+env/gpu.env
 
 # Test / coverage / type-check artifacts
 .coverage
@@ -44,3 +45,6 @@ CLAUDE.local.md
 # B6 live Jev check: the Banking77 training CSV, samples and call logs.
 # Run logs stay local; summaries go into PR comments or docs by hand.
 live-checks/
+
+# Analysis exports (scripts/export_analysis.py)
+exports/

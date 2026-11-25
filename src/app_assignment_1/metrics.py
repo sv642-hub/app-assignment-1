@@ -12,7 +12,7 @@ from prometheus_client import CollectorRegistry, Counter, Histogram, generate_la
 from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily, Metric
 from prometheus_client.registry import Collector
 
-from app_assignment_1.schemas import InterventionAction
+from app_assignment_1.schemas import BackendErrorCode, InterventionAction
 from app_assignment_1.semantic import SAMPLES
 
 if TYPE_CHECKING:
@@ -105,6 +105,19 @@ class _GatewayStateCollector(Collector):
             calls["failed"].add_metric([usage.name], usage.failed_calls)
         yield from calls.values()
 
+        # Every code for every model, so a rate query sees zeros, not gaps.
+        errors = CounterMetricFamily(
+            "gateway_backend_errors",
+            "Failed backend calls, by model and error code.",
+            labels=["model", "error"],
+        )
+        for usage in gateway.usage.values():
+            for code in get_args(BackendErrorCode):
+                errors.add_metric(
+                    [usage.name, code], usage.failed_by_error.get(code, 0)
+                )
+        yield errors
+
         disabled = GaugeMetricFamily(
             "gateway_model_disabled",
             "1 if the controller has disabled the model, else 0.",
@@ -136,6 +149,18 @@ class _GatewayStateCollector(Collector):
             for action in ACTIONS:
                 interventions.add_metric([action, name], counts[(action, name)])
         yield interventions
+
+        # One series per model, for the version it serves now. Versions come
+        # from the release catalog, a fixed set.
+        release = GaugeMetricFamily(
+            "gateway_model_release",
+            "1 for the version each model serves, with the release status: "
+            "stable, watching or rolled_back.",
+            labels=["model", "version", "status"],
+        )
+        for item in gateway.releases.stats():
+            release.add_metric([item.name, item.version, item.status], 1)
+        yield release
 
         # One label value per process: mocked Jev reports 0 tokens, and the
         # label keeps mock runs apart when series are compared later.

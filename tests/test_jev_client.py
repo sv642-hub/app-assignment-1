@@ -131,6 +131,8 @@ def test_valid_reply_gives_both_answers_and_call_details() -> None:
     assert result.jev_model == "jev-1.14.0"
     assert result.provider_request_id == "req_abc"
     assert (result.input_tokens, result.output_tokens) == (1500, 40)
+    # The order the route criteria were sent in, for the position-bias study.
+    assert result.route_order == ["standard", "complex"]
 
 
 def test_model_comes_from_the_response_not_the_request() -> None:
