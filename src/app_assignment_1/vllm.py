@@ -67,6 +67,9 @@ class VLLMBackend:
                 "/v1/chat/completions",
                 json={
                     "model": self.model,
+                    "max_tokens": 512,
+                    "temperature": 0.0,
+                    "chat_template_kwargs": {"enable_thinking": False},
                     "messages": [
                         {"role": "system", "content": self.system_prompt},
                         {"role": "user", "content": message},

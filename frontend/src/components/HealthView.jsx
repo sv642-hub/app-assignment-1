@@ -249,6 +249,21 @@ function JevCard({ breaker, usage }) {
   );
 }
 
+// What the usage table can and cannot show, for mock or real Jev and Qwen.
+function usageNote(health) {
+  const jev = health.jev_mode === "real";
+  const qwen = health.mode === "real";
+  if (!jev && !qwen) {
+    return "Mock mode: token usage and estimated cost are unavailable. No model-provider inference calls are made.";
+  }
+  return [
+    jev ? "Jev calls go to TypeSafe; their tokens and cost are on the Jev router card." : "Jev is a mock.",
+    qwen
+      ? "The Qwen models run on vLLM. Their token usage is not reported yet, and their cost is GPU time, which is not measured."
+      : "The Qwen models are mocks, so their token usage and cost are unavailable.",
+  ].join(" ");
+}
+
 function ModelCard({ model, threshold }) {
   const rate = model.failure_rate ?? 0;
   const disabled = model.disabled_by_controller || model.disabled_by_operator;
@@ -419,9 +434,7 @@ function HealthBody({ health }) {
       <section className="card">
         <h2>Usage since gateway startup</h2>
         <p>
-          {health.jev_mode === "real"
-            ? "Jev calls go to TypeSafe, but their tokens and cost are not shown here yet. The Qwen models are mocks, so their token usage and cost are unavailable."
-            : "Mock mode: token usage and estimated cost are unavailable. No model-provider inference calls are made."}{" "}
+          {usageNote(health)}{" "}
           Infrastructure costs are not measured; these figures cannot establish routing savings.
         </p>
         <p className="muted small">Totals include fallback attempts and do not expire with the monitoring window. A completed call may still fail the format check. In-flight or cancelled calls can leave attempts greater than completed plus failed calls. Resets on restart.</p>

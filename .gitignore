@@ -48,3 +48,6 @@ live-checks/
 
 # Downloaded evaluation data (scripts/run_eval.py)
 data/cache/
+
+# Analysis exports (scripts/export_analysis.py)
+exports/

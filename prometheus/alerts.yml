@@ -1,0 +1,108 @@
+# Alert rules for the gateway. Prometheus evaluates them every 15 s and shows
+# firing alerts at /alerts and /api/v1/alerts. There is no Alertmanager yet, so
+# nothing is sent anywhere. Tests: prometheus/alerts_test.yml (promtool) and
+# tests/test_alert_rules.py (every metric used here is one the gateway serves).
+# Each alert's runbook_url points to its section in docs/MONITORING.md.
+#
+# Thresholds are starting points for the mock prototype, not measured values.
+# Revisit them once the real models run.
+
+groups:
+  - name: gateway
+    rules:
+      - alert: GatewayDown
+        expr: up{job="gateway"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          runbook_url: https://github.com/sv642-hub/app-assignment-1/blob/main/docs/MONITORING.md#gatewaydown
+          summary: Prometheus cannot scrape the gateway
+          description: The gateway's /metrics has not answered for 1 minute.
+
+      - alert: ModelDisabledByController
+        expr: gateway_model_disabled == 1
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: https://github.com/sv642-hub/app-assignment-1/blob/main/docs/MONITORING.md#modeldisabledbycontroller
+          summary: "The controller disabled {{ $labels.model }}"
+          description: >-
+            Its route's traffic goes to the other model until the cooldown ends.
+            The reason is in /v1/health under interventions.
+
+      - alert: ModelFailureRateRising
+        expr: gateway_monitor_failure_rate >= 0.25 and gateway_monitor_window_samples >= 5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: https://github.com/sv642-hub/app-assignment-1/blob/main/docs/MONITORING.md#modelfailureraterising
+          summary: "{{ $labels.model }} fails {{ $value | humanizePercentage }} of recent calls"
+          description: >-
+            Format failures plus failed calls in the monitor window. The
+            controller acts at APP_MONITOR_FAILURE_THRESHOLD (0.5 by default).
+
+      - alert: PossibleWrongIntents
+        expr: gateway_semantic_above_baseline == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: https://github.com/sv642-hub/app-assignment-1/blob/main/docs/MONITORING.md#possiblewrongintents
+          summary: "{{ $labels.model }} disagrees with Jev above the baseline"
+          description: >-
+            Its replies pass the format check but often name a different intent
+            than Jev. See the semantic monitor on the Health screen.
+
+      - alert: ChatRequestsFailing
+        expr: increase(gateway_chat_unavailable_total[5m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: https://github.com/sv642-hub/app-assignment-1/blob/main/docs/MONITORING.md#chatrequestsfailing
+          summary: Chat requests got a 503 in the last 5 minutes
+          description: No model could answer them, or the request deadline ran out.
+
+      # gateway_chat_requests_total has no series until the first reply, so
+      # "or vector(0)" keeps a full outage after a restart from giving an
+      # empty result. JevMostlySkipped below does the same.
+      - alert: ChatMostlyFailing
+        expr: >-
+          sum(rate(gateway_chat_unavailable_total[5m]))
+            / (sum(rate(gateway_chat_unavailable_total[5m]))
+               + (sum(rate(gateway_chat_requests_total[5m])) or vector(0))) > 0.2
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          runbook_url: https://github.com/sv642-hub/app-assignment-1/blob/main/docs/MONITORING.md#chatmostlyfailing
+          summary: "{{ $value | humanizePercentage }} of chat requests get a 503"
+          description: More than 1 in 5 requests fail for 5 minutes.
+
+      - alert: JevMostlySkipped
+        expr: >-
+          sum(rate(gateway_jev_fallbacks_total[5m]))
+            / ((sum(rate(gateway_chat_requests_total[5m])) or vector(0))
+               + sum(rate(gateway_chat_unavailable_total[5m]))) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: https://github.com/sv642-hub/app-assignment-1/blob/main/docs/MONITORING.md#jevmostlyskipped
+          summary: "Keyword rules route {{ $value | humanizePercentage }} of messages"
+          description: >-
+            Jev times out, errors, gives an invalid route, or its circuit
+            breaker is open. Routing still works, with the rule router.
+
+      - alert: ChatLatencyHigh
+        expr: >-
+          histogram_quantile(0.95,
+            sum by (le) (rate(gateway_chat_latency_seconds_bucket[5m]))) > 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: https://github.com/sv642-hub/app-assignment-1/blob/main/docs/MONITORING.md#chatlatencyhigh
+          summary: p95 chat latency is above 10 s
+          description: The request deadline is 45 s by default.
