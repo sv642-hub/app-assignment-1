@@ -150,6 +150,18 @@ class _GatewayStateCollector(Collector):
                 interventions.add_metric([action, name], counts[(action, name)])
         yield interventions
 
+        # One series per model, for the version it serves now. Versions come
+        # from the release catalog, a fixed set.
+        release = GaugeMetricFamily(
+            "gateway_model_release",
+            "1 for the version each model serves, with the release status: "
+            "stable, watching or rolled_back.",
+            labels=["model", "version", "status"],
+        )
+        for item in gateway.releases.stats():
+            release.add_metric([item.name, item.version, item.status], 1)
+        yield release
+
         # One label value per process: mocked Jev reports 0 tokens, and the
         # label keeps mock runs apart when series are compared later.
         jev = gateway.jev_usage()

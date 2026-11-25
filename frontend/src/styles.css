@@ -596,7 +596,9 @@ p {
   color: var(--bad);
 }
 
-.action-kept_last_backend {
+.action-kept_last_backend,
+.action-rolled_back,
+.pill-watch {
   background: var(--complex-bg);
   color: var(--complex-fg);
 }

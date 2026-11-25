@@ -1,0 +1,38 @@
+{
+  "qwen3-1.7b": {
+    "v2-faster": {
+      "description": "Demo of a good release: lower simulated latency.",
+      "changes": {"latency_ms": 80}
+    },
+    "v2-bad-format": {
+      "description": "Demo of a bad release: every reply has an unfilled template slot.",
+      "changes": {"fault_rate": 1}
+    },
+    "v2-outage": {
+      "description": "Demo of a bad release: every call fails.",
+      "changes": {"error_rate": 1}
+    },
+    "v2-label-swap": {
+      "description": "Demo of a bad release: every matched reply has the wrong intent.",
+      "changes": {"label_swap_rate": 1}
+    }
+  },
+  "qwen3-4b": {
+    "v2-faster": {
+      "description": "Demo of a good release: lower simulated latency.",
+      "changes": {"latency_ms": 250}
+    },
+    "v2-bad-format": {
+      "description": "Demo of a bad release: every reply has an unfilled template slot.",
+      "changes": {"fault_rate": 1}
+    },
+    "v2-outage": {
+      "description": "Demo of a bad release: every call fails.",
+      "changes": {"error_rate": 1}
+    },
+    "v2-label-swap": {
+      "description": "Demo of a bad release: every matched reply has the wrong intent.",
+      "changes": {"label_swap_rate": 1}
+    }
+  }
+}
