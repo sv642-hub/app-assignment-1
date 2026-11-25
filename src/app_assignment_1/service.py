@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 
 from pydantic import TypeAdapter, ValidationError
 
-from app_assignment_1.backends import Backend, MockBackend
+from app_assignment_1.backends import UNKNOWN_REPLY, Backend, MockBackend
 from app_assignment_1.breaker import CircuitBreaker
 from app_assignment_1.config import Settings, settings_version
 from app_assignment_1.intents import load_intents
@@ -941,6 +941,15 @@ class Gateway:
             # empty: there is no card to ground them.
             format_errors = ["uncarded_policy_facts"] if facts else []
             reply = UNCARDED_REPLY
+        elif intent == UNKNOWN and not reply.strip() and not facts:
+            # No intent and no text: the customer gets the fixed no-match reply
+            # that asks them to describe their problem, so nothing generated is
+            # shown and this is not a format failure. In the #109 test-set run
+            # the small model did this on 304 of 3,080 messages. Counted on its
+            # own, so the prompt problem stays visible.
+            self.metrics.empty_unknown_filled.labels(backend.config.name).inc()
+            reply = UNKNOWN_REPLY
+            format_errors = []
         else:
             format_errors = check_reply(reply)
             if intent not in self.labels.names:

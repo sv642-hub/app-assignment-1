@@ -146,6 +146,39 @@ def test_unknown_and_uncarded_replies_keep_their_sources(settings, servers, clie
         assert chat(client)["trace"]["reply_source"] == "unsupported_topic"
 
 
+def empty_unknown() -> str:
+    # What the small model sent on 304 messages in the #109 run.
+    return json.dumps({"intent": "unknown", "reply": "", "policy_facts": []})
+
+
+def test_an_empty_unknown_reply_passes_and_is_counted(settings, servers, clients):
+    servers[SMALL].content = empty_unknown()
+    with TestClient(create_app(settings)) as client:
+        body = chat(client)
+        text = client.get("/metrics").text
+    assert body["intent"] == "unknown"
+    assert "describe the banking problem" in body["reply"]
+    assert (body["trace"]["reply_source"], body["trace"]["format_check"]) == (
+        "no_match",
+        "passed",
+    )
+    assert 'gateway_empty_unknown_filled_total{model="qwen3-1.7b"} 1.0' in text
+    assert 'gateway_empty_unknown_filled_total{model="qwen3-4b"} 0.0' in text
+
+
+def test_empty_unknown_replies_do_not_disable_a_model(settings, servers, clients):
+    # Before this fix, each was an empty_reply format failure.
+    servers[SMALL].content = empty_unknown()
+    with TestClient(create_app(settings)) as client:
+        for _ in range(settings.monitor_window):
+            assert chat(client)["trace"]["model"] == SMALL
+        small = {m["name"]: m for m in client.get("/v1/health").json()["monitor"]}[
+            SMALL
+        ]
+    assert small["format_failures"] == 0
+    assert small["disabled_by_controller"] is False
+
+
 def test_faults_are_refused_on_a_real_model(settings, servers, clients):
     with TestClient(create_app(settings)) as client:
         response = client.post(

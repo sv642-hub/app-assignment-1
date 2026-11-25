@@ -68,6 +68,15 @@ class GatewayMetrics:
             for sample in SAMPLES:
                 for traffic in ("own", "rerouted"):
                     self.semantic_samples.labels(backend.config.name, sample, traffic)
+        self.empty_unknown_filled = Counter(
+            "gateway_empty_unknown_filled",
+            "Replies with intent unknown, no text and no policy facts. The gateway "
+            "shows the fixed no-match reply, so these pass the format check.",
+            ["model"],
+            registry=self.registry,
+        )
+        for backend in gateway.backends:
+            self.empty_unknown_filled.labels(backend.config.name)
         self.semantic_not_compared = Counter(
             "gateway_semantic_not_compared",
             "Replies that passed the format check but were not scored against "
