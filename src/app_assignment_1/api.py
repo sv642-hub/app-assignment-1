@@ -80,11 +80,12 @@ def create_app(
                 await opened.close()
 
     app = FastAPI(
-        title="Smart AI Gateway (mock prototype)",
+        title="Smart AI Gateway",
         version="0.2.0",
         description=(
-            "Fictional policy replies from mock Qwen backends. Jev is a local "
-            "mock unless APP_JEV_MODE=real, which sends each message to TypeSafe."
+            "Fictional policy replies. The Qwen backends are mocks unless "
+            "APP_PROVIDER_MODE=real, which calls vLLM; Jev is a local mock unless "
+            "APP_JEV_MODE=real, which sends each message to TypeSafe."
         ),
         lifespan=lifespan,
     )
@@ -110,10 +111,14 @@ def create_app(
         try:
             return await gateway.chat(payload.message)
         except BackendUnavailable as exc:
+            # The mock wording stays as it was, for scripts and docs that match it.
+            mocks = all(getattr(b, "mocked", True) for b in gateway.backends)
             detail = (
                 "deadline_exceeded"
                 if isinstance(exc, DeadlineExceeded)
                 else "No mock backend is available"
+                if mocks
+                else "No model is available"
             )
             raise HTTPException(503, detail) from exc
 

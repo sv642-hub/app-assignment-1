@@ -229,6 +229,14 @@ def test_facts_keep_the_cards_order_once_each(settings, servers, clients):
     assert body["reply"] == f"For this fictional DemoBank scenario: {ARRIVE} {TRACK}"
 
 
+def test_both_real_models_failing_gives_a_neutral_503(settings, servers, clients):
+    servers[SMALL].status = servers[LARGE].status = 500
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/v1/chat", json={"message": STANDARD})
+    assert response.status_code == 503
+    assert response.json()["detail"] == "No model is available"
+
+
 def test_faults_are_refused_on_a_real_model(settings, servers, clients):
     with TestClient(create_app(settings)) as client:
         response = client.post(
