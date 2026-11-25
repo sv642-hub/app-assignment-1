@@ -17,6 +17,7 @@ from app_assignment_1.evaluation import (
     parse_labelled_csv,
     reply_format_errors,
     score,
+    sha256,
     stratified_sample,
     wilson,
 )
@@ -218,15 +219,24 @@ def test_runner_needs_a_key_for_a_real_model(tmp_path, monkeypatch):
                        "--out", str(tmp_path / "s.jsonl")])  # fmt: skip
 
 
-def test_macro_f1_counts_a_predicted_intent_with_no_messages():
-    items = [
-        item(0, "card_arrival", "card_arrival"),
-        item(1, "card_arrival", "age_limit"),
+def test_macro_f1_scores_a_wrong_guess_like_unknown():
+    # Same gold and the same accuracy: one run guesses intents that have no
+    # gold messages, the other answers `unknown`. Both average over the gold
+    # intents only, so neither is favoured.
+    gold = ["card_arrival", "card_arrival", "age_limit", "age_limit"]
+    guess = ["card_arrival", "atm_support", "age_limit", "exchange_rate"]
+    abstain = ["card_arrival", "unknown", "age_limit", "unknown"]
+    results = [
+        score(
+            [item(i, g, p) for i, (g, p) in enumerate(zip(gold, run, strict=True))],
+            LABELS,
+        )
+        for run in (guess, abstain)
     ]
-    result = score(items, LABELS)
-    # card_arrival: precision 1, recall 1/2, F1 2/3; age_limit: F1 0.
-    assert result["macro_f1_classes"] == 2
-    assert result["macro_f1"] == pytest.approx(1 / 3)
+    assert [r["accuracy"] for r in results] == [0.5, 0.5]
+    assert [r["macro_f1_classes"] for r in results] == [2, 2]
+    # Each intent: precision 1, recall 1/2, F1 2/3.
+    assert [r["macro_f1"] for r in results] == [pytest.approx(2 / 3)] * 2
 
 
 def flaky_call(failures):
@@ -320,6 +330,11 @@ def test_resume_after_a_cut_off_last_line(tmp_path):
     header, items = run_eval.read_results(out)
     assert [i["row"] for i in items] == [0, 1, 2]
     assert all(line.endswith("}") for line in out.read_text().splitlines())
+    # A complete last line that only lost its newline is kept, not cut.
+    out.write_text(out.read_text().rstrip("\n"))
+    assert run_eval.main(args) == 0
+    assert [i["row"] for i in run_eval.read_results(out)[1]] == [0, 1, 2]
+    assert out.read_text().endswith("}\n")
     # A broken line anywhere but the end is corruption, not a cut-off write.
     out.write_text(out.read_text().replace('"type": "item"', "{", 1))
     with pytest.raises(SystemExit, match="line 2 is not valid JSON"):
@@ -343,6 +358,11 @@ def test_resume_refuses_a_different_commit(tmp_path, monkeypatch):
     [
         (503, "unavailable", True),
         (422, "HTTP422", True),
+        (413, "HTTP413", True),
+        # About the harness or the stack, not the message: sent again.
+        (401, "HTTPStatusError", False),
+        (404, "HTTPStatusError", False),
+        (429, "HTTPStatusError", False),
         (502, "HTTPStatusError", False),
     ],
 )
@@ -450,3 +470,51 @@ def test_runner_sample_is_its_own_run(tmp_path, capsys):
             run_eval.main([*args, *other])
     with pytest.raises(SystemExit):
         run_eval.main([*args, "--sample", "6", "--limit", "3"])
+
+
+def test_direct_targets_refuse_what_the_gateway_refuses(tmp_path):
+    run_eval = load_script()
+    data, out = tmp_path / "edge.csv", tmp_path / "small.jsonl"
+    data.write_text(
+        "text,intent\n"
+        '" ",card_arrival\n'
+        f"{'x' * 2001},card_arrival\n"
+        "  where is my card  ,card_arrival\n"
+    )
+    args = ["run", "--target", "small", "--mock", "--dataset-csv", str(data),
+            "--out", str(out)]  # fmt: skip
+    assert run_eval.main(args) == 0
+    _, items = run_eval.read_results(out)
+    assert [(i["error"], i.get("final")) for i in items] == [
+        ("HTTP422", True),
+        ("HTTP422", True),
+        (None, None),
+    ]
+
+
+def test_resume_refuses_another_server(tmp_path, monkeypatch):
+    run_eval = load_script()
+    monkeypatch.setenv("VLLM_API_KEY", "k")
+    data, out = write_csv(tmp_path), tmp_path / "small.jsonl"
+    out.write_text(json.dumps({
+        "type": "run", "dataset": "fresh", "dataset_sha256": sha256(data.read_bytes()),
+        "dataset_size": 3, "target": "small", "base_url": "http://10.0.0.1:8001",
+        "model": "qwen3-1.7b", "mocked": False, "sample": None,
+        "option_set_version": LABELS.option_set_version, "git_commit": "x",
+    }) + "\n")  # fmt: skip
+    with pytest.raises(SystemExit, match="holds a different run"):
+        run_eval.main(["run", "--target", "small", "--base-url",
+                       "http://10.0.0.2:8001", "--dataset-csv", str(data),
+                       "--out", str(out)])  # fmt: skip
+
+
+def test_oracle_on_different_rows_is_a_clear_error(tmp_path):
+    run_eval = load_script()
+    data = write_csv(tmp_path)
+    out = {t: tmp_path / f"{t}.jsonl" for t in ("small", "large")}
+    for target, limit in (("small", "2"), ("large", "3")):
+        assert run_eval.main(["run", "--target", target, "--mock", "--dataset-csv",
+                              str(data), "--out", str(out[target]),
+                              "--limit", limit]) == 0  # fmt: skip
+    with pytest.raises(SystemExit, match="only in the large results: run both"):
+        run_eval.main(["oracle", str(out["small"]), str(out["large"])])

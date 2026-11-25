@@ -14,10 +14,12 @@ Scoring follows docs/JEV_QWEN_INTEGRATION_PLAN.md:
   of `unknown` is wrong for a Banking77 message, but right for accuracy on a
   message whose gold label is `unknown` (the fresh set has some).
 - Macro F1 averages F1 over the Banking77 intents (every label except
-  `unknown`) that appear in the run, as a gold label or a prediction. On the
-  full official test set that is all 77. On a partial set (`--limit`, the dev
-  split, the fresh set), intents with no messages and no predictions are left
-  out instead of adding a 0. scikit-learn's default does the same.
+  `unknown`) with at least one gold message in the run. On the full official
+  test set that is all 77. On a partial set (`--limit`, the dev split, the
+  fresh set), the class list depends only on the gold labels, so two targets
+  on the same rows are averaged over the same classes, whatever they predict.
+  (Counting predicted-only intents, scikit-learn's default, would score a
+  wrong guess outside the gold set lower than answering `unknown`.)
 - Per-class recall, which is only worth reading where a class has enough
   messages (40 per intent in the official test set).
 """
@@ -211,8 +213,14 @@ def score(items: Sequence[dict[str, Any]], labels: LabelSet) -> dict[str, Any]:
     """Score result items (`gold`, `predicted`, `error`, `latency_ms`, ...).
 
     `predicted` is None for a failed call; it counts as wrong.
+
+    Macro F1 averages over the intents with at least one gold message, so on a
+    partial set every target is averaged over the same classes. A wrong guess
+    still costs: it lowers the gold intent's recall and, if the guess is a
+    gold intent too, that intent's precision. On the full test set all 77
+    intents have gold messages.
     """
-    present = {item["gold"] for item in items} | {item["predicted"] for item in items}
+    present = {item["gold"] for item in items}
     classes = [label for label in gold_classes(labels) if label in present]
     n = len(items)
     correct = sum(item["predicted"] == item["gold"] for item in items)

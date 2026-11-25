@@ -31,10 +31,13 @@ the same git commit; it skips the rows already in the file.
 
 Failed calls come in two kinds, and both count as wrong:
 - Final: what a customer would have got. Invalid output from the model
-  (`BackendOutputError`), or an error status from the gateway (`unavailable`
-  for a 503, `HTTP422` and so on). A rerun keeps these.
-- Retried: a problem with the harness, such as a timeout or a refused
-  connection. A rerun sends these messages again.
+  (`BackendOutputError`), `unavailable` for a 503 from the gateway, or
+  `HTTP422` (or `HTTP413`) for a message the gateway refuses, such as an
+  empty one. The small and large targets refuse the same messages with
+  `HTTP422`, so every target scores the same rows. A rerun keeps these.
+- Retried: a problem with the harness or the stack, such as a timeout, a
+  refused connection, or any other status (401, 404, 429, 502). A rerun sends
+  these messages again.
 
 The gateway target changes the stack it runs against (the monitor counts every
 reply, and requests are stored), so it refuses any host but localhost unless
@@ -55,7 +58,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from app_assignment_1.backends import MockBackend
 from app_assignment_1.evaluation import (
@@ -74,7 +77,12 @@ from app_assignment_1.evaluation import (
 )
 from app_assignment_1.intents import load_intents
 from app_assignment_1.labels import UNKNOWN, LabelSet, load_labels
-from app_assignment_1.schemas import BackendConfig, BackendReply, PolicyCard
+from app_assignment_1.schemas import (
+    BackendConfig,
+    BackendReply,
+    ChatRequest,
+    PolicyCard,
+)
 from app_assignment_1.vllm import BackendOutputError, VLLMBackend, build_system_prompt
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -148,8 +156,14 @@ def backend_call(
     backend: MockBackend | VLLMBackend, labels: LabelSet, cards: dict[str, PolicyCard]
 ) -> Call:
     async def call(message: Message) -> Item:
+        # The gateway's own input check, so both targets score the same rows:
+        # it refuses an empty or over-long message, and strips the rest.
+        try:
+            text = ChatRequest(message=message.text).message
+        except ValidationError:
+            raise MessageRejected() from None
         start = time.perf_counter()
-        reply = BackendReply.model_validate(await backend.generate(message.text))
+        reply = BackendReply.model_validate(await backend.generate(text))
         errors = reply_format_errors(reply, labels, cards)
         return {
             "latency_ms": round((time.perf_counter() - start) * 1000, 1),
@@ -169,7 +183,7 @@ def gateway_call(client: httpx.AsyncClient) -> Call:
     async def call(message: Message) -> Item:
         start = time.perf_counter()
         response = await client.post("/v1/chat", json={"message": message.text})
-        if response.status_code == 503 or 400 <= response.status_code < 500:
+        if response.status_code in GatewayAnswered.STATUSES:
             raise GatewayAnswered(response.status_code)
         response.raise_for_status()
         body = response.json()
@@ -191,25 +205,42 @@ def gateway_call(client: httpx.AsyncClient) -> Call:
 
 
 class GatewayAnswered(Exception):
-    """The gateway answered with an error status: what the customer got.
+    """The gateway answered with an error status about this message: what the
+    customer got.
 
-    A 503 means no backend could answer; a 4xx means it refused the message
-    (empty, or too long). Other 5xx come from the proxy or a crash and are
-    retried, like a refused connection."""
+    503: no backend could answer. 422 or 413: it refused the message (empty,
+    or too long). Any other status, such as 401 for a missing token, 404 for a
+    wrong --base-url path, 429 or a 502 from the proxy, is about the harness
+    or the stack, not the message, so it is retried like a refused
+    connection."""
+
+    STATUSES = (413, 422, 503)
 
     def __init__(self, status: int) -> None:
         super().__init__(status)
         self.code = "unavailable" if status == 503 else f"HTTP{status}"
 
 
+class MessageRejected(Exception):
+    """A direct target refusing a message the gateway would refuse with 422."""
+
+    code = "HTTP422"
+
+
 # Failures that belong to the system being measured, not to the harness. They
 # are kept as results; every other exception is retried on the next run.
-FINAL_ERRORS: tuple[type[Exception], ...] = (GatewayAnswered, BackendOutputError)
+FINAL_ERRORS: tuple[type[Exception], ...] = (
+    GatewayAnswered,
+    MessageRejected,
+    BackendOutputError,
+)
 
 
 def error_code(exc: Exception) -> str:
     # The type or status only: provider messages can echo the input.
-    return exc.code if isinstance(exc, GatewayAnswered) else type(exc).__name__
+    if isinstance(exc, GatewayAnswered | MessageRejected):
+        return exc.code
+    return type(exc).__name__
 
 
 def read_results(path: Path) -> tuple[dict[str, Any], list[Item]]:
@@ -291,6 +322,8 @@ async def run(args: argparse.Namespace) -> int:
         "dataset_sha256": dataset.sha256,
         "dataset_size": len(dataset.messages),
         "target": args.target,
+        # Where the calls went (no key), so a resume can't mix two servers.
+        "base_url": None if args.mock else args.base_url,
         "option_set_version": labels.option_set_version,
         # A random sample is its own run: a file never mixes it with others.
         "sample": sample,
@@ -344,6 +377,7 @@ async def run(args: argparse.Namespace) -> int:
             "dataset",
             "dataset_sha256",
             "target",
+            "base_url",
             "model",
             "mocked",
             "option_set_version",
@@ -374,8 +408,15 @@ async def run(args: argparse.Namespace) -> int:
     if out.exists():
         body = out.read_bytes()
         if body and not body.endswith(b"\n"):
-            # Drop the cut-off last line; its row is in `todo` and runs again.
-            out.write_bytes(body[: body.rfind(b"\n") + 1])
+            start = body.rfind(b"\n") + 1
+            try:
+                json.loads(body[start:])
+            except json.JSONDecodeError:
+                # Cut off mid-write: drop it; its row is in `todo` and runs again.
+                out.write_bytes(body[:start])
+            else:
+                # Complete, only missing its newline: keep it.
+                out.write_bytes(body + b"\n")
     with out.open("a", encoding="utf-8") as file:
         if not done_rows and out.stat().st_size == 0:
             header |= {
@@ -454,7 +495,10 @@ def cmd_oracle(args: argparse.Namespace) -> int:
     for key in ("dataset", "dataset_sha256", "option_set_version", "mocked", "sample"):
         if small_header.get(key) != large_header.get(key):
             raise SystemExit(f"The two results differ in {key}")
-    combined = oracle(small, large)
+    try:
+        combined = oracle(small, large)
+    except ValueError as exc:
+        raise SystemExit(f"{exc}: run both targets over the same rows") from None
     result = score(combined, labels)
     large_share = sum(item.get("model") == large_header["model"] for item in combined)
     print(
