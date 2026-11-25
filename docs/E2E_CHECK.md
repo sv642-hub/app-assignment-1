@@ -25,20 +25,17 @@ Once Yanzhen's vLLM client is wired in as the backends, run it the same way. No 
 
 ## Prometheus
 
-`/metrics` is internal and Caddy does not proxy it, so the script cannot reach it through :8080. Either reach the gateway directly:
+`/metrics` is internal and Caddy does not proxy it, so the script cannot reach it through :8080. It picks a source in this order:
 
-```bash
-python3 scripts/e2e_check.py --metrics-url http://<gateway-ip>:8000/metrics
-```
+1. `--metrics-url http://<gateway-ip>:8000/metrics`, if you can reach the gateway directly.
+2. `--metrics-cmd "<command>"`, a command that prints the metrics text. The script runs it once before and once after the messages.
+3. By default, on a Compose host, if `docker` is installed and you run it from the repo root, the script runs `docker compose exec -T gateway python -c ...` itself, so the Prometheus checks run with no extra option. If that command fails (for example, no Compose stack in this folder), the checks are reported as SKIP with the reason, not as FAIL.
 
-or give it a command that prints the metrics text. The script runs it once before and once after the messages. On the Compose host:
+`--no-metrics` skips the Prometheus checks.
 
-```bash
-python3 scripts/e2e_check.py --metrics-cmd \
-  "docker compose exec -T gateway python -c 'import urllib.request as u; print(u.urlopen(\"http://127.0.0.1:8000/metrics\").read().decode())'"
-```
+The checks compare the rise of `gateway_chat_requests` and `gateway_backend_calls_completed` with the messages sent, and the rise of completed calls with the same rise in `/v1/health`. The two must be equal, so a `--metrics-url` that points at a different gateway fails. CI runs the script this way against the mock stack in the `compose-smoke` job.
 
-Without either option the Prometheus checks are reported as SKIP, not PASS.
+With no metrics source the Prometheus checks are reported as SKIP, not PASS.
 
 ## Privacy
 
