@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from app_assignment_1.backends import UNKNOWN_REPLY
 from app_assignment_1.config import Settings
 from app_assignment_1.intents import load_intents
 from app_assignment_1.labels import UNKNOWN, load_labels
@@ -96,14 +97,20 @@ def test_uncarded_intent_gets_the_fixed_reply(generated):
     assert result.trace.format_check == "passed"
 
 
-def test_uncarded_intent_with_policy_facts_fails_format_check():
+def test_uncarded_intent_drops_its_policy_facts():
+    # Nothing the model wrote is shown for an uncarded intent, so leftover facts
+    # are dropped instead of failing the whole reply (#109 test-set run).
     result = chat_with(
-        BackendReply(intent="age_limit", reply="", policy_facts=["Invented fact."])
+        BackendReply(
+            intent="age_limit", reply="Ignored text.", policy_facts=["Invented fact."]
+        )
     )
-    assert result.intent == UNKNOWN
+    assert result.intent == "age_limit"
+    assert result.reply == UNCARDED_REPLY
     assert result.policy_facts == []
-    assert result.trace.reply_source == "format_fallback"
-    assert result.trace.format_errors == ["uncarded_policy_facts"]
+    assert result.trace.reply_source == "unsupported_topic"
+    assert result.trace.format_check == "passed"
+    assert result.trace.format_errors == []
 
 
 def test_unknown_with_policy_facts_fails_format_check():
@@ -127,6 +134,25 @@ def test_unknown_without_policy_facts_still_passes():
     assert result.trace.format_check == "passed"
 
 
+@pytest.mark.parametrize("empty", ["", "   "])
+def test_unknown_with_an_empty_reply_gets_the_no_match_reply(empty):
+    # The small model did this on 304 of 3,080 messages in the #109 run.
+    result = chat_with(BackendReply(intent=UNKNOWN, reply=empty, policy_facts=[]))
+    assert result.intent == UNKNOWN
+    assert result.reply == UNKNOWN_REPLY
+    assert result.policy_facts == []
+    assert result.trace.reply_source == "no_match"
+    assert result.trace.format_check == "passed"
+
+
+def test_unknown_with_an_empty_reply_and_facts_still_fails():
+    result = chat_with(
+        BackendReply(intent=UNKNOWN, reply="", policy_facts=["Invented."])
+    )
+    assert result.trace.format_check == "failed"
+    assert "unknown_policy_facts" in result.trace.format_errors
+
+
 def test_empty_reply_for_a_carded_intent_still_fails():
     result = chat_with(BackendReply(intent="card_arrival", reply="", policy_facts=[]))
     assert result.trace.format_errors == ["empty_reply"]
@@ -136,22 +162,23 @@ def test_empty_reply_for_a_carded_intent_still_fails():
 def test_env_templates_parse(path):
     settings = Settings(_env_file=path)
     assert settings.provider_mode == "mock"
+    assert settings.jev_mode == "mock"
     assert settings.jev_model == "jev-1.14.0"
     assert settings.jev_api_key is None
 
 
-def test_real_mode_needs_a_key():
+def test_real_jev_needs_a_key():
+    with pytest.raises(ValidationError, match="jev_mode 'real' needs APP_JEV_API_KEY"):
+        Settings(_env_file=None, jev_mode="real")
     with pytest.raises(ValidationError, match="APP_JEV_API_KEY"):
-        Settings(_env_file=None, provider_mode="real")
-    with pytest.raises(ValidationError, match="APP_JEV_API_KEY"):
-        Settings(_env_file=None, provider_mode="real", jev_api_key="")
+        Settings(_env_file=None, jev_api_key="", jev_mode="real")
 
 
-def test_real_mode_needs_an_https_jev_url():
+def test_real_jev_needs_an_https_jev_url():
     with pytest.raises(ValidationError, match="https APP_JEV_BASE_URL"):
         Settings(
             _env_file=None,
-            provider_mode="real",
+            jev_mode="real",
             jev_api_key="test-key",
             jev_base_url="http://api.example.com",
         )
@@ -164,10 +191,36 @@ def test_jev_output_price_is_not_a_setting():
         Settings(_env_file=None, jev_output_price_per_million_usd=1)
 
 
-def test_real_mode_is_rejected_until_the_clients_exist():
-    settings = Settings(_env_file=None, provider_mode="real", jev_api_key="test-key")
-    assert "test-key" not in repr(settings)
-    with pytest.raises(ValueError, match="not built yet"):
+VLLM = {
+    "vllm_small_base_url": "http://10.0.0.5:8001",
+    "vllm_large_base_url": "http://10.0.0.5:8002",
+    "vllm_api_key": "vllm-test-key",
+}
+
+
+@pytest.mark.parametrize(
+    ("missing", "message"),
+    [
+        ("vllm_small_base_url", "APP_VLLM_SMALL_BASE_URL"),
+        ("vllm_large_base_url", "APP_VLLM_LARGE_BASE_URL"),
+        ("vllm_api_key", "APP_VLLM_API_KEY"),
+    ],
+)
+def test_real_qwen_needs_both_urls_and_a_key(missing, message):
+    values = {k: v for k, v in VLLM.items() if k != missing}
+    with pytest.raises(ValidationError, match=message):
+        Settings(_env_file=None, provider_mode="real", **values)
+
+
+def test_real_qwen_does_not_need_a_jev_key():
+    settings = Settings(_env_file=None, provider_mode="real", **VLLM)
+    assert settings.jev_api_key is None
+    assert "vllm-test-key" not in repr(settings)
+
+
+def test_the_gateway_refuses_real_qwen_with_mock_backends():
+    settings = Settings(_env_file=None, provider_mode="real", **VLLM)
+    with pytest.raises(ValueError, match="needs the real vLLM backends"):
         Gateway(settings, MockJevRouter(settings.intents_path))
 
 

@@ -9,15 +9,23 @@ const RULES = { window: 20, min_samples: 5, failure_threshold: 0.5, cooldown_sec
 export const healthyHealth = {
   status: "ok",
   mode: "mock",
+  jev_mode: "mock",
   router: "mock_jev",
   backends: BACKENDS,
   monitor: [
-    { name: "qwen3-1.7b", samples: 20, format_failures: 0, call_errors: 0, failure_rate: 0, disabled_by_controller: false, disabled_for_seconds: null },
-    { name: "qwen3-4b", samples: 14, format_failures: 1, call_errors: 0, failure_rate: 0.07, disabled_by_controller: false, disabled_for_seconds: null },
+    { name: "qwen3-1.7b", samples: 20, format_failures: 0, call_errors: 0, failure_rate: 0, disabled_for: null, disabled_by_controller: false, disabled_for_seconds: null, answering: true },
+    { name: "qwen3-4b", samples: 14, format_failures: 1, call_errors: 0, failure_rate: 0.07, disabled_for: null, disabled_by_controller: false, disabled_for_seconds: null, answering: true },
   ],
   interventions: [],
   controller: RULES,
   jev_breaker: { state: "closed", consecutive_failures: 0, failure_limit: 5, cooldown_seconds: 30 },
+  jev_usage: { mocked: true, answered_calls: 0, input_tokens: 0, output_tokens: 0, estimated_cost_usd: null },
+  // The default: no baseline set, so rates are shown but never flagged.
+  semantic: [
+    { name: "qwen3-1.7b", samples: 12, agreements: 12, disagreements: 0, no_signal: 0, disagreement_rate: 0, coverage: 1, status: "no_baseline", rerouted_agreements: 0, rerouted_disagreements: 0, rerouted_no_signal: 0, not_compared: 0 },
+    { name: "qwen3-4b", samples: 3, agreements: 3, disagreements: 0, no_signal: 0, disagreement_rate: 0, coverage: 1, status: "collecting", rerouted_agreements: 2, rerouted_disagreements: 1, rerouted_no_signal: 0, not_compared: 0 },
+  ],
+  semantic_rules: { window: 50, min_samples: 10, min_coverage: 0.5, baseline_disagreement_rate: null, alert_margin: 0.15, actions_enabled: false },
   recent_requests: [
     { completed_at: "2026-10-30T14:33:02Z", route: "standard", model: "qwen3-1.7b", fallback_reason: null, format_check: "failed" },
     { completed_at: "2026-10-30T14:32:51Z", route: "complex", model: "qwen3-4b", fallback_reason: "selected_backend_error", format_check: "passed" },
@@ -32,8 +40,8 @@ export const degradedHealth = {
   ...healthyHealth,
   status: "degraded",
   monitor: [
-    { name: "qwen3-1.7b", samples: 5, format_failures: 5, call_errors: 0, failure_rate: 1, disabled_by_controller: true, disabled_for_seconds: 41.2 },
-    { name: "qwen3-4b", samples: 12, format_failures: 0, call_errors: 0, failure_rate: 0, disabled_by_controller: false, disabled_for_seconds: null },
+    { name: "qwen3-1.7b", samples: 5, format_failures: 5, call_errors: 0, failure_rate: 1, disabled_for: "failure", disabled_by_controller: true, disabled_for_seconds: 41.2, answering: false },
+    { name: "qwen3-4b", samples: 12, format_failures: 0, call_errors: 0, failure_rate: 0, disabled_for: null, disabled_by_controller: false, disabled_for_seconds: null, answering: true },
   ],
   interventions: [
     { at: "2026-10-30T14:19:51Z", backend: "qwen3-1.7b", action: "disabled", reason: "format failure rate 60% over last 5 calls" },
@@ -41,12 +49,42 @@ export const degradedHealth = {
   ],
 };
 
+export const operatorHeldHealth = {
+  ...healthyHealth,
+  status: "degraded",
+  monitor: [
+    { name: "qwen3-1.7b", samples: 0, format_failures: 0, call_errors: 0, failure_rate: null, disabled_by_controller: false, disabled_by_operator: true, disabled_for_seconds: null },
+    { name: "qwen3-4b", samples: 12, format_failures: 0, call_errors: 0, failure_rate: 0, disabled_by_controller: false, disabled_by_operator: false, disabled_for_seconds: null },
+  ],
+  interventions: [
+    { at: "2026-11-20T14:19:51Z", backend: "qwen3-1.7b", action: "operator_disabled", reason: "draining for a deploy" },
+  ],
+};
+
+const VERSIONS = ["base", "v2-faster", "v2-bad-format", "v2-outage", "v2-label-swap"];
+
+export const rolledBackHealth = {
+  ...healthyHealth,
+  releases: [
+    { name: "qwen3-1.7b", version: "base", status: "rolled_back", rollback_target: null, watched_samples: 0, watch_samples: 20, since: "2026-11-23T14:31:05Z", versions: VERSIONS },
+    { name: "qwen3-4b", version: "v2-faster", status: "watching", rollback_target: "base", watched_samples: 7, watch_samples: 20, since: "2026-11-23T14:30:00Z", versions: VERSIONS },
+  ],
+  release_history: [
+    { at: "2026-11-23T14:30:00Z", backend: "qwen3-4b", action: "deployed", version: "v2-faster", from_version: "base", rollback_target: "base", actor: "operator", reason: "faster demo" },
+    { at: "2026-11-23T14:31:00Z", backend: "qwen3-1.7b", action: "deployed", version: "v2-bad-format", from_version: "base", rollback_target: "base", actor: "operator", reason: "bad release demo" },
+    { at: "2026-11-23T14:31:05Z", backend: "qwen3-1.7b", action: "rolled_back", version: "base", from_version: "v2-bad-format", rollback_target: null, actor: "controller", reason: "format failure rate 100% over last 5 calls" },
+  ],
+  interventions: [
+    { at: "2026-11-23T14:31:05Z", backend: "qwen3-1.7b", action: "rolled_back", reason: "back to base; format failure rate 100% over last 5 calls" },
+  ],
+};
+
 export const outageHealth = {
   ...healthyHealth,
   status: "degraded",
   monitor: [
-    { name: "qwen3-1.7b", samples: 5, format_failures: 1, call_errors: 4, failure_rate: 1, disabled_by_controller: true, disabled_for_seconds: 41.2 },
-    { name: "qwen3-4b", samples: 12, format_failures: 0, call_errors: 0, failure_rate: 0, disabled_by_controller: false, disabled_for_seconds: null },
+    { name: "qwen3-1.7b", samples: 5, format_failures: 1, call_errors: 4, failure_rate: 1, disabled_for: "failure", disabled_by_controller: true, disabled_for_seconds: 41.2, answering: false },
+    { name: "qwen3-4b", samples: 12, format_failures: 0, call_errors: 0, failure_rate: 0, disabled_for: null, disabled_by_controller: false, disabled_for_seconds: null, answering: true },
   ],
   interventions: [
     { at: "2026-10-30T14:32:08Z", backend: "qwen3-1.7b", action: "disabled", reason: "failure rate 100% over last 5 calls" },
@@ -58,6 +96,41 @@ export const outageHealth = {
 export const jevOutageHealth = {
   ...healthyHealth,
   jev_breaker: { state: "open", consecutive_failures: 5, failure_limit: 5, cooldown_seconds: 30 },
+};
+
+// The label-swap override: the small model answers with the wrong intent,
+// every reply passes the format check, and the mock baseline is 0.
+export const labelSwapHealth = {
+  ...healthyHealth,
+  semantic: [
+    { name: "qwen3-1.7b", samples: 10, agreements: 0, disagreements: 10, no_signal: 0, disagreement_rate: 1, coverage: 1, status: "above_baseline", rerouted_agreements: 0, rerouted_disagreements: 0, rerouted_no_signal: 0, not_compared: 0 },
+    { name: "qwen3-4b", samples: 12, agreements: 12, disagreements: 0, no_signal: 0, disagreement_rate: 0, coverage: 1, status: "normal", rerouted_agreements: 0, rerouted_disagreements: 0, rerouted_no_signal: 0, not_compared: 0 },
+  ],
+  semantic_rules: { ...healthyHealth.semantic_rules, baseline_disagreement_rate: 0 },
+};
+
+// Semantic actions on: the controller disabled the small model for its
+// disagreement with Jev, and the large model covers standard traffic.
+export const semanticActionHealth = {
+  ...labelSwapHealth,
+  status: "degraded",
+  monitor: [
+    { name: "qwen3-1.7b", samples: 10, format_failures: 0, call_errors: 0, failure_rate: 0, disabled_for: "semantic", disabled_by_controller: true, disabled_for_seconds: 41.2, answering: true },
+    { name: "qwen3-4b", samples: 12, format_failures: 0, call_errors: 0, failure_rate: 0, disabled_for: null, disabled_by_controller: false, disabled_for_seconds: null, answering: true },
+  ],
+  interventions: [
+    { at: "2026-11-10T19:38:40Z", backend: "qwen3-1.7b", action: "disabled", reason: "intent differs from Jev's on 100% of last 10 scored replies (baseline 0%)" },
+  ],
+  semantic_rules: { ...labelSwapHealth.semantic_rules, actions_enabled: true },
+};
+
+// Jev is down, so no reply has a Jev answer to compare with.
+export const lowCoverageHealth = {
+  ...jevOutageHealth,
+  semantic: [
+    { name: "qwen3-1.7b", samples: 12, agreements: 0, disagreements: 0, no_signal: 12, disagreement_rate: null, coverage: 0, status: "low_coverage", rerouted_agreements: 0, rerouted_disagreements: 0, rerouted_no_signal: 0, not_compared: 0 },
+    { name: "qwen3-4b", samples: 0, agreements: 0, disagreements: 0, no_signal: 0, disagreement_rate: null, coverage: null, status: "collecting", rerouted_agreements: 0, rerouted_disagreements: 0, rerouted_no_signal: 0, not_compared: 0 },
+  ],
 };
 
 export const lostCardReply = {

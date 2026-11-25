@@ -1,0 +1,233 @@
+# promtool unit tests for alerts.yml. Run from the repo root:
+#   docker run --rm -v "$PWD/prometheus:/rules:ro" -w /rules \
+#     --entrypoint promtool prom/prometheus:v3.15.1 test rules alerts_test.yml
+# Each sample below is 15 s apart.
+
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 15s
+
+tests:
+  - name: gateway down for a minute
+    interval: 15s
+    input_series:
+      - series: 'up{job="gateway", instance="gateway:8000"}'
+        values: "1 1 1 1 0x10"
+    alert_rule_test:
+      - eval_time: 90s
+        alertname: GatewayDown
+        exp_alerts: []
+      - eval_time: 2m30s
+        alertname: GatewayDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: gateway
+              instance: gateway:8000
+            exp_annotations:
+              runbook_url: https://github.com/sv642-hub/app-assignment-1/blob/main/docs/MONITORING.md#gatewaydown
+              summary: Prometheus cannot scrape the gateway
+              description: The gateway's /metrics has not answered for 1 minute.
+
+  - name: the controller disables a model
+    interval: 15s
+    input_series:
+      - series: 'gateway_model_disabled{model="qwen3-1.7b"}'
+        values: "0 0 1 1 1"
+      - series: 'gateway_model_disabled{model="qwen3-4b"}'
+        values: "0x4"
+    alert_rule_test:
+      - eval_time: 15s
+        alertname: ModelDisabledByController
+        exp_alerts: []
+      - eval_time: 45s
+        alertname: ModelDisabledByController
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              model: qwen3-1.7b
+            exp_annotations:
+              runbook_url: https://github.com/sv642-hub/app-assignment-1/blob/main/docs/MONITORING.md#modeldisabledbycontroller
+              summary: The controller disabled qwen3-1.7b
+              description: >-
+                Its route's traffic goes to the other model until the cooldown
+                ends. The reason is in /v1/health under interventions.
+
+  - name: failure rate rising, but only with enough samples
+    interval: 15s
+    input_series:
+      - series: 'gateway_monitor_failure_rate{model="qwen3-1.7b"}'
+        values: "0.3x12"
+      - series: 'gateway_monitor_window_samples{model="qwen3-1.7b"}'
+        values: "6x12"
+      # Same rate, too few samples: no alert.
+      - series: 'gateway_monitor_failure_rate{model="qwen3-4b"}'
+        values: "0.3x12"
+      - series: 'gateway_monitor_window_samples{model="qwen3-4b"}'
+        values: "3x12"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ModelFailureRateRising
+        exp_alerts: []
+      - eval_time: 2m30s
+        alertname: ModelFailureRateRising
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              model: qwen3-1.7b
+            exp_annotations:
+              runbook_url: https://github.com/sv642-hub/app-assignment-1/blob/main/docs/MONITORING.md#modelfailureraterising
+              summary: qwen3-1.7b fails 30% of recent calls
+              description: >-
+                Format failures plus failed calls in the monitor window. The
+                controller acts at APP_MONITOR_FAILURE_THRESHOLD (0.5 by default).
+
+  - name: a model above the semantic baseline for 5 minutes
+    interval: 15s
+    input_series:
+      - series: 'gateway_semantic_above_baseline{model="qwen3-1.7b"}'
+        values: "1x30"
+      - series: 'gateway_semantic_above_baseline{model="qwen3-4b"}'
+        values: "0x30"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: PossibleWrongIntents
+        exp_alerts: []
+      - eval_time: 5m30s
+        alertname: PossibleWrongIntents
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              model: qwen3-1.7b
+            exp_annotations:
+              runbook_url: https://github.com/sv642-hub/app-assignment-1/blob/main/docs/MONITORING.md#possiblewrongintents
+              summary: qwen3-1.7b disagrees with Jev above the baseline
+              description: >-
+                Its replies pass the format check but often name a different
+                intent than Jev. See the semantic monitor on the Health screen.
+
+  - name: one 503 fires the warning; half of requests failing fires critical
+    interval: 15s
+    input_series:
+      # One 503 per sample from 2 minutes on, and one reply per sample.
+      - series: "gateway_chat_unavailable_total"
+        values: "0x8 1+1x40"
+      - series: 'gateway_chat_requests_total{route="standard", model="qwen3-1.7b", reply_source="policy_template", format_check="passed"}'
+        values: "0+1x48"
+    alert_rule_test:
+      - eval_time: 1m30s
+        alertname: ChatRequestsFailing
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: ChatRequestsFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              runbook_url: https://github.com/sv642-hub/app-assignment-1/blob/main/docs/MONITORING.md#chatrequestsfailing
+              summary: Chat requests got a 503 in the last 5 minutes
+              description: No model could answer them, or the request deadline ran out.
+      - eval_time: 6m
+        alertname: ChatMostlyFailing
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: ChatMostlyFailing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              runbook_url: https://github.com/sv642-hub/app-assignment-1/blob/main/docs/MONITORING.md#chatmostlyfailing
+              summary: 50% of chat requests get a 503
+              description: More than 1 in 5 requests fail for 5 minutes.
+
+  - name: a full outage right after a restart still fires the critical alert
+    interval: 15s
+    input_series:
+      # Every request gets a 503, and no reply has been sent since the
+      # gateway started, so gateway_chat_requests_total has no series at all.
+      - series: "gateway_chat_unavailable_total"
+        values: "0+2x60"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: ChatMostlyFailing
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: ChatMostlyFailing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              runbook_url: https://github.com/sv642-hub/app-assignment-1/blob/main/docs/MONITORING.md#chatmostlyfailing
+              summary: 100% of chat requests get a 503
+              description: More than 1 in 5 requests fail for 5 minutes.
+
+  - name: Jev skipped on every message while every request fails
+    interval: 15s
+    input_series:
+      - series: 'gateway_jev_fallbacks_total{reason="jev_timeout"}'
+        values: "0+2x60"
+      - series: "gateway_chat_unavailable_total"
+        values: "0+2x60"
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: JevMostlySkipped
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              runbook_url: https://github.com/sv642-hub/app-assignment-1/blob/main/docs/MONITORING.md#jevmostlyskipped
+              summary: Keyword rules route 100% of messages
+              description: >-
+                Jev times out, errors, gives an invalid route, or its circuit
+                breaker is open. Routing still works, with the rule router.
+
+  - name: keyword rules route most messages
+    interval: 15s
+    input_series:
+      # 3 of every 4 replies were routed by the rule router.
+      - series: 'gateway_jev_fallbacks_total{reason="jev_circuit_open"}'
+        values: "0+3x60"
+      - series: 'gateway_chat_requests_total{route="standard", model="qwen3-1.7b", reply_source="policy_template", format_check="passed"}'
+        values: "0+4x60"
+      - series: "gateway_chat_unavailable_total"
+        values: "0x60"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: JevMostlySkipped
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: JevMostlySkipped
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              runbook_url: https://github.com/sv642-hub/app-assignment-1/blob/main/docs/MONITORING.md#jevmostlyskipped
+              summary: Keyword rules route 75% of messages
+              description: >-
+                Jev times out, errors, gives an invalid route, or its circuit
+                breaker is open. Routing still works, with the rule router.
+
+  - name: slow requests for 10 minutes
+    interval: 15s
+    input_series:
+      # Every request lands in the 10-30 s bucket.
+      - series: 'gateway_chat_latency_seconds_bucket{le="10.0"}'
+        values: "0x80"
+      - series: 'gateway_chat_latency_seconds_bucket{le="30.0"}'
+        values: "0+1x80"
+      - series: 'gateway_chat_latency_seconds_bucket{le="+Inf"}'
+        values: "0+1x80"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ChatLatencyHigh
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: ChatLatencyHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              runbook_url: https://github.com/sv642-hub/app-assignment-1/blob/main/docs/MONITORING.md#chatlatencyhigh
+              summary: p95 chat latency is above 10 s
+              description: The request deadline is 45 s by default.

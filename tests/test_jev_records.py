@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ from app_assignment_1.jev import TypeSafeJevRouter, create_jev_http_client
 from app_assignment_1.labels import load_labels
 from app_assignment_1.records import JevAssessment, check_call
 from app_assignment_1.router import MockJevRouter
+from app_assignment_1.schemas import Intervention
 from app_assignment_1.service import BackendUnavailable, Gateway
 from app_assignment_1.store import MemoryStore
 
@@ -244,6 +246,159 @@ def test_a_cancelled_request_saves_no_records(settings: Settings) -> None:
     assert store.requests == {}
     # A cancelled call does not count against Jev.
     assert gw.jev_breaker.consecutive_failures == 0
+
+
+class SlowStore(MemoryStore):
+    """Holds each request save open for 0.2 s, so a cancel can land in it."""
+
+    async def save_request(self, response: Any, jev: Any = ()) -> None:
+        await asyncio.sleep(0.2)
+        await super().save_request(response, jev)
+
+
+def counted(gw: Gateway) -> int:
+    return sum(len(window) for window in gw.controller.windows.values())
+
+
+def test_a_request_cancelled_while_saving_is_still_saved(settings: Settings) -> None:
+    # The failure monitor counts the reply before the save starts, so the save
+    # must finish: otherwise the monitor counts a request the store never has.
+    store = SlowStore(settings.request_store_limit)
+    gw = Gateway(settings, BrokenRouter(), clock=Clock(), store=store)
+
+    async def run() -> None:
+        task = asyncio.create_task(gw.chat(MESSAGE))
+        await asyncio.sleep(0.05)  # routing and the mock reply are instant
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert counted(gw) == 1
+    assert len(store.requests) == 1
+    check_call(saved(store))
+    assert gw.pending_saves == set()
+
+
+def test_a_second_cancel_leaves_the_save_running(settings: Settings) -> None:
+    store = SlowStore(settings.request_store_limit)
+    gw = Gateway(settings, BrokenRouter(), clock=Clock(), store=store)
+
+    async def run() -> None:
+        task = asyncio.create_task(gw.chat(MESSAGE))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        await asyncio.sleep(0.05)
+        task.cancel()  # lands while the first cancel waits for the save
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert len(gw.pending_saves) == 1
+        await asyncio.gather(*gw.pending_saves)
+
+    asyncio.run(run())
+    assert counted(gw) == 1
+    assert len(store.requests) == 1
+    assert gw.pending_saves == set()
+
+
+class SlowInterventionStore(MemoryStore):
+    """Holds each intervention save open for 0.2 s, so a cancel can land in it."""
+
+    async def save_interventions(self, items: Any) -> None:
+        await asyncio.sleep(0.2)
+        await super().save_interventions(items)
+
+
+def chat_count(gw: Gateway) -> float:
+    return sum(
+        sample.value
+        for metric in gw.metrics.chat_requests.collect()
+        for sample in metric.samples
+        if sample.name.endswith("_total")
+    )
+
+
+def test_a_request_cancelled_while_saving_interventions_is_still_saved(
+    settings: Settings,
+) -> None:
+    # The request that makes the controller disable a model saves the
+    # intervention first. Its reply is already counted by then, so a cancel
+    # there must not lose the intervention or the request.
+    store = SlowInterventionStore(settings.request_store_limit)
+    gw = Gateway(settings, BrokenRouter(), clock=Clock(), store=store)
+    first = asyncio.run(gw.chat(MESSAGE))
+    selected = next(b for b in gw.backends if b.config.name == first.trace.model)
+    selected.config.error_rate = 1  # every later request falls back
+
+    async def run() -> int:
+        cancelled = 0
+        while not store.interventions and cancelled == 0:
+            task = asyncio.create_task(gw.chat(MESSAGE))
+            await asyncio.sleep(0.05)  # routing and the mock replies are instant
+            if not task.done():  # held in the intervention save
+                task.cancel()
+                cancelled += 1
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            else:
+                await task
+        return cancelled
+
+    assert asyncio.run(run()) == 1
+    assert gw.controller.is_disabled(selected.config.name)
+    assert [i.action for i in store.interventions] == ["disabled"]
+    assert gw.controller.unsaved == []
+    assert len(store.requests) == chat_count(gw)
+    assert gw.pending_saves == set()
+
+
+class ClosingStore(MemoryStore):
+    """Holds each intervention save open for 0.2 s, and fails every call after
+    close(), as PostgresStore does once its pool is closed."""
+
+    closed = False
+
+    async def save_interventions(self, items: Any) -> None:
+        await asyncio.sleep(0.2)
+        if self.closed:
+            raise ConnectionError("store is closed")
+        await super().save_interventions(items)
+
+    async def save_request(self, response: Any, jev: Any = ()) -> None:
+        if self.closed:
+            raise ConnectionError("store is closed")
+        await super().save_request(response, jev)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def test_shutdown_waits_for_a_cancelled_request_to_save(settings: Settings) -> None:
+    # uvicorn with --timeout-graceful-shutdown cancels running requests, then
+    # runs the lifespan shutdown without waiting for them.
+    store = ClosingStore(settings.request_store_limit)
+    app = create_app(settings, store=store)
+    held = Intervention(
+        at=datetime.now(UTC), backend="qwen3-1.7b", action="disabled", reason="test"
+    )
+
+    async def run() -> Gateway:
+        async with app.router.lifespan_context(app):
+            gw: Gateway = app.state.gateway
+            gw.controller.unsaved.append(held)
+            task = asyncio.create_task(gw.chat(MESSAGE))
+            await asyncio.sleep(0.05)  # reply counted, held in the intervention save
+            task.cancel()
+        assert store.closed
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return gw
+
+    gw = asyncio.run(run())
+    assert list(store.interventions) == [held]
+    assert gw.controller.unsaved == []
+    assert len(store.requests) == chat_count(gw) == 1
+    assert gw.pending_saves == set()
 
 
 def test_a_cancelled_trial_lets_the_next_message_try(settings: Settings) -> None:
@@ -513,3 +668,73 @@ def test_a_record_problem_does_not_fail_the_request(
     assert saved(store) == []
     assert "Could not build Jev records (ValueError)" in caplog.text
     assert "card_arrival" not in caplog.text
+
+
+def real_jev_app(
+    settings: Settings, server: FakeJev, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Any, list[httpx.AsyncClient]]:
+    """An app with APP_JEV_MODE=real whose HTTP client talks to a fake TypeSafe."""
+    from app_assignment_1 import api
+
+    clients: list[httpx.AsyncClient] = []
+
+    def client_for(configured: Settings) -> httpx.AsyncClient:
+        clients.append(create_jev_http_client(configured, httpx.MockTransport(server)))
+        return clients[-1]
+
+    monkeypatch.setattr(api, "create_jev_http_client", client_for)
+    real = Settings(
+        _env_file=None,
+        backends_path=settings.backends_path,
+        jev_mode="real",
+        jev_api_key="tsk-test",
+    )
+    return create_app(real), clients
+
+
+def test_jev_mode_real_routes_through_the_typesafe_client(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = FakeJev()
+    app, clients = real_jev_app(settings, server, monkeypatch)
+    with TestClient(app) as client:
+        response = client.post("/v1/chat", json={"message": MESSAGE})
+        assert response.status_code == 200
+        trace = response.json()["trace"]
+        assert trace["router"] == "jev"
+        assert trace["jev_choice"] == "complex"
+        assert trace["mocked"] is True  # the Qwen reply is still a mock
+        health = client.get("/v1/health").json()
+        assert (health["mode"], health["jev_mode"], health["router"]) == (
+            "mock",
+            "real",
+            "jev",
+        )
+        records = saved(app.state.gateway.store)
+        assert [r.mocked for r in records] == [False, False]
+        assert {r.option_set_version for r in records} == {LABELS.option_set_version}
+    assert server.calls == 1
+    assert len(clients) == 1 and clients[0].is_closed
+
+
+def test_jev_mode_real_falls_back_to_the_rule_router_on_an_error(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = FakeJev()
+    server.status = 500
+    app, _ = real_jev_app(settings, server, monkeypatch)
+    with TestClient(app) as client:
+        trace = client.post("/v1/chat", json={"message": MESSAGE}).json()["trace"]
+    assert (trace["router"], trace["fallback_reason"]) == ("rule_router", "jev_error")
+
+
+def test_jev_mode_mock_is_the_default(settings: Settings) -> None:
+    assert settings.jev_mode == "mock"
+    with TestClient(create_app(settings)) as client:
+        health = client.get("/v1/health").json()
+        trace = client.post("/v1/chat", json={"message": MESSAGE}).json()["trace"]
+    assert (health["jev_mode"], health["router"], trace["router"]) == (
+        "mock",
+        "mock_jev",
+        "mock_jev",
+    )
