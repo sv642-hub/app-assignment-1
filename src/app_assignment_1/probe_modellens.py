@@ -39,9 +39,9 @@ DEFAULT_REVISION = "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
 
 # The chat_template_kwargs the vLLM backend sends with each request, so the
 # template renders the same text vLLM rendered. A test compares this with the
-# backend's request; keep the two equal (for example when the backend turns
-# thinking off with {"enable_thinking": False}).
-CHAT_TEMPLATE_KWARGS: dict[str, Any] = {}
+# backend's request; keep the two equal. The backend turns Qwen3's thinking
+# off, so the template adds the same empty think block vLLM added.
+CHAT_TEMPLATE_KWARGS: dict[str, Any] = {"enable_thinking": False}
 
 # Qwen3ForCausalLM names its decoder layers model.layers.0 to model.layers.27.
 LAYER_NAME = "model.layers.{layer}"
