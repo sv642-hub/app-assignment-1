@@ -1,0 +1,13 @@
+# Demo only: lets scripts/chaos_demo.py inject all three faults into one running
+# stack without restarting it. Turns on the operator routes with a public
+# throwaway token, sets the mock semantic baseline of 0, turns semantic actions
+# on and shortens the cooldown to 20 seconds so recovery fits on stage.
+# NEVER use this on a deployment: the token below is public.
+# docker compose -f compose.yml -f compose.demo.yml up -d --build --wait
+services:
+  gateway:
+    environment:
+      APP_OPERATOR_TOKEN: chaos-demo-token-not-for-deployment
+      APP_SEMANTIC_BASELINE_DISAGREEMENT_RATE: "0"
+      APP_SEMANTIC_ACTIONS_ENABLED: "true"
+      APP_CONTROLLER_COOLDOWN_SECONDS: "20"

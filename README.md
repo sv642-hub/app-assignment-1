@@ -13,7 +13,9 @@ A mocked banking-support gateway for DSAN 6700 Deliverable 2, with a React chat 
 3. Standard selects mock `qwen3-1.7b`. Complex selects mock `qwen3-4b`. The selected mock backend waits for its simulated delay, detects the intent by matching complete keyword phrases (longer/more matches score higher; config order breaks ties), and fills the reply template with fictional policy facts. Both mock backends share this classifier.
 4. Reply checks reject blank text, replies over 4,000 characters, unfilled `{placeholder}` tokens and intent labels outside `config/labels.json`. Pydantic validates the result. The chat shows the reply and its route; **Show details** opens the intent, policy facts and trace.
 
-**Real Jev.** With `APP_JEV_MODE=real`, the gateway sends each message to TypeSafe in place of step 2, using `TypeSafeJevRouter` in `jev.py`: one `/v1/systemone` call with the route question and the intent question over the 78 labels. Every chat message then leaves the server, so use only made-up details, and update `USER_BRIEF.md` before testers use a gateway in this mode. It needs `APP_JEV_API_KEY` and an `https` `APP_JEV_BASE_URL`. The Qwen backends stay mocks. The trace shows `router: "jev"` when real Jev chose the route, and `/v1/health` shows `jev_mode: "real"` and `router: "jev"`; `mode` and `trace.mocked` still describe the mock Qwen backends. Compose and CI run with the default, `mock`. No test calls TypeSafe; the tests use a fake TypeSafe server.
+**Real Jev.** With `APP_JEV_MODE=real`, the gateway sends each message to TypeSafe in place of step 2, using `TypeSafeJevRouter` in `jev.py`: one `/v1/systemone` call with the route question and the intent question over the 78 labels. Every chat message then leaves the server, so use only made-up details, and update `USER_BRIEF.md` before testers use a gateway in this mode. It needs `APP_JEV_API_KEY` and an `https` `APP_JEV_BASE_URL`. The trace shows `router: "jev"` when real Jev chose the route, and `/v1/health` shows `jev_mode: "real"` and `router: "jev"`. Compose and CI run with the default, `mock`. No test calls TypeSafe; the tests use a fake TypeSafe server.
+
+**Real Qwen.** With `APP_PROVIDER_MODE=real`, step 3 calls the two vLLM servers on the GPU host (see [GPU host](#gpu-host-vllm)) through `VLLMBackend` in `vllm.py`, built by `real_backends.py`. Standard messages go to `APP_VLLM_SMALL_BASE_URL` and complex ones to `APP_VLLM_LARGE_BASE_URL`, each with `Authorization: Bearer <APP_VLLM_API_KEY>`; it needs all three. The model writes the reply from the policy card in its system prompt, so the trace shows `reply_source: "generated"`, `mocked: false` and `simulated_latency_ms: 0`, and `/v1/health` shows `mode: "real"`. Each call gets the time the request deadline leaves; the client follows no redirects and makes no retries. A failed call still counts as a call error for the controller, and also gets an error code: `timeout`, `call_failed` (an HTTP error or no connection), `invalid_output` (not a valid `BackendReply`) or `other`. `usage[].failed_by_error` in `/v1/health` and `gateway_backend_errors_total` count them by model. The log line names the code and the exception type, never the message or the provider's text. `/v1/faults` answers 409, because only the mocks have fault rates. The semantic monitor compares only like with like, so real Qwen with mock Jev, or the reverse, is not scored. Compose and CI run with the default, `mock`. No test calls vLLM; the tests use two fake vLLM servers.
 
 If Jev fails or does not answer within `APP_JEV_TIMEOUT_SECONDS`, the rule router chooses the route instead: messages of `APP_RULE_ROUTER_COMPLEX_MIN_WORDS` words or more go to `complex`, shorter ones to `standard`. The request still goes to a backend. The trace shows `router: "rule_router"`, `jev_choice: null`, `confidence: null` and `fallback_reason` `jev_timeout` or `jev_error`. Jev's answers are checked one at a time: an invalid route answer also uses the rule router, with `fallback_reason: "jev_invalid_route"`, while an invalid intent answer still uses Jev's route.
 
@@ -27,7 +29,7 @@ Confidence is a keyword heuristic, not a calibrated probability. Measured latenc
 
 ## Monitor and controller
 
-The gateway runs a small in-memory self-healing loop, the first piece of the planned monitor:
+The gateway runs a small in-memory self-healing loop, the first piece of the planned monitor. [docs/MONITORING.md](docs/MONITORING.md) is the runbook: how the pieces below recover together, where to look, and what to do for each alert.
 
 - **Monitor:** for each backend, the gateway records whether each reply passed the format check and whether each call raised an error, over the last `APP_MONITOR_WINDOW` calls (default 20).
 - **Controller:** once a backend has at least `APP_MONITOR_MIN_SAMPLES` calls (default 5) and its failure rate (failed format checks plus failed calls) reaches `APP_MONITOR_FAILURE_THRESHOLD` (default 0.5), the controller disables it for `APP_CONTROLLER_COOLDOWN_SECONDS` (default 60). Traffic for that route moves to the other backend with `fallback_reason: "selected_backend_disabled"`. After the cooldown, the backend is re-enabled with an empty window.
@@ -90,6 +92,7 @@ Operators can act on the models without restarting the stack. Every operator rou
 - Holds live in gateway memory. After a restart every held model serves again, even though the last stored intervention for it still says `operator_disabled`. Disable it again after a restart.
 - Both take an optional JSON body `{"reason": "..."}` (up to 200 characters), saved in the intervention log as `operator_disabled` or `operator_enabled`. The reason is public: `GET /v1/health` lists it without a token. Do not put customer data or anything private in it. Both return the monitor rows; `disabled_by_operator` shows a hold.
 - `POST /v1/faults` sets a simulated fault on a mock model while it runs, in place of restarting with a Compose override. The body is `{"model": "qwen3-1.7b", "fault": "outage", "rate": 1}`. `fault` is `outage` (sets `error_rate`), `bad_format` (`fault_rate`), `label_swap` (`label_swap_rate`) or `none` (clears all three). `rate` is 0–1 and defaults to 1. It returns the model's config. Faults reset when the gateway restarts.
+- `POST /v1/faults/jev` does the same for the mock Jev router. The body is `{"fault": "outage", "rate": 1}`. `fault` is `outage` (sets `error_rate`: the call fails, the gateway uses the rule router with `fallback_reason: "jev_error"`, and 5 failures in a row open the circuit breaker), `slow` (sets `slow_rate` and `slow_seconds`: each call it hits is held for `seconds` more, above 0 and up to 120, which `slow` requires; past `APP_JEV_TIMEOUT_SECONDS`, 2 s by default, the gateway uses the rule router with `jev_timeout`) or `none` (clears both). It returns the Jev fault settings. With `APP_JEV_MODE=real` it answers 409: real Jev can't be faulted.
 
 ```bash
 TOKEN='your-operator-token'
@@ -128,9 +131,10 @@ In Compose, request history and interventions are kept in Postgres and survive a
 
 The gateway keeps three kinds of records behind a small `Store` interface ([`store.py`](src/app_assignment_1/store.py)):
 
-- **Completed requests:** each `ChatResponse` (reply, intent, policy facts, trace), which `GET /v1/requests/{id}` and the Health screen's recent requests read. Only the most recent `APP_REQUEST_STORE_LIMIT` (default 1,000) are kept; older ones are deleted. Requests that end in a 503 are not stored.
+- **Completed requests:** each `ChatResponse` (reply, intent, policy facts, trace), which `GET /v1/requests/{id}` and the Health screen's recent requests read. Postgres keeps every request, so they can be analysed later; set `APP_POSTGRES_REQUEST_LIMIT` to keep only the newest ones. The memory store keeps the most recent `APP_REQUEST_STORE_LIMIT` (default 1,000). Requests that end in a 503 are not stored. Each request's trace has `settings_version`, a short ID of the settings and config files that answered it, so statistics can be grouped by setup. A fault set through `/v1/faults` changes it, and clearing the fault changes it back. Secrets, the user and password in a URL, and how a config path is spelled are left out of it.
 - **Controller interventions:** every `disabled`, `re-enabled` and `kept_last_backend` entry. `GET /v1/health` shows the last 50.
-- **Jev assessments:** two per request, one for the route question and one for the intent question, for the semantic monitor. They are saved in the same write as their request, so a request that ends in a 503 or is cancelled saves none. Postgres keeps them all, also after their request is deleted; the memory store keeps the last 2 × `APP_REQUEST_STORE_LIMIT`. Nothing reads them yet.
+- **Jev assessments:** two per request, one for the route question and one for the intent question, for the semantic monitor. They are saved in the same write as their request, so a request that ends in a 503 or is cancelled saves none. Postgres keeps them all, also after their request is deleted; the memory store keeps the last 2 × `APP_REQUEST_STORE_LIMIT`. The route record has `option_order`, the order Jev was shown the route options in, for the position-bias study (#86). The intent options follow `config/labels.json`, whose order is part of `option_set_version`.
+- **Export for analysis:** `APP_DATABASE_URL=... uv run python scripts/export_analysis.py --out exports/<name>` writes `requests.jsonl` and `jev_assessments.jsonl`, which join on the request ID. Reply text and policy facts are left out. `exports/` is ignored by git.
 
 The customer's message is not stored: `ChatResponse` has no message field. The monitor's windows and which backends are disabled stay in process memory and reset on restart. The backend response records for the monitor are not stored yet; they will get their own store methods and migration once their schema is agreed.
 
@@ -187,6 +191,37 @@ The `prometheus` service (Prometheus 3.15.1, config in [`prometheus/prometheus.y
 
 Labels only take values from fixed lists. Message text, replies and request IDs are never labels; a test checks this. All values are in memory and reset when the gateway restarts. A re-enable is counted when the gateway next checks the model (a request, `/v1/health` or a scrape), not at the exact end of the cooldown. With the mock backends, latency includes the simulated delay and says nothing about real model speed. Jev tokens and estimated cost are counted since the gateway started; mock Jev reports 0 tokens. `/v1/health` has the same totals in `jev_usage`, and the Health screen shows them on the Jev card. There are no Qwen token or cost metrics yet, and Prometheus does not scrape vLLM or a separate monitor because neither runs with the gateway yet.
 
+### Alerts
+
+[`prometheus/alerts.yml`](prometheus/alerts.yml) has 8 alert rules, and [docs/MONITORING.md](docs/MONITORING.md) says what to do for each one. Prometheus evaluates the rules every 15 seconds. There is no Alertmanager yet, so nothing is sent anywhere: firing alerts show in Prometheus's `/alerts` page and `/api/v1/alerts`. The thresholds are starting points for the mock prototype, not measured values.
+
+| Alert | Severity | Fires when |
+| --- | --- | --- |
+| `GatewayDown` | critical | Prometheus can't scrape the gateway for 1 minute |
+| `ModelDisabledByController` | warning | The controller has a model disabled |
+| `ModelFailureRateRising` | warning | A model fails 25% or more of the calls in its window, with at least 5 calls, for 2 minutes. The controller acts at 50% by default |
+| `PossibleWrongIntents` | warning | A model is above the semantic baseline for 5 minutes |
+| `ChatRequestsFailing` | warning | Any chat request got a 503 in the last 5 minutes |
+| `ChatMostlyFailing` | critical | More than 20% of chat requests get a 503 for 5 minutes |
+| `JevMostlySkipped` | warning | The rule router routes more than half of messages for 5 minutes, because Jev fails or its breaker is open |
+| `ChatLatencyHigh` | warning | p95 chat latency is above 10 s for 10 minutes |
+
+**Hard failures and slow drift.** `ModelFailureRateRising` and `PossibleWrongIntents` are for problems the controller does not act on: a model failing some calls but below the 50% threshold, or wrong intents while semantic actions are off or the other model can't take over. For a hard failure, the controller disables the model within a few requests, and `ModelDisabledByController` fires. The re-enable then clears the window, which restarts the `for:` timer of the two slower alerts, so they may never fire during a hard failure. `PossibleWrongIntents` also needs `APP_SEMANTIC_BASELINE_DISAGREEMENT_RATE`: without a baseline, its gauge stays 0 at any disagreement rate.
+
+`ChatMostlyFailing` and `JevMostlySkipped` divide by the number of replies, and `gateway_chat_requests_total` has no series until the first reply. Each rule adds `or vector(0)` to that term, so a full outage right after a restart still fires.
+
+`prometheus/alerts_test.yml` tests each alert with promtool, including cases that must not fire. CI runs it, and checks that Compose's Prometheus loaded the rules. `tests/test_alert_rules.py` checks that every metric the rules use is one the gateway serves. To run the promtool tests locally:
+
+```bash
+docker run --rm -v "$PWD/prometheus:/etc/prometheus:ro" -w /etc/prometheus --entrypoint promtool prom/prometheus:v3.15.1 test rules alerts_test.yml
+```
+
+To see firing alerts in the running stack:
+
+```bash
+docker compose exec prometheus wget -qO- http://127.0.0.1:9090/api/v1/alerts
+```
+
 To look at metrics without publishing a port:
 
 ```bash
@@ -223,7 +258,8 @@ Pydantic Settings reads `.env` then `env/.env` in native local runs. Process env
 | `APP_LABELS_PATH` | `config/labels.json` | The 77 Banking77 intents plus `unknown` that Jev and Qwen classify into; every intent with a policy card must be one of them |
 | `APP_POLICY_CARDS_PATH` | `config/policy_cards.json` | Fictional facts and `{facts}` reply templates |
 | `APP_BACKENDS_PATH` | `config/backends.json` | Backend names, routes, delay and availability |
-| `APP_REQUEST_STORE_LIMIT` | `1000` | Number of successful requests retained, in memory or Postgres |
+| `APP_REQUEST_STORE_LIMIT` | `1000` | Number of successful requests the memory store keeps |
+| `APP_POSTGRES_REQUEST_LIMIT` | unset | Unset keeps every request in Postgres, for analysis; a number keeps only the newest ones |
 | `APP_JEV_TIMEOUT_SECONDS` | `2` | Wait for the Jev routing call before using the rule router |
 | `APP_RULE_ROUTER_COMPLEX_MIN_WORDS` | `20` | Rule router sends messages this long or longer to `complex` |
 | `APP_MONITOR_WINDOW` | `20` | Recent calls per backend that the monitor keeps |
@@ -234,7 +270,7 @@ Pydantic Settings reads `.env` then `env/.env` in native local runs. Process env
 | `APP_DATABASE_URL` | none | Postgres URL, required when `APP_STORE=postgres`; a secret, hidden in logs and settings output |
 | `APP_STORE_TIMEOUT_SECONDS` | `2` | Longest wait for one store write before the reply goes out without it |
 | `APP_JEV_MODE` | `mock` | `mock` or `real`. Real sends each chat message to TypeSafe for the route and intent answers; it needs `APP_JEV_API_KEY` and an `https` `APP_JEV_BASE_URL` |
-| `APP_PROVIDER_MODE` | `mock` | `mock` or `real` for the Qwen backends. Real needs `APP_JEV_API_KEY` and an `https` `APP_JEV_BASE_URL`, and is rejected at startup until the vLLM client is wired |
+| `APP_PROVIDER_MODE` | `mock` | `mock` or `real` for the Qwen backends. Real calls the two vLLM servers and needs `APP_VLLM_SMALL_BASE_URL`, `APP_VLLM_LARGE_BASE_URL` and `APP_VLLM_API_KEY` |
 | `APP_JEV_BASE_URL` | `https://api.typesafe.ai` | TypeSafe API, used when `APP_JEV_MODE=real` |
 | `APP_JEV_API_KEY` | unset | Server-side TypeSafe key; set only in the real env file |
 | `APP_JEV_MODEL` | `jev-1.14.0` | Pinned Jev version, not an alias such as `jev-latest` |
@@ -242,9 +278,9 @@ Pydantic Settings reads `.env` then `env/.env` in native local runs. Process env
 | `APP_JEV_BREAKER_FAILURES` | `5` | Consecutive Jev failures before the circuit breaker skips Jev |
 | `APP_JEV_BREAKER_COOLDOWN_SECONDS` | `30` | How long the breaker skips Jev |
 | `APP_OPERATOR_TOKEN` | unset | Bearer token for the operator routes, at least 16 characters; unset turns them off (403). Set it only in `env/.env` |
-| `APP_VLLM_SMALL_BASE_URL` | unset | Qwen3-1.7B server on the GPU host's private IP, for example `http://10.0.12.34:8001` (not used yet) |
-| `APP_VLLM_LARGE_BASE_URL` | unset | Qwen3-4B server on the GPU host's private IP, for example `http://10.0.12.34:8002` (not used yet) |
-| `APP_VLLM_API_KEY` | unset | The key both vLLM servers require (`VLLM_API_KEY` in `env/gpu.env`). Set it only in `env/.env` (not used yet) |
+| `APP_VLLM_SMALL_BASE_URL` | unset | Qwen3-1.7B server on the GPU host's private IP, for example `http://10.0.12.34:8001`; read when `APP_PROVIDER_MODE=real` |
+| `APP_VLLM_LARGE_BASE_URL` | unset | Qwen3-4B server on the GPU host's private IP, for example `http://10.0.12.34:8002`; read when `APP_PROVIDER_MODE=real` |
+| `APP_VLLM_API_KEY` | unset | The key both vLLM servers require (`VLLM_API_KEY` in `env/gpu.env`). Set it only in `env/.env`; sent as a bearer token when `APP_PROVIDER_MODE=real` |
 | `APP_REQUEST_DEADLINE_SECONDS` | `45` | Total time for one chat request, including the Jev call. A first attempt that runs out of time counts as a failed call; an alternate cut short gives a 503 with `deadline_exceeded` |
 | `APP_ALTERNATE_RESERVE_SECONDS` | `15` | Part of the deadline held back from the first attempt for the other backend, only when the other backend is usable; with the Jev timeout, must stay below the deadline |
 
@@ -336,6 +372,7 @@ curl -fsS "http://localhost:8080/v1/requests/$REQUEST_ID"
 | `GET /v1/health` | Typed Pydantic response documented in OpenAPI; 200 with backend config, monitor statistics, recent interventions, recent requests (`recent_requests`) and per-model call totals (`usage`); `degraded` when any backend is unavailable or disabled by the controller or an operator |
 | `POST /v1/operator/models/{name}/disable`, `/enable` | Operator token required. 200 monitor rows; 401 missing or wrong token; 409 last usable model (disable); 422 unknown model; 403 `APP_OPERATOR_TOKEN` unset |
 | `POST /v1/faults` | Operator token required. 200 the model's config; 401, 403 and 422 as above |
+| `POST /v1/faults/jev` | Operator token required. 200 the Jev fault settings; 409 when Jev is real; 401, 403 and 422 as above |
 | `GET /docs`, `/redoc`, `/openapi.json` | Interactive documentation and API schema |
 
 Messages must contain 1–2,000 characters and cannot be whitespace-only. Extra request fields are rejected.
@@ -391,13 +428,16 @@ git clone --branch main --single-branch \
   https://github.com/sv642-hub/app-assignment-1.git smart-ai-gateway-prototype
 cd smart-ai-gateway-prototype
 docker compose version
+```
+
+Before starting Compose, set your own database password as described in [Storage](#storage) and set `APP_ENVIRONMENT=production` in `env/.env`. The production template sets this for you. The gateway then refuses the public database password and demo operator token. Keep `compose.demo.yml` on the local demo stack.
+
+```bash
 docker compose -p smart-gateway-prototype up -d --build --wait
 docker compose -p smart-gateway-prototype ps
 curl -fsS http://127.0.0.1:8080/v1/health
 python3 scripts/smoke_compose.py http://127.0.0.1:8080
 ```
-
-Before the first start that includes Postgres, set your own database password as in [Storage](#storage); otherwise the stack runs with the public throwaway password.
 
 These deployment commands target `main` after this PR is merged. For updates:
 
@@ -433,7 +473,7 @@ Both run vLLM `v0.33.0` (image pinned by digest) with `--max-model-len 4096` on 
 
 **Network.** vLLM is reachable only from the CPU instance, over the Jetstream2 private network. Each server binds to the GPU host's private IP (`VLLM_BIND_IP`), and Compose will not start without it. Do not bind to `0.0.0.0` or the public IP. Do not open 8001–8002 to the internet.
 
-**API key.** Every `/v1` request must also send `Authorization: Bearer <key>`, with the key from `VLLM_API_KEY` in `env/gpu.env`. Compose will not start without it. The network rules stay the main protection; the key covers a security group that gets loosened by mistake. `/health` and `/metrics` need no key. The gateway will read the same value from `APP_VLLM_API_KEY` once the backends are wired in.
+**API key.** Every `/v1` request must also send `Authorization: Bearer <key>`, with the key from `VLLM_API_KEY` in `env/gpu.env`. Compose will not start without it. The network rules stay the main protection; the key covers a security group that gets loosened by mistake. `/health` and `/metrics` need no key. The gateway sends the same value, from `APP_VLLM_API_KEY`, when `APP_PROVIDER_MODE=real`. The gateway calls vLLM over plain HTTP on the private network, so the key is not encrypted in transit.
 
 **Allocate the instance** (once):
 
@@ -521,4 +561,4 @@ CI runs these checks, the frontend tests and build, a Compose smoke test through
 - `tests/`: unit and API tests. `scripts/smoke_compose.py`: public-proxy smoke test.
 - `discussion.md`, `problem2-local-run.md`, benchmark results: historical Assignment 2 records. The original SmolLM2 implementation and measurement scripts remain in Git history before this prototype.
 
-`Router` is a small async interface returning a validated `JevResult`: the route and intent answers, each checked on its own, plus the model and token counts. `TypeSafeJevRouter` implements it for real Jev (`APP_JEV_MODE=real`), and a real vLLM client can implement `Backend` (returning intent, reply and facts), without changing the HTTP contract or the frontend. `Store` works the same way for storage. The rest of the planned architecture is follow-up work.
+`Router` is a small async interface returning a validated `JevResult`: the route and intent answers, each checked on its own, plus the model and token counts. `TypeSafeJevRouter` implements it for real Jev (`APP_JEV_MODE=real`), and `VLLMBackend` implements `Backend` (returning intent, reply and facts) for real Qwen (`APP_PROVIDER_MODE=real`). `Store` works the same way for storage. The rest of the planned architecture is follow-up work.

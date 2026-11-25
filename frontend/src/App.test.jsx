@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -11,6 +11,7 @@ import {
   jevOutageHealth,
   labelSwapHealth,
   lowCoverageHealth,
+  lostCardReply,
   outageHealth,
   semanticActionHealth,
 } from "./test/fixtures.js";
@@ -459,6 +460,18 @@ describe("Issue 31", () => {
     expect(within(rows[2]).getAllByRole("cell").map((c) => c.textContent)).toEqual(["qwen3-4b", "9", "9", "0"]);
   });
 
+  it.each([
+    ["mock", "real", "Real Qwen (vLLM); Jev is simulated", /Jev is a mock\. The Qwen models run on vLLM/],
+    ["real", "real", "Real Jev (TypeSafe) and real Qwen (vLLM)", /Jev calls go to TypeSafe.*The Qwen models run on vLLM/],
+  ])("names real Qwen when jev_mode is %s and mode is %s", async (jevMode, mode, sidebar, note) => {
+    const health = { ...healthyHealth, jev_mode: jevMode, mode };
+    const user = renderWith(fakeGateway({ health }));
+    expect(await screen.findByText(sidebar)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Health" }));
+    expect(await screen.findByText(note)).toBeInTheDocument();
+    expect(screen.queryByText(/Mock mode: token usage/)).not.toBeInTheDocument();
+  });
+
   it("says Jev calls go to TypeSafe when Jev is real", async () => {
     const health = { ...healthyHealth, jev_mode: "real", router: "jev" };
     const user = renderWith(fakeGateway({ health }));
@@ -491,5 +504,118 @@ describe("Issue 32", () => {
     // Numbers come from the controller rules in the fixture.
     expect(screen.getByText(/After 5 failed replies, the controller disables qwen3-1\.7b/)).toBeInTheDocument();
     expect(screen.getByText(/Finish within 60 s/)).toBeInTheDocument();
+  });
+});
+
+describe("Chat keeps its state in the tab", () => {
+  it("shows the character counter and the supported topics", async () => {
+    const user = renderWith(fakeGateway());
+    expect(screen.getByText("0 / 2000 characters")).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Message"), "hello");
+    expect(screen.getByText("5 / 2000 characters")).toBeInTheDocument();
+    expect(screen.getByText(/This demo knows about a card that has not arrived/)).toBeInTheDocument();
+  });
+
+  it("counts and caps messages using the same Unicode characters as the gateway", () => {
+    renderWith(fakeGateway());
+    const composer = screen.getByLabelText("Message");
+    fireEvent.change(composer, { target: { value: "😀" } });
+    expect(screen.getByText("1 / 2000 characters")).toBeInTheDocument();
+    fireEvent.change(composer, { target: { value: "😀".repeat(2001) } });
+    expect(composer).toHaveValue("😀".repeat(2000));
+    expect(screen.getByText("2000 / 2000 characters")).toBeInTheDocument();
+  });
+
+  it("explains the confidence score in the details", async () => {
+    const user = renderWith(fakeGateway());
+    await user.type(screen.getByLabelText("Message"), "I lost my card{Enter}");
+    await screen.findByText(/Freeze your card/);
+    await user.click(screen.getByRole("button", { name: "Show details" }));
+    expect(screen.getByText(/how sure the router was about its route choice/)).toBeInTheDocument();
+  });
+
+  it("keeps an unsent message when switching to Health and back", async () => {
+    const user = renderWith(fakeGateway());
+    await user.type(screen.getByLabelText("Message"), "my draft");
+    await user.click(screen.getByRole("button", { name: /^Health/ }));
+    await user.click(screen.getByRole("button", { name: "Chat" }));
+    expect(screen.getByLabelText("Message")).toHaveValue("my draft");
+  });
+
+  it("restores the conversation after a refresh and clears it on New chat", async () => {
+    const first = renderWith(fakeGateway());
+    await first.type(screen.getByLabelText("Message"), "I lost my card{Enter}");
+    await screen.findByText(/Freeze your card/);
+    cleanup();
+    vi.restoreAllMocks();
+
+    const second = renderWith(fakeGateway());
+    expect(await screen.findByText(/Freeze your card/)).toBeInTheDocument();
+    await second.click(screen.getByRole("button", { name: /New chat/ }));
+    expect(screen.queryByText(/Freeze your card/)).not.toBeInTheDocument();
+    expect(window.sessionStorage.getItem("gateway.chat.turns")).toBeNull();
+  });
+
+  it("works when the tab blocks storage", async () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    const user = renderWith(fakeGateway());
+    await user.type(screen.getByLabelText("Message"), "I lost my card{Enter}");
+    expect(await screen.findByText(/Freeze your card/)).toBeInTheDocument();
+  });
+
+  it("no longer shows disabled Jev and Dashboard items", async () => {
+    renderWith(fakeGateway());
+    expect(screen.queryByText("soon")).not.toBeInTheDocument();
+    expect(screen.getByText(/Jev normally picks the route/)).toBeInTheDocument();
+  });
+
+  it("clears the unsent draft on New chat, also from Health", async () => {
+    const user = renderWith(fakeGateway());
+    await user.type(screen.getByLabelText("Message"), "private draft");
+    await user.click(screen.getByRole("button", { name: /New chat/ }));
+    expect(screen.getByLabelText("Message")).toHaveValue("");
+    expect(window.sessionStorage.getItem("gateway.chat.draft")).toBeNull();
+    await user.type(screen.getByLabelText("Message"), "again");
+    await user.click(screen.getByRole("button", { name: /^Health/ }));
+    await user.click(screen.getByRole("button", { name: /New chat/ }));
+    expect(screen.getByLabelText("Message")).toHaveValue("");
+    expect(window.sessionStorage.getItem("gateway.chat.draft")).toBeNull();
+  });
+
+  it("clears the draft on New chat even when storage deletion is blocked", async () => {
+    window.sessionStorage.setItem("gateway.chat.draft", JSON.stringify("saved draft"));
+    const user = renderWith(fakeGateway());
+    vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    await user.click(screen.getByRole("button", { name: /New chat/ }));
+    expect(screen.getByLabelText("Message")).toHaveValue("");
+    expect(JSON.parse(window.sessionStorage.getItem("gateway.chat.draft"))).toBe("");
+    await user.click(screen.getByRole("button", { name: /^Health/ }));
+    await user.click(screen.getByRole("button", { name: "Chat" }));
+    expect(screen.getByLabelText("Message")).toHaveValue("");
+  });
+
+  it.each([
+    ["turns", "[null]"],
+    ["turns", JSON.stringify([{ id: 0, message: "hi", status: "done" }])],
+    ["turns", JSON.stringify([{ message: "hi", status: "pending" }])],
+    ["turns", JSON.stringify([{
+      id: 0, message: "hi", status: "done",
+      result: { ...lostCardReply, trace: { ...lostCardReply.trace, route: {} } },
+    }])],
+    ["turns", JSON.stringify([{
+      id: 0, message: "hi", status: "done",
+      result: { ...lostCardReply, policy_facts: [{}] },
+    }])],
+    ["draft", "123"],
+  ])("starts empty and sends when saved %s is malformed (%s)", async (key, raw) => {
+    window.sessionStorage.setItem(`gateway.chat.${key}`, raw);
+    const user = renderWith(fakeGateway());
+    expect(screen.getByLabelText("Message")).toHaveValue("");
+    await user.type(screen.getByLabelText("Message"), "I lost my card{Enter}");
+    expect(await screen.findByText(/Freeze your card/)).toBeInTheDocument();
   });
 });

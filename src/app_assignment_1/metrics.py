@@ -12,7 +12,7 @@ from prometheus_client import CollectorRegistry, Counter, Histogram, generate_la
 from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily, Metric
 from prometheus_client.registry import Collector
 
-from app_assignment_1.schemas import InterventionAction
+from app_assignment_1.schemas import BackendErrorCode, InterventionAction
 from app_assignment_1.semantic import SAMPLES
 
 if TYPE_CHECKING:
@@ -104,6 +104,19 @@ class _GatewayStateCollector(Collector):
             calls["completed"].add_metric([usage.name], usage.completed_calls)
             calls["failed"].add_metric([usage.name], usage.failed_calls)
         yield from calls.values()
+
+        # Every code for every model, so a rate query sees zeros, not gaps.
+        errors = CounterMetricFamily(
+            "gateway_backend_errors",
+            "Failed backend calls, by model and error code.",
+            labels=["model", "error"],
+        )
+        for usage in gateway.usage.values():
+            for code in get_args(BackendErrorCode):
+                errors.add_metric(
+                    [usage.name, code], usage.failed_by_error.get(code, 0)
+                )
+        yield errors
 
         disabled = GaugeMetricFamily(
             "gateway_model_disabled",

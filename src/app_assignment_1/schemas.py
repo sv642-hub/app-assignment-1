@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Route = Literal["standard", "complex"]
 BackendName = Literal["qwen3-1.7b", "qwen3-4b"]
@@ -45,18 +45,29 @@ class Trace(StrictModel):
     jev_choice: Route | None
     route: Route
     model: BackendName
+    # policy_template: a mock filled a card's template. generated: a real model
+    # wrote the reply.
     reply_source: Literal[
-        "policy_template", "no_match", "unsupported_topic", "format_fallback"
+        "policy_template",
+        "generated",
+        "no_match",
+        "unsupported_topic",
+        "format_fallback",
     ]
     confidence: float | None = Field(ge=0, le=1)
     latency_ms: float = Field(ge=0)
+    # A mock's configured delay; 0 for a real model.
     simulated_latency_ms: int = Field(ge=0)
     format_check: Literal["passed", "failed"]
     format_errors: list[str] = Field(default_factory=list)
     fallback_reason: str | None = None
     controller_action: str | None = None
-    # The reply came from a mock Qwen backend; router says whether Jev was real.
-    mocked: Literal[True] = True
+    # Whether the reply came from a mock Qwen backend; router says whether Jev
+    # was real.
+    mocked: bool = True
+    # Groups requests by the settings and config files that answered them.
+    # None on requests saved before it existed.
+    settings_version: str | None = None
 
 
 class ChatResponse(StrictModel):
@@ -132,6 +143,36 @@ class FaultRequest(StrictModel):
     rate: float = Field(default=1, ge=0, le=1)
 
 
+JevFaultKind = Literal["none", "outage", "slow"]
+
+
+class JevFaultConfig(StrictModel):
+    """Simulated faults on the mock Jev router, set through /v1/faults/jev."""
+
+    # Share of calls that raise, as a TypeSafe outage would.
+    error_rate: float = Field(default=0, ge=0, le=1)
+    # Share of calls held for slow_seconds more before answering. Past
+    # APP_JEV_TIMEOUT_SECONDS the gateway uses the rule router.
+    slow_rate: float = Field(default=0, ge=0, le=1)
+    slow_seconds: float = Field(default=0, ge=0, le=120)
+
+
+class JevFaultRequest(StrictModel):
+    """Set one simulated fault on the mock Jev router. `none` clears both."""
+
+    fault: JevFaultKind
+    # Share of calls the fault hits; ignored for `none`.
+    rate: float = Field(default=1, ge=0, le=1, allow_inf_nan=False)
+    # Extra seconds a `slow` call is held; required for `slow` only.
+    seconds: float | None = Field(default=None, gt=0, le=120, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def seconds_only_for_slow(self) -> "JevFaultRequest":
+        if (self.fault == "slow") != (self.seconds is not None):
+            raise ValueError("seconds is required for slow and only allowed for slow")
+        return self
+
+
 class OperatorRequest(StrictModel):
     # Saved in the intervention log; never put customer data here.
     reason: str = Field(default="operator request", min_length=1, max_length=200)
@@ -188,11 +229,18 @@ class RecentRequest(StrictModel):
     format_check: Literal["passed", "failed"]
 
 
+# Why a backend call failed. The vLLM client's typed failures map to the first
+# three; anything else, such as a mock's simulated outage, is call_failed or other.
+BackendErrorCode = Literal["timeout", "call_failed", "invalid_output", "other"]
+
+
 class ModelUsage(StrictModel):
     name: BackendName
     attempted_calls: int = Field(ge=0)
     completed_calls: int = Field(ge=0)
     failed_calls: int = Field(ge=0)
+    # failed_calls split by BackendErrorCode; codes with no failures are absent.
+    failed_by_error: dict[BackendErrorCode, int] = Field(default_factory=dict)
     deadline_exceeded_calls: int = Field(default=0, ge=0)
     input_tokens: int | None = None
     output_tokens: int | None = None
@@ -261,7 +309,7 @@ class HealthResponse(StrictModel):
     usage: list[ModelUsage] = Field(default_factory=list)
     status: Literal["ok", "degraded"]
     # mode is the Qwen backends; jev_mode and router are Jev.
-    mode: Literal["mock"] = "mock"
+    mode: Literal["mock", "real"] = "mock"
     jev_mode: Literal["mock", "real"] = "mock"
     router: Literal["mock_jev", "jev"] = "mock_jev"
     backends: list[BackendConfig]
@@ -270,5 +318,7 @@ class HealthResponse(StrictModel):
     controller: ControllerRules
     jev_breaker: JevBreakerStatus
     jev_usage: JevUsage
+    # The same ID as on each reply's trace, for the settings now in use.
+    settings_version: str | None = None
     semantic: list[SemanticStatus]
     semantic_rules: SemanticRules

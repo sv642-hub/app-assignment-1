@@ -14,19 +14,28 @@ from pydantic import TypeAdapter, ValidationError
 
 from app_assignment_1.backends import Backend, MockBackend
 from app_assignment_1.breaker import CircuitBreaker
-from app_assignment_1.config import Settings
+from app_assignment_1.config import Settings, settings_version
 from app_assignment_1.intents import load_intents
 from app_assignment_1.labels import UNKNOWN, load_labels
 from app_assignment_1.metrics import GatewayMetrics
 from app_assignment_1.monitor import Controller
 from app_assignment_1.records import JevAssessment, check_call
-from app_assignment_1.router import JevAnswer, JevResult, Router, RuleRouter
+from app_assignment_1.router import (
+    JevAnswer,
+    JevResult,
+    MockJevRouter,
+    Router,
+    RuleRouter,
+)
 from app_assignment_1.schemas import (
     BackendConfig,
+    BackendErrorCode,
     BackendName,
     BackendReply,
     ChatResponse,
     FaultRequest,
+    JevFaultConfig,
+    JevFaultRequest,
     JevUsage,
     ModelUsage,
     PolicyCard,
@@ -35,6 +44,7 @@ from app_assignment_1.schemas import (
 )
 from app_assignment_1.semantic import SemanticMonitor, score
 from app_assignment_1.store import MemoryStore, Store
+from app_assignment_1.vllm import BackendCallError, BackendOutputError
 
 logger = logging.getLogger(__name__)
 QUESTIONS: tuple[Literal["route", "intent"], ...] = ("route", "intent")
@@ -75,6 +85,18 @@ class NotAMock(Exception):
     """A fault was asked for on a backend that is not a mock."""
 
 
+def backend_error_code(exc: Exception) -> BackendErrorCode:
+    """Name a failed backend call. TimeoutError covers the vLLM client's
+    BackendTimeoutError and the gateway's own per-attempt budget."""
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    if isinstance(exc, BackendCallError | ConnectionError):
+        return "call_failed"
+    if isinstance(exc, BackendOutputError | ValidationError):
+        return "invalid_output"
+    return "other"
+
+
 def _jev_error_type(exc: Exception) -> str:
     """A short code for a failed Jev call. Never the exception's message."""
     if isinstance(exc, TimeoutError):
@@ -88,11 +110,18 @@ def _jev_error_type(exc: Exception) -> str:
 
 
 def _assessment(
-    call: dict[str, Any], question: Literal["route", "intent"], answer: JevAnswer
+    call: dict[str, Any],
+    question: Literal["route", "intent"],
+    answer: JevAnswer,
+    option_order: list[str] | None = None,
 ) -> JevAssessment:
     if answer.error_type is not None:
         return JevAssessment(
-            **call, question=question, status="error", error_type=answer.error_type
+            **call,
+            question=question,
+            status="error",
+            error_type=answer.error_type,
+            option_order=option_order,
         )
     return JevAssessment(
         **call,
@@ -101,6 +130,7 @@ def _assessment(
         choice=answer.choice,
         confidence=answer.confidence,
         probabilities=answer.probabilities,
+        option_order=option_order,
     )
 
 
@@ -113,11 +143,11 @@ class Gateway:
         clock: Callable[[], float] = time.monotonic,
         store: Store | None = None,
     ):
-        if settings.provider_mode == "real":
-            raise ValueError(
-                "APP_PROVIDER_MODE=real is not built yet; the Jev and Qwen clients "
-                "come in later PRs"
-            )
+        if settings.provider_mode == "real" and (
+            backends is None or any(getattr(b, "mocked", True) for b in backends)
+        ):
+            # create_app builds the vLLM backends (real_backends.py).
+            raise ValueError("APP_PROVIDER_MODE=real needs the real vLLM backends")
         self.router = router
         # Test doubles may leave these out; both real routers set them.
         self.jev_mocked: bool = getattr(router, "mocked", True)
@@ -179,6 +209,8 @@ class Gateway:
         self.semantic = SemanticMonitor(
             (b.config.name for b in self.backends), settings
         )
+        self.settings = settings
+        self.settings_version = self._settings_version()
         if settings.semantic_actions_enabled:
             # A re-enabled model starts both windows again, or one old run of
             # disagreements would disable it on its next reply. With actions
@@ -247,6 +279,16 @@ class Gateway:
     def operator_enable(self, name: BackendName, reason: str) -> None:
         self.controller.operator_enable(name, reason)
 
+    def _settings_version(self) -> str:
+        """The models' live config stands in for backends.json, so a fault
+        set through /v1/faults gives later requests a new ID."""
+        s = self.settings
+        return settings_version(
+            s,
+            (s.intents_path, s.labels_path, s.policy_cards_path),
+            [b.config.model_dump(mode="json") for b in self.backends],
+        )
+
     def set_fault(self, request: FaultRequest) -> BackendConfig:
         """Change a mock model's simulated fault rates while it runs."""
         backend = self.backend(request.model)
@@ -261,10 +303,29 @@ class Gateway:
             config.fault_rate = request.rate
         else:
             config.label_swap_rate = request.rate
+        self.settings_version = self._settings_version()
         logger.info(
             "Operator set fault %s=%s on %s", request.fault, request.rate, request.model
         )
         return config
+
+    def set_jev_fault(self, request: JevFaultRequest) -> JevFaultConfig:
+        """Change the mock Jev router's simulated faults while it runs."""
+        router = self.router
+        if not isinstance(router, MockJevRouter):
+            raise NotAMock("jev")
+        if request.fault == "none":
+            faults = JevFaultConfig()
+        elif request.fault == "outage":
+            faults = router.faults.model_copy(update={"error_rate": request.rate})
+        else:
+            faults = router.faults.model_copy(
+                update={"slow_rate": request.rate, "slow_seconds": request.seconds}
+            )
+        # Replaced, not changed in place, so a call in flight keeps its faults.
+        router.faults = faults
+        logger.info("Operator set Jev fault %s=%s", request.fault, request.rate)
+        return faults
 
     async def save_interventions(self) -> None:
         """Move the controller's new interventions to the store, in order."""
@@ -436,7 +497,9 @@ class Gateway:
                     "output_tokens": result.output_tokens,
                 }
                 records = [
-                    _assessment(call, "route", result.route),
+                    _assessment(
+                        call, "route", result.route, option_order=result.route_order
+                    ),
                     _assessment(call, "intent", result.intent),
                 ]
             check_call(records)
@@ -480,11 +543,16 @@ class Gateway:
                 usage.deadline_exceeded_calls += 1
                 return None, action, True
             usage.failed_calls += 1
+            code = backend_error_code(exc)
+            usage.failed_by_error[code] = usage.failed_by_error.get(code, 0) + 1
             # A reply that fails BackendReply validation also counts as a call
             # error. Cancellation still propagates. Do not log input text or
             # provider exception messages.
             logger.warning(
-                "Backend %s failed (%s)", backend.config.name, type(exc).__name__
+                "Backend %s failed: %s (%s)",
+                backend.config.name,
+                code,
+                type(exc).__name__,
             )
             return (
                 None,
@@ -536,6 +604,7 @@ class Gateway:
         generated: BackendReply | None = None
         tried: list[Backend] = []
         deadline_exceeded = False
+        reserve_held = False
         # Two passes. First, the models that are usable now. If none answered,
         # every model not called yet:
         # - one whose cooldown ended while another model's call ran is usable
@@ -565,7 +634,11 @@ class Gateway:
                         reasons.append("semantic_last_resort")
                 remaining = self.request_deadline - (perf_counter() - start)
                 if remaining <= 0:
-                    deadline_exceeded = True
+                    # The deadline cut this model out only if time was held
+                    # back for it. If the last attempt had all the time,
+                    # because no model could follow it then, its timeout was a
+                    # failure and this is the usual 503.
+                    deadline_exceeded = not tried or reserve_held
                     break
                 # Hold back the reserve only on the first attempt, and only when
                 # another model, a last resort included, could still answer.
@@ -578,6 +651,7 @@ class Gateway:
                 if budget <= 0:
                     deadline_exceeded = True
                     break
+                reserve_held = budget < remaining
                 tried.append(backend)
                 generated, action, cut_short = await self._attempt(
                     backend, message, budget, len(tried), action
@@ -661,6 +735,7 @@ class Gateway:
                 self.semantic.skip(backend.config.name)
                 self.metrics.semantic_not_compared.labels(backend.config.name).inc()
 
+        mocked = getattr(backend, "mocked", True)
         response = ChatResponse(
             id=request_id,
             intent=intent,
@@ -679,14 +754,18 @@ class Gateway:
                     else "unsupported_topic"
                     if uncarded
                     else "policy_template"
+                    if mocked
+                    else "generated"
                 ),
                 confidence=decision.confidence,
                 latency_ms=round((perf_counter() - start) * 1000, 2),
-                simulated_latency_ms=backend.config.latency_ms,
+                simulated_latency_ms=backend.config.latency_ms if mocked else 0,
                 format_check="failed" if format_errors else "passed",
                 format_errors=format_errors,
                 fallback_reason=", ".join(reasons) or None,
                 controller_action=action,
+                mocked=mocked,
+                settings_version=self.settings_version,
             ),
         )
         trace = response.trace

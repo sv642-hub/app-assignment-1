@@ -15,6 +15,9 @@ from pydantic import AwareDatetime, Field, model_validator
 from app_assignment_1.schemas import StrictModel
 
 ROUTE_OPTIONS = frozenset({"standard", "complex"})
+# The order both routers show the route options in today. Randomizing it is
+# proposed in #86; each record says which order its call used.
+ROUTE_ORDER = ("standard", "complex")
 # Jev gives each probability to two decimals, so each value can be off by up to
 # 0.005 and the total by up to 0.005 per option: 0.39 for the 78 intent labels.
 MIN_PROBABILITY_TOTAL_TOLERANCE = 0.05
@@ -59,9 +62,18 @@ class JevAssessment(StrictModel):
     choice: str | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
     probabilities: dict[str, float] | None = None
+    # The order the options were shown in, when the router reports it. Only
+    # route records carry it: the intent options follow the label file, whose
+    # order is part of `option_set_version`. None means unknown, for example
+    # a failed call.
+    option_order: list[str] | None = None
 
     @model_validator(mode="after")
     def check_status(self) -> "JevAssessment":
+        if self.option_order is not None:
+            if self.question != "route":
+                raise ValueError("Only route records carry an option order")
+            check_route_order(self.option_order)
         if (self.error_type is not None) != (self.status in ("timeout", "error")):
             raise ValueError("error_type is set exactly when the call failed")
         if (self.skip_reason is not None) != (self.status == "skipped"):
@@ -96,6 +108,14 @@ class JevAssessment(StrictModel):
         if self.question == "route":
             check_options(self, ROUTE_OPTIONS)
         return self
+
+
+def check_route_order(order: Sequence[str] | None) -> None:
+    """Raise unless `order` is None or each route option exactly once."""
+    if order is not None and (
+        len(order) != len(ROUTE_OPTIONS) or set(order) != ROUTE_OPTIONS
+    ):
+        raise ValueError("The route order lists standard and complex once each")
 
 
 def check_probabilities(choice: str, probabilities: dict[str, float]) -> None:

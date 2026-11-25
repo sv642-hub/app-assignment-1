@@ -69,6 +69,17 @@ jobs:
       - name: Build
         run: npm run build
 
+  prometheus-rules:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the config, the alert rules and their unit tests
+        run: |
+          docker run --rm -v "$PWD/prometheus:/etc/prometheus:ro" -w /etc/prometheus \
+            --entrypoint promtool prom/prometheus:v3.15.1 check config prometheus.yml
+          docker run --rm -v "$PWD/prometheus:/etc/prometheus:ro" -w /etc/prometheus \
+            --entrypoint promtool prom/prometheus:v3.15.1 test rules alerts_test.yml
+
   compose-smoke:
     runs-on: ubuntu-latest
     steps:
@@ -90,6 +101,12 @@ jobs:
           done
           echo "Prometheus gateway target never came up"
           exit 1
+      - name: Check Prometheus loaded the alert rules
+        run: |
+          docker compose exec -T prometheus \
+            wget -qO- 'http://127.0.0.1:9090/api/v1/rules?type=alert' \
+            | grep -q '"name":"GatewayDown"'
+          echo "PASS: the gateway alert rules are loaded"
       - name: Show logs
         if: failure()
         run: docker compose logs --no-color
