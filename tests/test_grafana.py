@@ -194,3 +194,64 @@ def test_datasource_uids_match_the_dashboard():
     assert postgres["user"] == "grafana_ro"
     # The password comes from the environment, never from the file.
     assert postgres["secureJsonData"]["password"] == "$GRAFANA_DB_PASSWORD"
+
+
+def _all_503_metrics(tmp_path_factory, send: int) -> str:
+    settings = Settings(_env_file=None)
+    backends = json.loads(settings.backends_path.read_text())
+    for backend in backends:
+        backend["available"] = False
+    path = tmp_path_factory.mktemp("backends") / "backends.json"
+    path.write_text(json.dumps(backends))
+    settings = Settings(_env_file=None, backends_path=path)
+    with TestClient(create_app(settings)) as client:
+        for _ in range(send):
+            assert client.post("/v1/chat", json={"message": "x"}).status_code == 503
+        return client.get("/metrics").text
+
+
+def test_all_503_traffic_has_only_the_unavailable_counter(tmp_path_factory):
+    # The premise of the zero-fill below: during a full outage Prometheus has
+    # no answered series at all, only the 503 counter.
+    text = _all_503_metrics(tmp_path_factory, 3)
+    assert "gateway_chat_unavailable_total 3.0" in text
+    assert not re.search(r"^gateway_chat_requests_total\{", text, re.M)
+
+
+def test_no_traffic_has_no_answered_series(tmp_path_factory):
+    # With no traffic the 503 counter reads 0 and the answered one is absent;
+    # the zero-fill gives 0 / 0, which Grafana shows as "no data", not 0%.
+    text = _all_503_metrics(tmp_path_factory, 0)
+    assert "gateway_chat_unavailable_total 0.0" in text
+    assert not re.search(r"^gateway_chat_requests_total\{", text, re.M)
+
+
+def _bare_sums(expr: str, metric: str) -> list[str]:
+    """Sums of `metric` not wrapped as `((sum(...)) or vector(0))`."""
+    bad = []
+    for match in re.finditer(rf"sum\((?:rate|increase)\({metric}\[[^\]]*\]\)\)", expr):
+        before = expr[: match.start()]
+        after = expr[match.end() :]
+        if not (before.endswith("((") and after.startswith(") or vector(0))")):
+            bad.append(match.group(0))
+    return bad
+
+
+def test_availability_burn_rate_and_throughput_survive_a_full_outage():
+    # `answered + 503s` is empty when the answered series is missing, so each
+    # of these counters is zero-filled, and throughput counts the 503s.
+    checked = 0
+    for panel in dashboard()["panels"]:
+        title = panel["title"].lower()
+        for target in panel.get("targets", []):
+            expr = target.get("expr", "")
+            if "gateway_chat_unavailable_total" in expr and "requests_total" in expr:
+                assert _bare_sums(expr, "gateway_chat_requests_total") == [], expr
+                assert _bare_sums(expr, "gateway_chat_unavailable_total") == [], expr
+                checked += 1
+        if title in {"requests per second by model", "requests per second by route"}:
+            assert any(
+                "gateway_chat_unavailable_total" in t.get("expr", "")
+                for t in panel["targets"]
+            ), title
+    assert checked >= 4  # answered stat, requests/s, three burn-rate windows
