@@ -272,10 +272,11 @@ def model_health(w: int, h: int) -> None:
 
 def interventions(title: str, where: str = "", desc: str = "") -> None:
     """Counted from the saved interventions, so each event is one whole bar. A
-    Prometheus increase() over a short step showed no data."""
+    Prometheus increase() over a short step showed no data. Empty minutes are
+    filled with 0, or a lone bar stretches over its neighbours."""
     sql_series(
         title,
-        "SELECT $__timeGroupAlias(at, $__interval), "
+        "SELECT $__timeGroupAlias(at, $__interval, 0), "
         "action || ' ' || backend AS metric, count(*) AS value "
         f"FROM interventions WHERE $__timeFilter(at){where} "
         "GROUP BY 1, 2 ORDER BY 1",

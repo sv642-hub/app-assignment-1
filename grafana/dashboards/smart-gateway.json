@@ -2264,7 +2264,7 @@
               "format": "time_series",
               "rawQuery": true,
               "editorMode": "code",
-              "rawSql": "SELECT $__timeGroupAlias(at, $__interval), action || ' ' || backend AS metric, count(*) AS value FROM interventions WHERE $__timeFilter(at) GROUP BY 1, 2 ORDER BY 1"
+              "rawSql": "SELECT $__timeGroupAlias(at, $__interval, 0), action || ' ' || backend AS metric, count(*) AS value FROM interventions WHERE $__timeFilter(at) GROUP BY 1, 2 ORDER BY 1"
             }
           ],
           "fieldConfig": {
@@ -3026,7 +3026,7 @@
               "format": "time_series",
               "rawQuery": true,
               "editorMode": "code",
-              "rawSql": "SELECT $__timeGroupAlias(at, $__interval), action || ' ' || backend AS metric, count(*) AS value FROM interventions WHERE $__timeFilter(at) AND action LIKE 'operator%' GROUP BY 1, 2 ORDER BY 1"
+              "rawSql": "SELECT $__timeGroupAlias(at, $__interval, 0), action || ' ' || backend AS metric, count(*) AS value FROM interventions WHERE $__timeFilter(at) AND action LIKE 'operator%' GROUP BY 1, 2 ORDER BY 1"
             }
           ],
           "fieldConfig": {
