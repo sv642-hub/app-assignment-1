@@ -556,10 +556,10 @@ def direct(row, gold, raw, errors=()):
 DIRECT = [
     direct(0, "card_arrival", "card_arrival"),
     # Right intent, but the check failed: the customer saw the apology.
-    direct(1, "age_limit", "age_limit", ["uncarded_policy_facts"]),
-    direct(2, "age_limit", "atm_support", ["uncarded_policy_facts"]),
-    direct(3, "atm_support", "unknown", ["empty_reply"]),
-    {**item(4, "atm_support", None), "raw_intent": None, "error": "X", "final": True},
+    direct(1, "exchange_rate", "exchange_rate", ["unknown_policy_facts"]),
+    direct(2, "exchange_rate", "top_up_failed", ["missing_policy_facts"]),
+    direct(3, "top_up_failed", "unknown", ["unknown_policy_facts"]),
+    {**item(4, "top_up_failed", None), "raw_intent": None, "error": "X", "final": True},
 ]
 
 
@@ -569,30 +569,30 @@ def test_score_shows_what_the_format_check_cost():
     assert result["intent_accuracy_before_check"] == 0.4
     assert result["lost_to_format_check"] == 1
     assert result["format_errors_by_type"] == {
-        "uncarded_policy_facts": 2,
-        "empty_reply": 1,
+        "unknown_policy_facts": 2,
+        "missing_policy_facts": 1,
     }
 
 
 def test_gateway_results_have_no_before_check_accuracy():
     items = [item(0, "card_arrival", "unknown", format_ok=False,
-                  format_errors=["uncarded_policy_facts"])]  # fmt: skip
+                  format_errors=["unknown_policy_facts"])]  # fmt: skip
     result = score(items, LABELS)
     assert result["intent_accuracy_before_check"] is None
     assert result["lost_to_format_check"] is None
-    assert result["format_errors_by_type"] == {"uncarded_policy_facts": 1}
+    assert result["format_errors_by_type"] == {"unknown_policy_facts": 1}
 
 
 def test_confusions_use_the_models_own_answer():
     # Row 1 was right before the check, so it is not a confusion; the gateway
     # target (no raw_intent) falls back to the delivered intent.
     assert confusions(DIRECT, 10) == [
-        ("age_limit", "atm_support", 1),
-        ("atm_support", "unknown", 1),
-        ("atm_support", None, 1),
+        ("exchange_rate", "top_up_failed", 1),
+        ("top_up_failed", "unknown", 1),
+        ("top_up_failed", None, 1),
     ]
     delivered = [{k: v for k, v in i.items() if k != "raw_intent"} for i in DIRECT]
-    assert ("age_limit", "unknown", 2) in confusions(delivered, 10)
+    assert ("exchange_rate", "unknown", 2) in confusions(delivered, 10)
 
 
 def test_score_command_prints_the_breakdown(tmp_path, capsys):
@@ -605,12 +605,13 @@ def test_score_command_prints_the_breakdown(tmp_path, capsys):
     assert run_eval.main(["score", str(out), "--top", "2"]) == 0
     text = capsys.readouterr().out
     assert (
-        "format errors by type {'uncarded_policy_facts': 2, 'empty_reply': 1}" in text
+        "format errors by type {'unknown_policy_facts': 2, 'missing_policy_facts': 1}"
+        in text
     )
     assert "intent accuracy before the format check 0.400" in text
     assert "right intents lost to the check 1" in text
-    assert "lowest recall: age_limit 0.00, atm_support 0.00" in text
-    assert "age_limit -> atm_support  1" in text
+    assert "lowest recall: exchange_rate 0.00, top_up_failed 0.00" in text
+    assert "exchange_rate -> top_up_failed  1" in text
     assert run_eval.main(["score", str(out), "--json"]) == 0
     report = json.loads(capsys.readouterr().out)[str(out)]
     assert report["score"]["lost_to_format_check"] == 1
