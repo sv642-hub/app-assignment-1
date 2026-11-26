@@ -15,13 +15,13 @@ A mocked banking-support gateway for DSAN 6700 Deliverable 2, with a React chat 
 
 **Real Jev.** With `APP_JEV_MODE=real`, the gateway sends each message to TypeSafe in place of step 2, using `TypeSafeJevRouter` in `jev.py`: one `/v1/systemone` call with the route question and the intent question over the 78 labels. Every chat message then leaves the server, so use only made-up details, and update `USER_BRIEF.md` before testers use a gateway in this mode. It needs `APP_JEV_API_KEY` and an `https` `APP_JEV_BASE_URL`. The trace shows `router: "jev"` when real Jev chose the route, and `/v1/health` shows `jev_mode: "real"` and `router: "jev"`. Compose and CI run with the default, `mock`. No test calls TypeSafe; the tests use a fake TypeSafe server.
 
-**Real Qwen.** With `APP_PROVIDER_MODE=real`, step 3 calls the two vLLM servers on the GPU host (see [GPU host](#gpu-host-vllm)) through `VLLMBackend` in `vllm.py`, built by `real_backends.py`. Standard messages go to `APP_VLLM_SMALL_BASE_URL` and complex ones to `APP_VLLM_LARGE_BASE_URL`, each with `Authorization: Bearer <APP_VLLM_API_KEY>`; it needs all three. The model writes the reply from the policy card in its system prompt, so the trace shows `reply_source: "generated"`, `mocked: false` and `simulated_latency_ms: 0`, and `/v1/health` shows `mode: "real"`. Each call gets the time the request deadline leaves; the client follows no redirects and makes no retries. A failed call still counts as a call error for the controller, and also gets an error code: `timeout`, `call_failed` (an HTTP error or no connection), `invalid_output` (not a valid `BackendReply`) or `other`. `usage[].failed_by_error` in `/v1/health` and `gateway_backend_errors_total` count them by model. The log line names the code and the exception type, never the message or the provider's text. `/v1/faults` answers 409, because only the mocks have fault rates. The semantic monitor compares only like with like, so real Qwen with mock Jev, or the reverse, is not scored. Compose and CI run with the default, `mock`. No test calls vLLM; the tests use two fake vLLM servers.
+**Real Qwen.** With `APP_PROVIDER_MODE=real`, step 3 calls the two vLLM servers on the GPU host (see [GPU host](#gpu-host-vllm)) through `VLLMBackend` in `vllm.py`, built by `real_backends.py`. Standard messages go to `APP_VLLM_SMALL_BASE_URL` and complex ones to `APP_VLLM_LARGE_BASE_URL`, each with `Authorization: Bearer <APP_VLLM_API_KEY>`; it needs all three. The model chooses the intent and which of that intent's card facts apply. The gateway then builds the reply from the card's template with those facts, as for the mocks, so the model's own text is never shown or stored: it could repeat the customer's message or say things the card doesn't. A fact that isn't in the intent's card fails the format check (`unknown_policy_facts`), and so does a carded reply with no fact (`missing_policy_facts`). A reply with intent `unknown` gets the fixed no-match text. The trace shows `reply_source: "policy_template"`, `mocked: false` and `simulated_latency_ms: 0`, and `/v1/health` shows `mode: "real"`. Each call gets the time the request deadline leaves; the client follows no redirects and makes no retries. A failed call still counts as a call error for the controller, and also gets an error code: `timeout`, `call_failed` (an HTTP error or no connection), `invalid_output` (not a valid `BackendReply`) or `other`. `usage[].failed_by_error` in `/v1/health` and `gateway_backend_errors_total` count them by model. The log line names the code and the exception type, never the message or the provider's text. `/v1/faults` answers 409, because only the mocks have fault rates. The semantic monitor compares only like with like, so real Qwen with mock Jev, or the reverse, is not scored. Compose and CI run with the default, `mock`. No test calls vLLM; the tests use two fake vLLM servers.
 
 If Jev fails or does not answer within `APP_JEV_TIMEOUT_SECONDS`, the rule router chooses the route instead: messages of `APP_RULE_ROUTER_COMPLEX_MIN_WORDS` words or more go to `complex`, shorter ones to `standard`. The request still goes to a backend. The trace shows `router: "rule_router"`, `jev_choice: null`, `confidence: null` and `fallback_reason` `jev_timeout` or `jev_error`. Jev's answers are checked one at a time: an invalid route answer also uses the rule router, with `fallback_reason: "jev_invalid_route"`, while an invalid intent answer still uses Jev's route.
 
 After `APP_JEV_BREAKER_FAILURES` failed Jev calls in a row (default 5), a circuit breaker skips Jev for `APP_JEV_BREAKER_COOLDOWN_SECONDS` (default 30), and the rule router routes every message with `fallback_reason: "jev_circuit_open"`. After the cool-off, one message tries Jev again: success closes the breaker, failure opens it for another cool-off. An invalid answer is not a failed call. `/v1/health` shows the breaker in `jev_breaker`. The breaker does not change `status`, which is about the backends only: while Jev is skipped, customers still get answers from the right models.
 
-If the backend detects no intent, it returns intent `unknown` with a reply asking the customer to describe their banking problem (`reply_source: "no_match"`). A real backend must keep this behaviour. Vague and off-topic messages currently get the same reply. If a backend returns one of the 67 Banking77 intents that has no policy card, it must send an empty reply and no policy facts. The gateway then replies that the demo does not cover that topic (`reply_source: "unsupported_topic"`). The mock backends only match the 10 carded intents, so they never take this path. If the selected backend is marked unavailable, the other is used only when available (`selected_backend_unavailable`). When both are unavailable, every message returns HTTP 503. When Jev fails and the backend falls back, `fallback_reason` lists both reasons.
+If the backend detects no intent, it returns intent `unknown` with a reply asking the customer to describe their banking problem (`reply_source: "no_match"`). The gateway always sends this standard no-match text for `unknown`, whatever the model wrote. If a real backend returns `unknown` with an empty reply and no policy facts, the reply still passes the format check; `gateway_empty_unknown_filled_total` counts these per model. In the first test-set run with real Qwen (#109), the small model did this on 304 of 3,080 messages. Vague and off-topic messages currently get the same reply. If a backend returns one of the 67 Banking77 intents that has no policy card, it should send an empty reply and no policy facts. The gateway then replies that the demo does not cover that topic (`reply_source: "unsupported_topic"`), keeps the intent and discards anything else the backend sent. Policy facts sent anyway are dropped, not counted as a format failure, because nothing the model wrote is shown; `gateway_uncarded_facts_dropped_total` counts them per model. In the first test-set run with real Qwen (#109), these leftover facts failed 36–39% of replies, most with the right intent. The mock backends only match the 10 carded intents, so they never take this path. If the selected backend is marked unavailable, the other is used only when available (`selected_backend_unavailable`). When both are unavailable, every message returns HTTP 503. When Jev fails and the backend falls back, `fallback_reason` lists both reasons.
 
 If the selected backend's call raises an error, or returns a reply that does not match the backend reply schema, the request is tried once on the other usable backend (`selected_backend_error`). Both cases count as failed calls (`call_errors`), not format failures. When no backend can answer, the message returns HTTP 503. The log records the backend and error type, not the message or the provider's error text. Each chat request gets `APP_REQUEST_DEADLINE_SECONDS` in all, counted from before the Jev call. When the other backend is usable, the first attempt gets the time left minus `APP_ALTERNATE_RESERVE_SECONDS`, so the other backend still has time to answer. A first attempt that runs out of time counts as a failed call for its backend. If the other backend is then cut short by the deadline, the message returns HTTP 503 with detail `deadline_exceeded`; that call counts in `deadline_exceeded_calls` in `/v1/health`, not as a failed call. When only one backend is usable, it gets all the time left. If it runs out, that counts as a failed call and the message returns the usual 503, not `deadline_exceeded`.
 
@@ -83,6 +83,28 @@ docker compose -f compose.yml -f compose.labelswap.yml up -d --build --wait
 
 Send one complex message first, such as "My card was stolen", so the controller has seen `qwen3-4b` answer. Then send ten standard messages, such as "My card has not arrived". Each one gets a well-formed reply about a lost or stolen card, and every format check passes. The tenth puts `qwen3-1.7b` at a disagreement rate of 1.0, status `above_baseline`, and the controller disables it. The eleventh is answered correctly by `qwen3-4b`, with `fallback_reason: "selected_backend_disabled"`. The **Health** screen shows the banner, the disabled model and the intervention. To watch the monitor only report, add `APP_SEMANTIC_ACTIONS_ENABLED: "false"` to the override. Return to normal with `docker compose up -d --wait`.
 
+### Releases and rollback
+
+Each model serves a **release**: a named version of its config. Every model starts on `base`, its entry in `APP_BACKENDS_PATH`. The catalog in [`config/releases.json`](config/releases.json) (`APP_RELEASES_PATH`) lists the other versions per model, each a set of changes to `base`. With the mock backends a version can only change mock settings (latency and the three simulated faults), so a release is simulated; once the Qwen backends are real it should also carry a prompt version. The shipped catalog has one good demo release per model, `v2-faster`, and three bad ones, `v2-bad-format`, `v2-outage` and `v2-label-swap`.
+
+- **Deploy:** an operator deploys a version with `POST /v1/operator/models/{name}/release` and `{"version": "v2-faster", "reason": "..."}`. The model's failure and semantic windows start empty, since calls to the old version say nothing about the new one. A version is the whole config, so a deploy also replaces any fault set with `/v1/faults`.
+- **Watch:** for the next `APP_RELEASE_WATCH_SAMPLES` calls to the model on its own route (default 20, never fewer than `APP_MONITOR_MIN_SAMPLES`, nor than `APP_SEMANTIC_MIN_SAMPLES` while semantic actions are on), the release is `watching`. Rerouted calls can still roll a release back, but they don't count toward the watch, because the semantic check never sees them. A call that started before a deploy or rollback still answers its customer, but the monitors skip it: it ran on the old version. If the model's failure rate reaches the threshold in that time, the controller **rolls the release back** instead of disabling the model: the model serves its rollback target again at once, with empty windows, and the intervention log says `rolled_back`. With semantic actions on, a model above the semantic baseline is rolled back the same way. When semantic actions apply to the model, confirmation waits for enough comparable intent replies within the configured baseline. The release then becomes `stable`, and a later failure uses the usual disable rules.
+- **Last usable model:** the controller never disables the last usable model, but it can roll one back. A bad release on the only model left ends after `APP_MONITOR_MIN_SAMPLES` failed calls, instead of lasting until an operator acts.
+- **Rollback target:** the last version known to be good. A deploy sets it to the current version if that one is `stable` or `rolled_back`; a release still under watch is no target, so deploying over it keeps the target it had. So every release under watch has a target. A rollback, by the controller or by an operator with `POST /v1/operator/models/{name}/rollback`, leaves the model with no target. Deploying the target while a release is under watch is a rollback.
+- **History and restarts:** every deploy, confirmation and rollback is saved as a release event (see [Storage](#storage)). An operator's change is saved before it applies; if the save fails, the route answers 503 and nothing changes. A save that times out is read back first: if the store has it, the change applies. If it can't be read back, the route answers 503 with "Could not confirm": the running gateway doesn't change, and it saves the release it kept as a newer change once the store answers. Until that save works, the kept release is only in memory, so if the gateway stops first, a restart may serve the change the operator was told wasn't made. Chats never wait for an operator's save. If the controller rolls back or confirms the model during the save, the change is planned again on the new state and saved again, so the operator's answer is what the store holds. The controller's rollbacks apply at once and are saved with its interventions. With Postgres, a restarted gateway serves the release each model had. Each release event carries a revision number per model, taken when the change is planned, and a restart serves the event with the highest revision, whatever order the writes reached the store in. The counter starts from the saved revisions, so if the gateway can't read them at startup, it serves `base` and answers release changes with 503 until a read works. The read is tried again on each release change, and when it works the model goes back to its saved release before the change is made. A different change already saved under the same revision, for example by another gateway on the same store, is refused with 503 and nothing changes; the next try gets a newer revision. A release that was still under watch is watched again from zero. A saved version that is no longer in the catalog is skipped with a warning, and that model starts on `base`.
+- **Visibility:** `GET /v1/health` has `releases` (per model: `version`, `status`, `rollback_target`, `watched_samples` of `watch_samples`, and the versions it can be deployed to) and `release_history`, the last 20 events. The reasons are public, like the intervention reasons. `/metrics` has `gateway_model_release{model, version, status}`, and rollbacks count in `gateway_controller_interventions_total{action="rolled_back"}`. The **Health** screen has a Releases card.
+
+To see a rollback, start the stack with an operator token in `env/.env`, deploy a bad release to the small model, and send five standard messages. All five fail the format check, and the fifth rolls `qwen3-1.7b` back to `base`. The sixth is answered by `qwen3-1.7b` again, and passes:
+
+```bash
+TOKEN='your-operator-token'
+curl -fsS -X POST http://localhost:8080/v1/operator/models/qwen3-1.7b/release \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"version": "v2-bad-format", "reason": "rollback demo"}'
+```
+
+Compare with the chaos override above, where the same fault on `base` gets the model disabled for the cooldown. This is a mock: the release, the fault and the timing are all simulated, and nothing here has been measured on a real model.
+
 ### Operator routes
 
 Operators can act on the models without restarting the stack. Every operator route needs the header `Authorization: Bearer <APP_OPERATOR_TOKEN>`. While `APP_OPERATOR_TOKEN` is unset, which is the default, the routes answer 403. A missing or wrong token gets 401. Caddy proxies `/v1`, so the token is the only guard: set a long random one (at least 16 characters; leading and trailing spaces are dropped) only in `env/.env`, and never share it with testers.
@@ -91,6 +113,7 @@ Operators can act on the models without restarting the stack. Every operator rou
 - `POST /v1/operator/models/{name}/enable` lifts an operator hold, and also ends a controller cooldown early. The model starts with an empty window.
 - Holds live in gateway memory. After a restart every held model serves again, even though the last stored intervention for it still says `operator_disabled`. Disable it again after a restart.
 - Both take an optional JSON body `{"reason": "..."}` (up to 200 characters), saved in the intervention log as `operator_disabled` or `operator_enabled`. The reason is public: `GET /v1/health` lists it without a token. Do not put customer data or anything private in it. Both return the monitor rows; `disabled_by_operator` shows a hold.
+- `POST /v1/operator/models/{name}/release` deploys a version and `/rollback` puts the model back on its rollback target; see [Releases and rollback](#releases-and-rollback). Both take a public `reason` too.
 - `POST /v1/faults` sets a simulated fault on a mock model while it runs, in place of restarting with a Compose override. The body is `{"model": "qwen3-1.7b", "fault": "outage", "rate": 1}`. `fault` is `outage` (sets `error_rate`), `bad_format` (`fault_rate`), `label_swap` (`label_swap_rate`) or `none` (clears all three). `rate` is 0–1 and defaults to 1. It returns the model's config. Faults reset when the gateway restarts.
 - `POST /v1/faults/jev` does the same for the mock Jev router. The body is `{"fault": "outage", "rate": 1}`. `fault` is `outage` (sets `error_rate`: the call fails, the gateway uses the rule router with `fallback_reason: "jev_error"`, and 5 failures in a row open the circuit breaker), `slow` (sets `slow_rate` and `slow_seconds`: each call it hits is held for `seconds` more, above 0 and up to 120, which `slow` requires; past `APP_JEV_TIMEOUT_SECONDS`, 2 s by default, the gateway uses the rule router with `jev_timeout`) or `none` (clears both). It returns the Jev fault settings. With `APP_JEV_MODE=real` it answers 409: real Jev can't be faulted.
 
@@ -132,7 +155,8 @@ In Compose, request history and interventions are kept in Postgres and survive a
 The gateway keeps three kinds of records behind a small `Store` interface ([`store.py`](src/app_assignment_1/store.py)):
 
 - **Completed requests:** each `ChatResponse` (reply, intent, policy facts, trace), which `GET /v1/requests/{id}` and the Health screen's recent requests read. Postgres keeps every request, so they can be analysed later; set `APP_POSTGRES_REQUEST_LIMIT` to keep only the newest ones. The memory store keeps the most recent `APP_REQUEST_STORE_LIMIT` (default 1,000). Requests that end in a 503 are not stored. Each request's trace has `settings_version`, a short ID of the settings and config files that answered it, so statistics can be grouped by setup. A fault set through `/v1/faults` changes it, and clearing the fault changes it back. Secrets, the user and password in a URL, and how a config path is spelled are left out of it.
-- **Controller interventions:** every `disabled`, `re-enabled` and `kept_last_backend` entry. `GET /v1/health` shows the last 50.
+- **Controller interventions:** every `disabled`, `re-enabled`, `kept_last_backend` and `rolled_back` entry, and the operator's holds. `GET /v1/health` shows the last 50.
+- **Release events:** every deploy, confirmation and rollback, in the `model_releases` table. The one with the highest revision per model is what a restarted gateway serves; writing the same event again is ignored, and a different event under a saved revision is refused. Postgres keeps them all; the memory store keeps the last 200.
 - **Jev assessments:** two per request, one for the route question and one for the intent question, for the semantic monitor. They are saved in the same write as their request, so a request that ends in a 503 or is cancelled saves none. Postgres keeps them all, also after their request is deleted; the memory store keeps the last 2 × `APP_REQUEST_STORE_LIMIT`. The route record has `option_order`, the order Jev was shown the route options in, for the position-bias study (#86). The intent options follow `config/labels.json`, whose order is part of `option_set_version`.
 - **Export for analysis:** `APP_DATABASE_URL=... uv run python scripts/export_analysis.py --out exports/<name>` writes `requests.jsonl` and `jev_assessments.jsonl`, which join on the request ID. Reply text and policy facts are left out. `exports/` is ignored by git.
 
@@ -182,9 +206,12 @@ The `prometheus` service (Prometheus 3.15.1, config in [`prometheus/prometheus.y
 | `gateway_chat_latency_seconds` | none | Histogram of time spent in the gateway per chat request, including 503s |
 | `gateway_backend_calls_attempted_total`, `_completed_total`, `_failed_total` | `model` | Backend calls, the same numbers as `usage` in `/v1/health` |
 | `gateway_jev_fallbacks_total` | `reason` (`jev_timeout`, `jev_error`, `jev_invalid_route`) | Requests routed by the rule router because Jev failed or its route answer was invalid |
+| `gateway_empty_unknown_filled_total` | `model` | Replies with intent `unknown`, no text and no policy facts; the gateway sends the standard no-match text and the reply passes |
+| `gateway_uncarded_facts_dropped_total` | `model` | Replies for an intent with no policy card that listed policy facts anyway; the facts are dropped and the reply still passes |
 | `gateway_model_disabled` | `model` | 1 while the controller has the model disabled |
 | `gateway_monitor_failure_rate`, `gateway_monitor_window_samples` | `model` | Failure rate and number of calls in the monitor window (rate is 0 when the window is empty) |
-| `gateway_controller_interventions_total` | `action`, `model` | Controller actions: `disabled`, `re-enabled`, `kept_last_backend` |
+| `gateway_controller_interventions_total` | `action`, `model` | Controller and operator actions: `disabled`, `re-enabled`, `kept_last_backend`, `rolled_back`, `operator_disabled`, `operator_enabled` |
+| `gateway_model_release` | `model`, `version`, `status` | 1 for the version each model serves now, with `stable`, `watching` or `rolled_back`; versions come from the release catalog |
 | `gateway_jev_answered_calls_total` | `mocked` | Jev calls that returned an answer; each call counts once, not once per question |
 | `gateway_jev_tokens_total` | `direction`, `mocked` | Input and output tokens of answered Jev calls |
 | `gateway_jev_estimated_cost_usd_total` | `mocked` | Input tokens times `APP_JEV_INPUT_PRICE_PER_MILLION_USD`; absent while the price is unset, so an unknown price never reads as $0 |
@@ -257,7 +284,8 @@ Pydantic Settings reads `.env` then `env/.env` in native local runs. Process env
 | `APP_INTENTS_PATH` | `config/intents.json` | Intent keywords and mock complexity |
 | `APP_LABELS_PATH` | `config/labels.json` | The 77 Banking77 intents plus `unknown` that Jev and Qwen classify into; every intent with a policy card must be one of them |
 | `APP_POLICY_CARDS_PATH` | `config/policy_cards.json` | Fictional facts and `{facts}` reply templates |
-| `APP_BACKENDS_PATH` | `config/backends.json` | Backend names, routes, delay and availability |
+| `APP_BACKENDS_PATH` | `config/backends.json` | Backend names, routes, delay and availability; each model's `base` release |
+| `APP_RELEASES_PATH` | `config/releases.json` | Versions an operator can deploy to each model; a missing file means `base` only |
 | `APP_REQUEST_STORE_LIMIT` | `1000` | Number of successful requests the memory store keeps |
 | `APP_POSTGRES_REQUEST_LIMIT` | unset | Unset keeps every request in Postgres, for analysis; a number keeps only the newest ones |
 | `APP_JEV_TIMEOUT_SECONDS` | `2` | Wait for the Jev routing call before using the rule router |
@@ -266,6 +294,7 @@ Pydantic Settings reads `.env` then `env/.env` in native local runs. Process env
 | `APP_MONITOR_MIN_SAMPLES` | `5` | Calls needed before the controller may act; at most the window |
 | `APP_MONITOR_FAILURE_THRESHOLD` | `0.5` | Failure rate (failed format checks plus failed calls) that disables a backend |
 | `APP_CONTROLLER_COOLDOWN_SECONDS` | `60` | How long a disabled backend stays out |
+| `APP_RELEASE_WATCH_SAMPLES` | `20` | Minimum own-route calls before a release can be confirmed. Never fewer than `APP_MONITOR_MIN_SAMPLES` or the semantic minimum when semantic actions are on |
 | `APP_STORE` | `memory` | `memory` (lost on restart) or `postgres`; Compose sets `postgres` |
 | `APP_DATABASE_URL` | none | Postgres URL, required when `APP_STORE=postgres`; a secret, hidden in logs and settings output |
 | `APP_STORE_TIMEOUT_SECONDS` | `2` | Longest wait for one store write before the reply goes out without it |
@@ -280,7 +309,7 @@ Pydantic Settings reads `.env` then `env/.env` in native local runs. Process env
 | `APP_OPERATOR_TOKEN` | unset | Bearer token for the operator routes, at least 16 characters; unset turns them off (403). Set it only in `env/.env` |
 | `APP_VLLM_SMALL_BASE_URL` | unset | Qwen3-1.7B server on the GPU host's private IP, for example `http://10.0.12.34:8001`; read when `APP_PROVIDER_MODE=real` |
 | `APP_VLLM_LARGE_BASE_URL` | unset | Qwen3-4B server on the GPU host's private IP, for example `http://10.0.12.34:8002`; read when `APP_PROVIDER_MODE=real` |
-| `APP_VLLM_API_KEY` | unset | The key both vLLM servers require (`VLLM_API_KEY` in `env/gpu.env`). Set it only in `env/.env`; sent as a bearer token when `APP_PROVIDER_MODE=real` |
+| `APP_VLLM_API_KEY` | unset | The key both vLLM servers require (`VLLM_API_KEY` in `env/gpu.env`), sent as a bearer token when `APP_PROVIDER_MODE=real`. Never write it to an env file: on the CPU instance it stays in `~/.vllm_api_key`, and `compose.real.yml` passes it in from the shell (see [Real Qwen in Compose](#real-qwen-in-compose)) |
 | `APP_REQUEST_DEADLINE_SECONDS` | `45` | Total time for one chat request, including the Jev call. A first attempt that runs out of time counts as a failed call; an alternate cut short gives a 503 with `deadline_exceeded` |
 | `APP_ALTERNATE_RESERVE_SECONDS` | `15` | Part of the deadline held back from the first attempt for the other backend, only when the other backend is usable; with the Jev timeout, must stay below the deadline |
 
@@ -371,6 +400,8 @@ curl -fsS "http://localhost:8080/v1/requests/$REQUEST_ID"
 | `GET /v1/requests/{id}` | 200 stored response; 404 missing, evicted, or lost in a restart with the memory store; 422 invalid UUID |
 | `GET /v1/health` | Typed Pydantic response documented in OpenAPI; 200 with backend config, monitor statistics, recent interventions, recent requests (`recent_requests`) and per-model call totals (`usage`); `degraded` when any backend is unavailable or disabled by the controller or an operator |
 | `POST /v1/operator/models/{name}/disable`, `/enable` | Operator token required. 200 monitor rows; 401 missing or wrong token; 409 last usable model (disable); 422 unknown model; 403 `APP_OPERATOR_TOKEN` unset |
+| `POST /v1/operator/models/{name}/release` | Operator token required. 200 the model's release; 404 no such version; 409 already serving it; 503 not saved, or saved releases not read yet; nothing changed; 401, 403 and 422 as above |
+| `POST /v1/operator/models/{name}/rollback` | Operator token required. 200 the model's release; 409 nothing to roll back to; 503 not saved, or saved releases not read yet; nothing changed |
 | `POST /v1/faults` | Operator token required. 200 the model's config; 401, 403 and 422 as above |
 | `POST /v1/faults/jev` | Operator token required. 200 the Jev fault settings; 409 when Jev is real; 401, 403 and 422 as above |
 | `GET /docs`, `/redoc`, `/openapi.json` | Interactive documentation and API schema |
@@ -425,16 +456,16 @@ On the instance:
 ```bash
 df -h /
 git clone --branch main --single-branch \
-  https://github.com/sv642-hub/app-assignment-1.git smart-ai-gateway-prototype
-cd smart-ai-gateway-prototype
+  https://github.com/sv642-hub/app-assignment-1.git
+cd app-assignment-1
 docker compose version
 ```
 
 Before starting Compose, set your own database password as described in [Storage](#storage) and set `APP_ENVIRONMENT=production` in `env/.env`. The production template sets this for you. The gateway then refuses the public database password and demo operator token. Keep `compose.demo.yml` on the local demo stack.
 
 ```bash
-docker compose -p smart-gateway-prototype up -d --build --wait
-docker compose -p smart-gateway-prototype ps
+docker compose -p app-assignment-1 up -d --build --wait
+docker compose -p app-assignment-1 ps
 curl -fsS http://127.0.0.1:8080/v1/health
 python3 scripts/smoke_compose.py http://127.0.0.1:8080
 ```
@@ -442,12 +473,14 @@ python3 scripts/smoke_compose.py http://127.0.0.1:8080
 These deployment commands target `main` after this PR is merged. For updates:
 
 ```bash
-cd ~/smart-ai-gateway-prototype
+cd ~/app-assignment-1
 git pull --ff-only
-docker compose -p smart-gateway-prototype up -d --build --wait
+docker compose -p app-assignment-1 up -d --build --wait
 ```
 
 Allow inbound TCP **8080** in the instance's security group and host firewall. Keep the existing SSH access rule. Do not publish the gateway or database ports. If 8080 is already occupied, identify that service before stopping anything.
+
+To have the stack come back by itself after the instance is shelved and unshelved, install the [start-at-boot unit](#start-at-boot).
 
 Back on your laptop, verify external access:
 
@@ -485,8 +518,8 @@ Both run vLLM `v0.33.0` (image pinned by digest) with `--max-model-len 4096` on 
 
 ```bash
 git clone --branch main --single-branch \
-  https://github.com/sv642-hub/app-assignment-1.git smart-ai-gateway-prototype
-cd smart-ai-gateway-prototype
+  https://github.com/sv642-hub/app-assignment-1.git ~/app-assignment-1
+cd ~/app-assignment-1
 cp env/gpu.env.example env/gpu.env   # set VLLM_BIND_IP (ip -4 addr) and MODEL_CACHE_DIR (the attached volume)
 sed -i "s/^VLLM_API_KEY=$/VLLM_API_KEY=$(openssl rand -hex 32)/" env/gpu.env
 docker compose -f compose.gpu.yml --env-file env/gpu.env -p smart-gateway-gpu up -d --wait
@@ -498,17 +531,17 @@ The first start downloads both models (about 12 GB) into `MODEL_CACHE_DIR`, whic
 
 After the first download, set `HF_HUB_OFFLINE=1` in `env/gpu.env` so later starts never contact Hugging Face.
 
-The memory margin is tiny: `vllm-large` starts with about 0.02 GiB to spare. If one container restarts while the other is running, its memory check can fail. Restart both together with `down` and then `up -d --wait`, not one at a time. The containers also do not come back by themselves after the instance is shelved and unshelved; run the same `up -d --wait` command.
+The memory margin is tiny: `vllm-large` starts with about 0.02 GiB to spare. If one container restarts while the other is running, its memory check can fail. Restart both together with `down` and then `up -d --wait`, not one at a time. Docker's own restart at boot starts both at once, so after an unshelve they may not come back; install the [start-at-boot unit](#start-at-boot) so they start in order.
 
 **Share the key with the CPU instance.** The key lives in two places only: `env/gpu.env` on the GPU host, and `~/.vllm_api_key` on the CPU instance (readable only by `exouser`). Copy it from your laptop; it goes straight from one host to the other and never shows on screen:
 
 ```bash
-ssh exouser@GPU_PUBLIC_IP 'sed -n "s/^VLLM_API_KEY=//p" ~/GPU_CHECKOUT/env/gpu.env' \
+ssh exouser@GPU_PUBLIC_IP 'sed -n "s/^VLLM_API_KEY=//p" ~/app-assignment-1/env/gpu.env' \
   | ssh exouser@CPU_PUBLIC_IP 'umask 077; cat > ~/.vllm_api_key'
 ssh exouser@CPU_PUBLIC_IP 'wc -c < ~/.vllm_api_key'   # 65: 64 characters and a newline
 ```
 
-`GPU_CHECKOUT` is the folder you cloned into on the GPU host. Do not send the key through GitHub, team chat or email. To change it, set a new `VLLM_API_KEY` in `env/gpu.env`, restart both servers (`down`, then `up -d --wait`) and copy it again.
+Change `~/app-assignment-1` if you cloned somewhere else. Do not send the key through GitHub, team chat or email. To change it, set a new `VLLM_API_KEY` in `env/gpu.env`, restart both servers (`down`, then `up -d --wait`) and copy it again.
 
 **Check from the CPU instance**, in a checkout with `uv sync --extra dev --frozen`:
 
@@ -518,6 +551,17 @@ curl -fsS -H "Authorization: Bearer $VLLM_API_KEY" http://GPU_PRIVATE_IP:8001/v1
 uv run python scripts/smoke_vllm.py --route standard --base-url http://GPU_PRIVATE_IP:8001 --model qwen3-1.7b
 uv run python scripts/smoke_vllm.py --route complex  --base-url http://GPU_PRIVATE_IP:8002 --model qwen3-4b
 ```
+
+#### Real Qwen in Compose
+
+To have the gateway call the two servers, put `APP_VLLM_SMALL_BASE_URL=http://GPU_PRIVATE_IP:8001` and `APP_VLLM_LARGE_BASE_URL=http://GPU_PRIVATE_IP:8002` in `env/.env` on the CPU instance; they are not secret. The key is not written there: `compose.real.yml` sets `APP_PROVIDER_MODE=real` and passes the key in from the shell, and Compose refuses to start without it:
+
+```bash
+APP_VLLM_API_KEY="$(cat ~/.vllm_api_key)" \
+  docker compose -p PROJECT -f compose.yml -f compose.real.yml up -d --wait
+```
+
+Use the project name the stack already runs as (`docker compose ls`). Without `compose.real.yml`, the gateway goes back to the mock backends.
 
 **Check that the servers are not public**, from your laptop. This must fail:
 
@@ -531,7 +575,61 @@ curl --max-time 5 http://GPU_PUBLIC_IP:8001/health
 docker compose -f compose.gpu.yml --env-file env/gpu.env -p smart-gateway-gpu down
 ```
 
-`down` leaves `MODEL_CACHE_DIR` alone, so the next start skips the download.
+`down` leaves `MODEL_CACHE_DIR` alone, so the next start skips the download. With the start-at-boot unit installed, use `sudo systemctl stop smart-gateway-gpu` instead; it runs the same `down`.
+
+## Start at boot
+
+Both instances get shelved to save allocation. A systemd unit on each starts its Compose stack when the instance boots, including after an unshelve, so nobody has to SSH in first. The units are in [`deploy/autostart/`](deploy/autostart/).
+
+| Instance | Unit | What it starts |
+| --- | --- | --- |
+| CPU | `smart-gateway-cpu.service` | `compose.yml` under the project name it already runs as, from the images of the last deploy (no build) |
+| GPU | `smart-gateway-gpu.service` | `compose.gpu.yml` as project `smart-gateway-gpu`, `vllm-small` first, then `vllm-large` |
+
+Each unit runs `down` and then `up -d --wait`, so Compose starts the services in order and waits until they are healthy. That matters most on the GPU host. Docker restarts containers at boot by itself, but all at once and ignoring `depends_on`, so both vLLM servers would claim GPU memory together. Before starting, the GPU unit runs [`gpu-preflight.sh`](deploy/autostart/gpu-preflight.sh), which checks three things:
+- `VLLM_BIND_IP` is still this host's address
+- `MODEL_CACHE_DIR` is mounted and holds both pinned models in full: every file of the revisions in `compose.gpu.yml`, with no unfinished download
+- `nvidia-smi` sees the GPU
+
+It gives the IP, the volume and the GPU up to 5 minutes to appear after boot. If they don't, or a stack doesn't get healthy (5 minutes on the CPU instance, 20 on the GPU host), the unit tries again 30 seconds later, 3 tries in all, and then stops. A stopped unit needs `sudo systemctl reset-failed` before it can be started by hand. The units never build or pull images: they start the ones from the last deploy, and fail if one is missing. Each unit also runs `down` at shutdown.
+
+**Install**, once per instance, from its checkout. Starting the unit restarts that stack once: a few seconds on the CPU instance, a few minutes on the GPU host while the models load.
+
+On the CPU instance, first run `docker compose ls`. Note the stack's NAME, and the folder in CONFIG FILES. The unit must use both, or its `down` misses the running stack and its `up` fails on port 8080.
+
+```bash
+# CPU instance, in the folder that `docker compose ls` shows; PROJECT is its NAME
+PROJECT=app-assignment-1
+sed -e "s|CHECKOUT_DIR|$PWD|g" -e "s|PROJECT_NAME|$PROJECT|g" \
+  deploy/autostart/smart-gateway-cpu.service \
+  | sudo tee /etc/systemd/system/smart-gateway-cpu.service >/dev/null
+sudo systemctl daemon-reload
+sudo systemctl enable --now smart-gateway-cpu
+
+# GPU instance, in ~/app-assignment-1
+sed "s|CHECKOUT_DIR|$PWD|g" deploy/autostart/smart-gateway-gpu.service \
+  | sudo tee /etc/systemd/system/smart-gateway-gpu.service >/dev/null
+sudo systemctl daemon-reload
+sudo systemctl enable --now smart-gateway-gpu
+```
+
+**Check** after an install or an unshelve. `active (exited)` means the stack is up and healthy.
+
+```bash
+systemctl status smart-gateway-gpu --no-pager      # or smart-gateway-cpu
+sudo journalctl -u smart-gateway-gpu -b --no-pager # what happened at this boot (needs sudo)
+```
+
+If the unit failed, the log names the reason, for example `VLLM_BIND_IP=... is not an address of this host`. Fix it, then start it again:
+
+```bash
+sudo systemctl reset-failed smart-gateway-gpu   # clears the 3-try limit
+sudo systemctl restart smart-gateway-gpu
+```
+
+To run the GPU checks by hand, from the checkout: `deploy/autostart/gpu-preflight.sh && echo ready`.
+
+Deploying an update does not change: `git pull` and `docker compose -p app-assignment-1 up -d --build --wait` as above. The next boot starts the newly built images. To stop a stack until the next boot, run `sudo systemctl stop smart-gateway-cpu` (or `-gpu`). To stop it starting at boot, run `sudo systemctl disable smart-gateway-cpu`.
 
 ## Offline evaluation
 
@@ -593,7 +691,7 @@ docker stop gateway-test-db
 CI runs these checks, the frontend tests and build, a Compose smoke test through port 8080, and a check that Prometheus reports the gateway target as up. Frontend tests (Vitest and Testing Library, with `fetch` stubbed) cover the chat round trip, the details panel, error messages, and the Health screen in healthy and degraded states. Tests cover all ten intents, unknown messages, Jev failure and timeout, the rule router, backend fallback, label checks, the monitor and controller rules, request validation, policy grounding, settings overrides, bounded history, health responsiveness during simulated inference, the Prometheus metrics (values after requests, no message text, not served through Caddy) and the store contract.
 
 - `src/app_assignment_1/`: settings, API contracts, routing interface, mock service, the monitor and controller, Prometheus metrics, and the request store (`store.py`, with SQL migrations in `migrations/`).
-- `frontend/`: the React + Vite app (`src/components/ChatView.jsx`, `HealthView.jsx`, `Sidebar.jsx`) and its Dockerfile. Jev and Dashboard screens are listed as coming soon.
+- `frontend/`: the React + Vite app (`src/components/ChatView.jsx`, `HealthView.jsx`, `JevView.jsx`, `Sidebar.jsx`) and its Dockerfile. The Jev screen shows mock or real mode, the circuit breaker, token usage and intent agreement, refreshed every five seconds. Failed polls hide stale readings until recovery. Deployments and Chaos mode screens remain planned.
 - `config/`: validated mock behavior, editable without Python changes.
 - `Dockerfile` (gateway), `frontend/Dockerfile` (proxy and app), `compose.yml` (gateway, postgres, proxy, prometheus), `Caddyfile`, `prometheus/prometheus.yml`: deployment with one published port. `compose.gpu.yml` (vllm-small, vllm-large): the GPU host, bound to its private IP.
 - `tests/`: unit and API tests. `scripts/smoke_compose.py`: public-proxy smoke test.

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from pydantic import TypeAdapter
 
 from app_assignment_1.config import Settings
 from app_assignment_1.evaluation import (
@@ -24,13 +25,17 @@ from app_assignment_1.evaluation import (
 )
 from app_assignment_1.labels import load_labels
 from app_assignment_1.router import MockJevRouter
-from app_assignment_1.schemas import BackendConfig, BackendReply
+from app_assignment_1.schemas import BackendConfig, BackendReply, PolicyCard
 from app_assignment_1.service import Gateway
 from app_assignment_1.vllm import BackendOutputError, BackendTimeoutError
 
 ROOT = Path(__file__).resolve().parents[1]
 LABELS = load_labels(ROOT / "config/labels.json")
-CARDS = set(json.loads((ROOT / "config/policy_cards.json").read_text()))
+CARDS = TypeAdapter(dict[str, PolicyCard]).validate_json(
+    (ROOT / "config/policy_cards.json").read_text()
+)
+ARRIVAL = CARDS["card_arrival"].facts
+LOST = CARDS["lost_or_stolen_card"].facts
 
 
 def item(row, gold, predicted, **extra):
@@ -145,6 +150,20 @@ class FixedBackend:
         BackendReply(intent="unknown", reply="Please.", policy_facts=["a fact"]),
         BackendReply(intent="age_limit", reply="", policy_facts=[]),
         BackendReply(intent="age_limit", reply="", policy_facts=["a fact"]),
+        # #109 run: uncarded intent with leftover facts passes (#127).
+        BackendReply(intent="age_limit", reply="You must be 18.", policy_facts=["x"]),
+        # #109 run: unknown with no text and no facts passes (#128).
+        BackendReply(intent="unknown", reply="", policy_facts=[]),
+        BackendReply(intent="unknown", reply="   ", policy_facts=[]),
+        BackendReply(intent="unknown", reply="", policy_facts=["a fact"]),
+        # Facts checked against the chosen card (#126).
+        BackendReply(intent="card_arrival", reply="Soon.", policy_facts=[ARRIVAL[0]]),
+        BackendReply(intent="card_arrival", reply="Soon.", policy_facts=ARRIVAL[::-1]),
+        BackendReply(
+            intent="card_arrival", reply="Soon.", policy_facts=[ARRIVAL[0], "made up"]
+        ),
+        BackendReply(intent="card_arrival", reply="Soon.", policy_facts=[LOST[0]]),
+        BackendReply(intent="card_arrival", reply="", policy_facts=["made up"]),
     ],
 )
 def test_format_errors_agree_with_the_gateway(reply):

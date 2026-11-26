@@ -31,13 +31,13 @@ import math
 import random
 import statistics
 from collections import Counter
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from app_assignment_1.labels import UNKNOWN, LabelSet
-from app_assignment_1.schemas import BackendReply
+from app_assignment_1.schemas import BackendReply, PolicyCard
 from app_assignment_1.service import check_reply
 
 # Banking77 by PolyAI, CC BY 4.0, at the same pinned commit as the dev split
@@ -165,7 +165,7 @@ def stratified_sample(
 
 
 def reply_format_errors(
-    reply: BackendReply, labels: LabelSet, cards: Collection[str]
+    reply: BackendReply, labels: LabelSet, cards: Mapping[str, PolicyCard]
 ) -> list[str]:
     """The gateway's format checks on one backend reply (see `Gateway._chat`).
 
@@ -176,13 +176,21 @@ def reply_format_errors(
     """
     intent, facts = reply.intent, reply.policy_facts
     if intent in labels.names and intent != UNKNOWN and intent not in cards:
-        # Uncarded: the gateway discards the text and inserts a fixed reply.
-        return ["uncarded_policy_facts"] if facts else []
+        # Uncarded: the gateway shows a fixed reply and drops any facts.
+        return []
+    if intent == UNKNOWN and not reply.reply.strip() and not facts:
+        # No intent and no text: the gateway sends the fixed no-match reply.
+        return []
     errors = check_reply(reply.reply)
     if intent not in labels.names:
         errors.append("unknown_label")
-    elif intent == UNKNOWN and facts:
+    elif intent == UNKNOWN:
+        if facts:
+            errors.append("unknown_policy_facts")
+    elif not set(facts) <= set(cards[intent].facts):
         errors.append("unknown_policy_facts")
+    elif not facts:
+        errors.append("missing_policy_facts")
     return errors
 
 

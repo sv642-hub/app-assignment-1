@@ -72,3 +72,46 @@ def test_vllm_api_key_is_secret(monkeypatch):
     assert settings.vllm_api_key is not None
     assert settings.vllm_api_key.get_secret_value() == "k" * 64
     assert "k" * 64 not in repr(settings)
+
+
+@pytest.mark.parametrize(
+    "field,value,expected",
+    [
+        ("vllm_small_base_url", None, "APP_VLLM_SMALL_BASE_URL"),
+        ("vllm_large_base_url", None, "APP_VLLM_LARGE_BASE_URL"),
+        ("vllm_api_key", None, "APP_VLLM_API_KEY"),
+        ("vllm_api_key", "", "APP_VLLM_API_KEY"),
+        ("vllm_api_key", "   ", "APP_VLLM_API_KEY"),
+    ],
+)
+def test_real_provider_requires_vllm_settings(field, value, expected):
+    options = {
+        "provider_mode": "real",
+        "jev_mode": "mock",
+        "jev_api_key": None,
+        "vllm_small_base_url": "http://small.test:8001",
+        "vllm_large_base_url": "http://large.test:8002",
+        "vllm_api_key": "test-vllm-key",
+    }
+    options[field] = value
+
+    with pytest.raises(ValidationError, match=expected):
+        Settings(_env_file=None, **options)
+
+
+def test_real_provider_with_mock_jev_needs_no_jev_key():
+    settings = Settings(
+        _env_file=None,
+        provider_mode="real",
+        jev_mode="mock",
+        jev_api_key=None,
+        vllm_small_base_url="http://small.test:8001",
+        vllm_large_base_url="http://large.test:8002",
+        vllm_api_key="test-vllm-key",
+    )
+
+    assert settings.provider_mode == "real"
+    assert settings.jev_mode == "mock"
+    assert settings.jev_api_key is None
+    assert settings.vllm_small_base_url.host == "small.test"
+    assert settings.vllm_large_base_url.host == "large.test"

@@ -68,6 +68,25 @@ class GatewayMetrics:
             for sample in SAMPLES:
                 for traffic in ("own", "rerouted"):
                     self.semantic_samples.labels(backend.config.name, sample, traffic)
+        self.uncarded_facts_dropped = Counter(
+            "gateway_uncarded_facts_dropped",
+            "Replies for an intent with no policy card that listed policy facts "
+            "anyway. The facts are dropped and the fixed uncarded reply is shown, "
+            "so these pass the format check.",
+            ["model"],
+            registry=self.registry,
+        )
+        for backend in gateway.backends:
+            self.uncarded_facts_dropped.labels(backend.config.name)
+        self.empty_unknown_filled = Counter(
+            "gateway_empty_unknown_filled",
+            "Replies with intent unknown, no text and no policy facts. The gateway "
+            "shows the fixed no-match reply, so these pass the format check.",
+            ["model"],
+            registry=self.registry,
+        )
+        for backend in gateway.backends:
+            self.empty_unknown_filled.labels(backend.config.name)
         self.semantic_not_compared = Counter(
             "gateway_semantic_not_compared",
             "Replies that passed the format check but were not scored against "
@@ -149,6 +168,18 @@ class _GatewayStateCollector(Collector):
             for action in ACTIONS:
                 interventions.add_metric([action, name], counts[(action, name)])
         yield interventions
+
+        # One series per model, for the version it serves now. Versions come
+        # from the release catalog, a fixed set.
+        release = GaugeMetricFamily(
+            "gateway_model_release",
+            "1 for the version each model serves, with the release status: "
+            "stable, watching or rolled_back.",
+            labels=["model", "version", "status"],
+        )
+        for item in gateway.releases.stats():
+            release.add_metric([item.name, item.version, item.status], 1)
+        yield release
 
         # One label value per process: mocked Jev reports 0 tokens, and the
         # label keeps mock runs apart when series are compared later.
