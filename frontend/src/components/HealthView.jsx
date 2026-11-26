@@ -17,6 +17,16 @@ const RELEASE_STATUS = {
 
 const LOG_ROWS = 5;
 
+// The longer explanation of a tab, closed until asked for.
+function About({ children }) {
+  return (
+    <details className="about">
+      <summary>About this table</summary>
+      {children}
+    </details>
+  );
+}
+
 // The first LOG_ROWS rows of a log, and the button that shows the rest.
 function useShortLog(rows, noun) {
   const [open, setOpen] = useState(false);
@@ -28,13 +38,11 @@ function useShortLog(rows, noun) {
   return [open ? rows : rows.slice(0, LOG_ROWS), button];
 }
 
-function ReleasesCard({ releases, history }) {
+function ReleasesPanel({ releases, history }) {
   const log = [...(history ?? [])].reverse();
   const [shown, showMore] = useShortLog(log, "release changes");
   return (
-    <section className="card">
-      <h2>Releases</h2>
-      <p className="muted small">The version each model serves. After a deploy the controller watches the model; if it crosses the failure threshold before the watch ends, the controller rolls it back to the last good version instead of disabling it. Versions change mock settings only.</p>
+    <>
       <div className="table-scroll">
         <table className="log" aria-label="Releases">
           <thead>
@@ -93,7 +101,10 @@ function ReleasesCard({ releases, history }) {
         </div>
       )}
       {showMore}
-    </section>
+      <About>
+        <p>The version each model serves. After a deploy the controller watches the model; if it crosses the failure threshold before the watch ends, the controller rolls it back to the last good version instead of disabling it. Versions change mock settings only.</p>
+      </About>
+    </>
   );
 }
 
@@ -359,13 +370,13 @@ function ModelCard({ model, threshold }) {
   const rate = model.failure_rate ?? 0;
   const disabled = model.disabled_by_controller || model.disabled_by_operator;
   const status = disabled ? "Disabled" : model.available ? "Serving" : "Unavailable";
-  const extra = model.disabled_by_operator
+  const note = model.disabled_by_operator
     ? ["Re-enables", "when an operator enables it"]
     : model.disabled_by_controller
     ? ["Re-enables in", `${Math.ceil(model.disabled_for_seconds ?? 0)} s`]
     : model.covering.length
       ? ["Also serving", `${model.covering.join(", ")} (rerouted)`]
-      : ["Cooldown", "none"];
+      : null;
   return (
     <section className="card model-card" aria-label={model.name}>
       <div className="model-head">
@@ -382,27 +393,21 @@ function ModelCard({ model, threshold }) {
             {model.failure_rate === null ? "no data yet" : `${percent(rate)} (${model.format_failures + model.call_errors} of ${model.samples})`}
           </strong>
         </div>
-        <div className="meter" aria-hidden="true">
+        <div className="meter" aria-hidden="true" title={`Marker: ${percent(threshold)} threshold`}>
           <div className={`meter-fill ${rate >= threshold ? "meter-bad" : ""}`} style={{ width: `${Math.max(rate * 100, 2)}%` }} />
           <div className="meter-mark" style={{ left: `${threshold * 100}%` }} />
         </div>
-        <span className="muted small">Marker shows the {percent(threshold)} threshold</span>
         {model.call_errors > 0 && (
           <span className="muted small">
             Failed calls: {model.call_errors}. Format failures: {model.format_failures}.
           </span>
         )}
       </div>
-      <div className="stat-grid">
-        <div className="stat">
-          <div className="muted">Samples</div>
-          <strong>{model.samples}</strong>
-        </div>
-        <div className="stat">
-          <div className="muted">{extra[0]}</div>
-          <strong>{extra[1]}</strong>
-        </div>
-      </div>
+      {note && (
+        <p className="small">
+          <span className="muted">{note[0]}</span> <strong>{note[1]}</strong>
+        </p>
+      )}
     </section>
   );
 }
@@ -436,13 +441,11 @@ function JevSummary({ breaker, semantic }) {
   );
 }
 
-function InterventionsCard({ interventions }) {
+function InterventionsPanel({ interventions }) {
   const log = [...interventions].reverse();
   const [shown, showMore] = useShortLog(log, "interventions");
   return (
-    <section className="card">
-      <h2>Interventions</h2>
-      <p className="muted small">With Postgres, as in Compose, this log is kept across gateway restarts. A restart puts every model back in service, so an entry may say disabled for a model that is serving now.</p>
+    <>
       {log.length === 0 ? (
         <p className="muted small">No interventions recorded.</p>
       ) : (
@@ -472,16 +475,17 @@ function InterventionsCard({ interventions }) {
         </div>
       )}
       {showMore}
-    </section>
+      <About>
+        <p>With Postgres, as in Compose, this log is kept across gateway restarts. A restart puts every model back in service, so an entry may say disabled for a model that is serving now.</p>
+      </About>
+    </>
   );
 }
 
-function RecentRequestsCard({ requests }) {
+function RequestsPanel({ requests }) {
   const [shown, showMore] = useShortLog(requests, "requests");
   return (
-    <section className="card">
-      <h2>Recent completed requests</h2>
-      <p className="muted small">Up to 20 retained requests that got a reply, newest first, including replies that failed the format check. Requests that got no reply (HTTP 503) are not listed. Kept across gateway restarts when it uses Postgres, as in Compose.</p>
+    <>
       {!requests.length ? (
         <p className="muted small">No retained completed requests.</p>
       ) : (
@@ -511,17 +515,152 @@ function RecentRequestsCard({ requests }) {
         </div>
       )}
       {showMore}
+      <About>
+        <p>Up to 20 retained requests that got a reply, newest first, including replies that failed the format check. Requests that got no reply (HTTP 503) are not listed. Kept across gateway restarts when it uses Postgres, as in Compose.</p>
+      </About>
+    </>
+  );
+}
+
+function UsagePanel({ health }) {
+  return (
+    <>
+      <div className="table-scroll">
+        <table className="log" aria-label="Usage since gateway startup">
+          <thead>
+            <tr>
+              <th scope="col">Model</th>
+              <th scope="col">Attempted calls</th>
+              <th scope="col">Completed calls</th>
+              <th scope="col">Failed calls</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(health.usage ?? []).map((u) => (
+              <tr key={u.name}>
+                <td className="mono">{u.name}</td>
+                <td>{u.attempted_calls}</td>
+                <td>{u.completed_calls}</td>
+                <td>{u.failed_calls}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="muted small">Counted since the gateway started.</p>
+      <About>
+        <p>
+          {usageNote(health)}{" "}
+          Infrastructure costs are not measured; these figures cannot establish routing savings.
+        </p>
+        <p>Totals include fallback attempts and do not expire with the monitoring window. A completed call may still fail the format check. In-flight or cancelled calls can leave attempts greater than completed plus failed calls. Resets on restart.</p>
+      </About>
+    </>
+  );
+}
+
+function RulesPanel({ health }) {
+  const rules = health.controller;
+  return (
+    <div className="rules-panel">
+      <h2>Controller rules</h2>
+      <p className="muted small">
+        A model is taken out of service when its failure rate (failed format checks and failed calls) crosses the threshold. The last working model is never disabled.
+      </p>
+      <div className="rules">
+        <div className="stat">
+          <div className="muted">Window</div>
+          <strong>last {rules.window} calls per model</strong>
+        </div>
+        <div className="stat">
+          <div className="muted">Minimum samples</div>
+          <strong>{rules.min_samples}</strong>
+        </div>
+        <div className="stat">
+          <div className="muted">Failure threshold</div>
+          <strong>{percent(rules.failure_threshold)}</strong>
+        </div>
+        <div className="stat">
+          <div className="muted">Cooldown</div>
+          <strong>{rules.cooldown_seconds} s</strong>
+        </div>
+      </div>
+
+      <details className="about">
+        <summary>Try a simulated failure</summary>
+        <p>Normal questions never inject faults. The team runs this as a demo, on a host testers do not use. The demo starts the gateway with the README's chaos override, which corrupts every small-model reply.</p>
+        <ol>
+          <li>In Chat, send “My card has not arrived” {rules.min_samples} times.</li>
+          <li>Open Show details: each reply fails its format check. After {rules.min_samples} failed replies, the controller disables qwen3-1.7b.</li>
+          <li>Send it once more: qwen3-4b answers. Health shows the format failures, the disabled small model and an intervention.</li>
+          <li>Finish within {rules.cooldown_seconds} s. After the cooldown, the small model is enabled again and fails again.</li>
+        </ol>
+        <p>
+          This tests format failures and rerouting only.{" "}
+          {health.semantic_rules?.actions_enabled
+            ? "A wrong answer that passes the format check is caught separately: semantic actions are on, so the controller takes a model out of service when it differs from Jev above the baseline. The Jev screen shows this."
+            : "A wrong answer that passes the format check is not caught by the controller. The semantic monitor on the Jev screen reports it: the README's label-swap override shows how."}
+        </p>
+      </details>
+    </div>
+  );
+}
+
+// The logs and reference text, one at a time. Arrow keys move between tabs.
+function HealthTabs({ health }) {
+  const tabs = [
+    ["interventions", "Interventions", () => <InterventionsPanel interventions={health.interventions} />],
+    health.releases?.length > 0 && ["releases", "Releases", () => <ReleasesPanel releases={health.releases} history={health.release_history} />],
+    ["requests", "Recent requests", () => <RequestsPanel requests={health.recent_requests ?? []} />],
+    ["usage", "Usage", () => <UsagePanel health={health} />],
+    ["rules", "Rules", () => <RulesPanel health={health} />],
+  ].filter(Boolean);
+  const [chosen, setChosen] = useState("interventions");
+  const [id, , panel] = tabs.find(([tab]) => tab === chosen) ?? tabs[0];
+
+  const onKeyDown = (event) => {
+    const step = { ArrowRight: 1, ArrowLeft: -1 }[event.key];
+    if (!step) return;
+    event.preventDefault();
+    const at = tabs.findIndex(([tab]) => tab === id);
+    const next = tabs[(at + step + tabs.length) % tabs.length][0];
+    setChosen(next);
+    event.currentTarget.querySelector(`#tab-${next}`).focus();
+  };
+
+  return (
+    <section className="card tabs-card">
+      <div className="tabs" role="tablist" aria-label="Health details" onKeyDown={onKeyDown}>
+        {tabs.map(([tab, label]) => (
+          <button
+            key={tab}
+            id={`tab-${tab}`}
+            type="button"
+            role="tab"
+            aria-selected={tab === id}
+            aria-controls="health-panel"
+            tabIndex={tab === id ? 0 : -1}
+            onClick={() => setChosen(tab)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {/* Keyed by tab, so "Show all" starts closed on each visit. */}
+      <div key={id} id="health-panel" className="tab-panel" role="tabpanel" aria-labelledby={`tab-${id}`}>
+        {panel()}
+      </div>
     </section>
   );
 }
 
 export default function HealthView({ health, error }) {
   return (
-    <div className="health">
+    <div className="health health-compact">
       <div className="health-column">
         <header className="health-head">
           <h1>Health</h1>
-          <p className="muted small">Live state of the models and the controller. Updates every 5 s.</p>
+          <p className="muted small">Updates every 5 s.</p>
         </header>
 
         {error && (
@@ -563,88 +702,7 @@ function HealthBody({ health }) {
 
       <JevSummary breaker={health.jev_breaker} semantic={health.semantic} />
 
-      <InterventionsCard interventions={health.interventions} />
-
-      {health.releases?.length > 0 && <ReleasesCard releases={health.releases} history={health.release_history} />}
-
-      <RecentRequestsCard requests={health.recent_requests ?? []} />
-
-      <section className="card">
-        <h2>Usage since gateway startup</h2>
-        <p>
-          {usageNote(health)}{" "}
-          Infrastructure costs are not measured; these figures cannot establish routing savings.
-        </p>
-        <p className="muted small">Totals include fallback attempts and do not expire with the monitoring window. A completed call may still fail the format check. In-flight or cancelled calls can leave attempts greater than completed plus failed calls. Resets on restart.</p>
-        <div className="table-scroll">
-          <table className="log" aria-label="Usage since gateway startup">
-            <thead>
-              <tr>
-                <th scope="col">Model</th>
-                <th scope="col">Attempted calls</th>
-                <th scope="col">Completed calls</th>
-                <th scope="col">Failed calls</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(health.usage ?? []).map((u) => (
-                <tr key={u.name}>
-                  <td className="mono">{u.name}</td>
-                  <td>{u.attempted_calls}</td>
-                  <td>{u.completed_calls}</td>
-                  <td>{u.failed_calls}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <details className="card fold">
-        <summary>
-          <h2>Controller rules</h2>
-        </summary>
-        <p className="muted small">
-          A model is taken out of service when its failure rate (failed format checks and failed calls) crosses the threshold. The last working model is never disabled.
-        </p>
-        <div className="rules">
-          <div className="stat">
-            <div className="muted">Window</div>
-            <strong>last {rules.window} calls per model</strong>
-          </div>
-          <div className="stat">
-            <div className="muted">Minimum samples</div>
-            <strong>{rules.min_samples}</strong>
-          </div>
-          <div className="stat">
-            <div className="muted">Failure threshold</div>
-            <strong>{percent(rules.failure_threshold)}</strong>
-          </div>
-          <div className="stat">
-            <div className="muted">Cooldown</div>
-            <strong>{rules.cooldown_seconds} s</strong>
-          </div>
-        </div>
-      </details>
-
-      <details className="card fold">
-        <summary>
-          <h2>Try a simulated failure</h2>
-        </summary>
-        <p>Normal questions never inject faults. The team runs this as a demo, on a host testers do not use. The demo starts the gateway with the README's chaos override, which corrupts every small-model reply.</p>
-        <ol>
-          <li>In Chat, send “My card has not arrived” {rules.min_samples} times.</li>
-          <li>Open Show details: each reply fails its format check. After {rules.min_samples} failed replies, the controller disables qwen3-1.7b.</li>
-          <li>Send it once more: qwen3-4b answers. Health shows the format failures, the disabled small model and an intervention.</li>
-          <li>Finish within {rules.cooldown_seconds} s. After the cooldown, the small model is enabled again and fails again.</li>
-        </ol>
-        <p>
-          This tests format failures and rerouting only.{" "}
-          {health.semantic_rules?.actions_enabled
-            ? "A wrong answer that passes the format check is caught separately: semantic actions are on, so the controller takes a model out of service when it differs from Jev above the baseline. The Jev screen shows this."
-            : "A wrong answer that passes the format check is not caught by the controller. The semantic monitor on the Jev screen reports it: the README's label-swap override shows how."}
-        </p>
-      </details>
+      <HealthTabs health={health} />
     </>
   );
 }

@@ -27,7 +27,7 @@ Two limits to keep in mind:
 
 ## Where to look
 
-1. **Health screen:** `http://localhost:8080/#/health`, refreshed every 5 seconds. It shows a banner when a model is out or above the semantic baseline, and a note while Jev is skipped. Below it are each model's monitor, one line on Jev and the intent check, then the intervention log, releases and recent requests (five rows each until you ask for all). The full Jev router and semantic monitor cards are on the Jev screen, under Settings in the sidebar.
+1. **Health screen:** `http://localhost:8080/#/health`, refreshed every 5 seconds. It shows a banner when a model is out or above the semantic baseline, and a note while Jev is skipped. Below it are each model's monitor, one line on Jev and the intent check, then tabs for the intervention log, releases, recent requests, usage and the controller rules (logs show five rows until you ask for all). The full Jev router and semantic monitor cards are on the Jev screen, under Settings in the sidebar.
 2. **`GET /v1/health`:** the same data as JSON. The fields that matter most here:
    - `status`: `degraded` when any model is unavailable, disabled or held;
    - `monitor`: per model, the samples, failures, `disabled_by_controller`, `disabled_for` (`failure` or `semantic`), `disabled_by_operator`, `disabled_for_seconds` and `answering`;

@@ -673,22 +673,101 @@ p {
   margin-top: 8px;
 }
 
-.fold summary {
+/* Health fits one desktop screen: tighter than the Jev screen. */
+.health-compact {
+  padding-top: 20px;
+  padding-bottom: 24px;
+}
+
+.health-compact .health-column {
+  gap: 12px;
+}
+
+.health-compact .health-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+}
+
+.health-compact .banner {
+  padding: 10px 16px;
+}
+
+.health-compact .banner div {
+  display: block;
+}
+
+.health-compact .banner strong {
+  margin-right: 10px;
+}
+
+.health-compact .model-card {
+  gap: 10px;
+  padding: 14px 20px;
+}
+
+.tabs-card {
+  padding-top: 8px;
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tabs button {
+  margin-bottom: -1px;
+  padding: 8px 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 600;
   cursor: pointer;
 }
 
-.fold summary h2 {
-  display: inline;
-  font-size: 16px;
+.tabs button[aria-selected="true"] {
+  border-bottom-color: var(--accent);
+  color: var(--accent-ink);
 }
 
-.fold[open] summary {
-  margin-bottom: 12px;
+.tab-panel .table-scroll + .table-scroll {
+  margin-top: 14px;
 }
 
-.fold > p + ol,
-.fold > ol + p {
+.tab-panel .log td {
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+
+.about {
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.about summary {
+  cursor: pointer;
+}
+
+.about p,
+.about ol {
   margin-top: 8px;
+}
+
+.rules-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rules-panel h2 {
+  font-size: 15px;
 }
 
 .model-grid {
