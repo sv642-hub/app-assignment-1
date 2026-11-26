@@ -1,6 +1,9 @@
 """Measure how fast the gateway notices a fault and recovers, on a running stack.
 
 For each scenario, the script:
+0. starts from clean monitor windows: it waits out any cooldown, then
+   disables and enables each model through the operator routes, which clears
+   both models' windows, so each run is an independent sample;
 1. sends normal traffic and counts any controller action (a false intervention);
 2. sets a simulated fault on the small model with POST /v1/faults;
 3. keeps sending traffic until the controller disables the model, recording
@@ -12,7 +15,8 @@ Scenarios: `outage` (every call fails), `bad_format` (every reply fails the
 format check) and `label_swap` (well-formed replies with the wrong intent; it
 needs semantic actions on and a baseline, so it is skipped otherwise).
 
-Traffic is one message every `--interval` seconds, from a fixed list: three
+Traffic is one message sent every `--interval` seconds (or as soon as the
+last reply arrives, if it took longer), from a fixed list: three
 standard messages for the small model, then one complex message for the large
 one, so the large model keeps answering. The messages are test sentences, and
 the script stores no customer data.
@@ -34,6 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import statistics
 import sys
 import time
@@ -114,7 +119,12 @@ class Result:
     detected: bool = False
     detect_seconds: float | None = None
     requests_to_detect: int | None = None
+    # Bad replies from the fault until the disable, or for the whole fault
+    # phase if the controller never acted.
     bad_replies_before_detect: int = 0
+    # Bad replies over the whole observation after the fault was set: the
+    # fault phase and the time after it was cleared.
+    bad_replies: int = 0
     unavailable: int = 0
     false_interventions: int = 0
     restored: bool = False
@@ -124,17 +134,39 @@ class Result:
     # then the requests after it (answered by the large model).
     latency_ms_fault: float | None = None
     latency_ms_after_disable: float | None = None
+    # Why the run stopped early, if it did; its other fields are then partial.
+    error: str | None = None
     replies: list[Reply] = field(default_factory=list)
 
+    @property
+    def ok(self) -> bool:
+        """Detected, recovered, and no false intervention or error."""
+        return (
+            self.detected
+            and self.restored
+            and self.false_interventions == 0
+            and self.error is None
+        )
 
-def summarize(scenario: str, replies: list[Reply], fault_at: float) -> Result:
-    """Work out the measurements from the replies of one scenario."""
-    result = Result(scenario=scenario, fault_at=fault_at, replies=replies)
+
+def summarize(
+    scenario: str,
+    replies: list[Reply],
+    fault_at: float,
+    cleared_at: float | None = None,
+) -> Result:
+    """Work out the measurements from the replies of one scenario. `fault_at`
+    and `cleared_at` are when the fault was set and cleared, in seconds since
+    the scenario started; each reply's `at` is when it arrived."""
+    result = Result(
+        scenario=scenario, fault_at=fault_at, cleared_at=cleared_at, replies=replies
+    )
     normal = [r for r in replies if r.phase == "normal"]
     fault = [r for r in replies if r.phase == "fault"]
     cleared = [r for r in replies if r.phase == "cleared"]
     result.false_interventions = sum(r.controller_action is not None for r in normal)
     result.unavailable = sum(r.status != 200 for r in fault + cleared)
+    result.bad_replies = sum(not r.good for r in fault + cleared)
     detect = next((r for r in fault if r.disabled_small), None)
     before, after = fault, []
     if detect is not None:
@@ -143,14 +175,14 @@ def summarize(scenario: str, replies: list[Reply], fault_at: float) -> Result:
         before = fault[: fault.index(detect) + 1]
         after = fault[fault.index(detect) + 1 :]
         result.requests_to_detect = sum(r.route == "standard" for r in before)
-        result.bad_replies_before_detect = sum(not r.good for r in before)
-    if cleared:
-        result.cleared_at = cleared[0].at
+    result.bad_replies_before_detect = sum(not r.good for r in before)
+    if cleared_at is not None:
         back = next((r for r in cleared if _small_serves(r)), None)
         if back is not None:
             result.restored = True
-            # From the first request after the fault was cleared.
-            result.restore_seconds = round(back.at - result.cleared_at, 2)
+            # From the moment the fault was cleared, not from the first reply
+            # after it, which may itself have been slow.
+            result.restore_seconds = round(back.at - cleared_at, 2)
     result.latency_ms_normal = _median(normal)
     result.latency_ms_fault = _median(before)
     result.latency_ms_after_disable = _median(after)
@@ -192,6 +224,23 @@ class Gateway:
                 "the same value, on the gateway and here."
             )
 
+    def reset_windows(self) -> None:
+        """Clear both models' monitor windows: an operator disable then enable
+        of each, one at a time so one model always serves."""
+        for model in (SMALL, LARGE):
+            for action in ("disable", "enable"):
+                status, body = self.send(
+                    "POST",
+                    f"/v1/operator/models/{model}/{action}",
+                    {"reason": "measure_recovery.py: clean windows for a run"},
+                    self._operator(),
+                )
+                if status != 200:
+                    raise RuntimeError(
+                        f"/v1/operator/models/{model}/{action} answered {status}:"
+                        f" {body}"
+                    )
+
     def chat(self, phase: str, start: float, clock: Callable[[], float]) -> Reply:
         message, route, intent = TRAFFIC[self.sent % len(TRAFFIC)]
         self.sent += 1
@@ -225,20 +274,55 @@ def run_scenario(
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> Result:
-    """Run one scenario and return its measurements. Clears every fault before
-    it starts and after it ends."""
+    """Run one scenario and return its measurements. Clears every fault and
+    both monitor windows before it starts, and the fault after it ends. An
+    error partway returns what was measured so far, with `error` set."""
     for model in (SMALL, LARGE):
         gateway.fault(model, "none")
     _wait_until_serving(gateway, interval, timeout, clock, sleep)
+    gateway.reset_windows()
     gateway.sent = 0
     start = clock()
     replies: list[Reply] = []
+    fault_at: float = 0.0
+    cleared_at: float | None = None
 
     def tick(phase: str) -> Reply:
+        sent = clock()
         reply = gateway.chat(phase, start, clock)
         replies.append(reply)
-        sleep(interval)
+        # A message every `interval` seconds, not a pause after each reply.
+        sleep(max(0.0, interval - (clock() - sent)))
         return reply
+
+    try:
+        fault_at, cleared_at = _run_phases(
+            gateway,
+            scenario,
+            tick,
+            start,
+            after_detect,
+            normal_requests,
+            timeout,
+            clock,
+        )
+    except Exception as exc:
+        result = summarize(scenario, replies, fault_at, cleared_at)
+        result.error = f"{type(exc).__name__}: {exc}"
+        return result
+    return summarize(scenario, replies, fault_at, cleared_at)
+
+
+def _run_phases(
+    gateway: Gateway,
+    scenario: str,
+    tick: Callable[[str], Reply],
+    start: float,
+    after_detect: int,
+    normal_requests: int,
+    timeout: float,
+    clock: Callable[[], float],
+) -> tuple[float, float | None]:
 
     for _ in range(normal_requests):
         tick("normal")
@@ -252,11 +336,11 @@ def run_scenario(
             tick("fault")
     finally:
         gateway.fault(SMALL, "none")
-    cleared_at = clock() - start
+    cleared_at = round(clock() - start, 3)
     while clock() - start - cleared_at < timeout:
         if _small_serves(tick("cleared")):
             break
-    return summarize(scenario, replies, fault_at)
+    return fault_at, cleared_at
 
 
 def _wait_until_serving(
@@ -302,18 +386,19 @@ def print_report(results: list[Result], health: dict[str, Any]) -> None:
         f"min samples {semantic['min_samples']}"
     )
     header = (
-        "scenario     detect_s  requests  bad_replies  503s  false  restore_s  "
-        "p50_ms normal/fault/after"
+        "scenario     detect_s  requests  bad_before  bad_all  503s  false  "
+        "restore_s  p50_ms normal/fault/after"
     )
     print(header)
     for r in results:
         print(
             f"{r.scenario:<12} {_cell(r.detect_seconds):>8}  "
-            f"{_cell(r.requests_to_detect):>8}  {r.bad_replies_before_detect:>11}  "
-            f"{r.unavailable:>4}  {r.false_interventions:>5}  "
+            f"{_cell(r.requests_to_detect):>8}  {r.bad_replies_before_detect:>10}  "
+            f"{r.bad_replies:>7}  {r.unavailable:>4}  {r.false_interventions:>5}  "
             f"{_cell(r.restore_seconds):>9}  "
             f"{_cell(r.latency_ms_normal)}/{_cell(r.latency_ms_fault)}/"
             f"{_cell(r.latency_ms_after_disable)}"
+            + (f"  FAILED: {r.error}" if r.error else "")
         )
 
 
@@ -321,16 +406,40 @@ def _cell(value: float | int | None) -> str:
     return "-" if value is None else str(value)
 
 
+def _stop_on_sigterm(signum: int, frame: Any) -> None:
+    # Closing the terminal or a CI kill: stop as Ctrl-C does, so the
+    # `finally` in run_scenario clears the fault.
+    raise KeyboardInterrupt
+
+
+def write_out(path: str, health: dict[str, Any], results: list[Result]) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "controller": health["controller"],
+                "semantic_rules": health["semantic_rules"],
+                "results": [asdict(r) | {"ok": r.ok} for r in results],
+            },
+            f,
+            indent=2,
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("base_url", nargs="?", default="http://127.0.0.1:8080")
     parser.add_argument("--scenario", choices=SCENARIOS, action="append")
     parser.add_argument("--runs", type=int, default=1, help="runs per scenario")
-    parser.add_argument("--interval", type=float, default=0.5, help="seconds")
-    parser.add_argument("--out", help="write every reply and result as JSON")
+    parser.add_argument(
+        "--interval", type=float, default=0.5, help="seconds between messages"
+    )
+    parser.add_argument(
+        "--out", help="write every reply and result as JSON, after each run"
+    )
     parser.add_argument("--allow-remote", action="store_true")
     args = parser.parse_args(argv)
-    host = urlparse(args.base_url).hostname
+    base_url = args.base_url.rstrip("/")
+    host = urlparse(base_url).hostname
     if host not in ("localhost", "127.0.0.1", "::1") and not args.allow_remote:
         print(
             f"Refusing {host}: this script changes the running models. "
@@ -338,36 +447,39 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    gateway = Gateway(
-        http_transport(args.base_url), os.environ.get("APP_OPERATOR_TOKEN")
-    )
-    health = gateway.health()
-    scenarios = args.scenario or list(SCENARIOS)
+    signal.signal(signal.SIGTERM, _stop_on_sigterm)
+    gateway = Gateway(http_transport(base_url), os.environ.get("APP_OPERATOR_TOKEN"))
     results: list[Result] = []
-    for scenario in scenarios:
-        if scenario == "label_swap" and not label_swap_ready(health):
-            print(
-                "Skipping label_swap: it needs APP_SEMANTIC_ACTIONS_ENABLED=true "
-                "and a baseline (compose.measure.yml sets both)."
-            )
-            continue
-        for run in range(args.runs):
-            print(f"Running {scenario} ({run + 1} of {args.runs})...", flush=True)
-            results.append(run_scenario(gateway, scenario, interval=args.interval))
+    try:
+        health = gateway.health()
+        scenarios = args.scenario or list(SCENARIOS)
+        for scenario in scenarios:
+            if scenario == "label_swap" and not label_swap_ready(health):
+                print(
+                    "Skipping label_swap: it needs "
+                    "APP_SEMANTIC_ACTIONS_ENABLED=true and a baseline "
+                    "(compose.measure.yml sets both)."
+                )
+                continue
+            for run in range(args.runs):
+                print(f"Running {scenario} ({run + 1} of {args.runs})...", flush=True)
+                result = run_scenario(gateway, scenario, interval=args.interval)
+                if result.error:
+                    print(f"  Run failed: {result.error}", flush=True)
+                results.append(result)
+                if args.out:
+                    write_out(args.out, health, results)
+    except RuntimeError as exc:
+        # A setup problem, such as a wrong token: the message says what to do.
+        print(f"Stopped: {exc}", file=sys.stderr)
+        return 1
     print_report(results, health)
     if args.out:
-        with open(args.out, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "controller": health["controller"],
-                    "semantic_rules": health["semantic_rules"],
-                    "results": [asdict(r) for r in results],
-                },
-                f,
-                indent=2,
-            )
         print(f"Wrote {args.out}")
-    return 0 if all(r.detected and r.restored for r in results) else 1
+    if not results:
+        print("No scenario ran.", file=sys.stderr)
+        return 1
+    return 0 if all(r.ok for r in results) else 1
 
 
 if __name__ == "__main__":

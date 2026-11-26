@@ -59,10 +59,13 @@ Send five standard messages. Each one is still answered, by `qwen3-4b` with `fal
 ### Measure detection and recovery
 
 [`scripts/measure_recovery.py`](scripts/measure_recovery.py) times the loop. For each fault on the small model (`outage`, `bad_format`, and `label_swap` when semantic actions are on), it:
-1. sends 8 normal messages and counts any controller action, a false intervention;
-2. sets the fault with `POST /v1/faults`;
-3. sends one message every 0.5 s (three standard, then one complex) until the controller disables the model, then 4 more;
-4. clears the fault and keeps sending until the small model answers its own route again.
+1. starts from clean monitor windows: it waits out any cooldown, then disables and enables each model through the operator routes, which clears both models' windows, so each run is an independent sample whatever ran before;
+2. sends 8 normal messages and counts any controller action, a false intervention;
+3. sets the fault with `POST /v1/faults`;
+4. sends a message every 0.5 s, or as soon as the last reply arrives if it took longer (three standard, then one complex), until the controller disables the model, then 4 more;
+5. clears the fault and keeps sending until the small model answers its own route again. The time until it serves again counts from the moment the fault was cleared.
+
+A run fails if the model is never disabled, never serves again, or the controller acted during the normal messages. A run that stops on an error (a dropped connection, say) is reported as failed, and the other runs go on. `--out` is rewritten after each run, so a crash keeps the runs before it. The fault is cleared on Ctrl-C and on SIGTERM. The script exits 1 if any run failed or none ran.
 
 It needs an operator token, and it changes the running models, so it refuses any host but localhost unless you pass `--allow-remote`. Never run it on the deployment testers use. Set `APP_OPERATOR_TOKEN` in `env/.env` first, then pass the same value to the script (it runs on Python 3.9 or later):
 
@@ -73,22 +76,22 @@ APP_OPERATOR_TOKEN='your-operator-token' python3 scripts/measure_recovery.py --r
 
 [`compose.measure.yml`](compose.measure.yml) turns semantic actions on with the mock baseline of 0, so the label-swap scenario can run. `--out` saves every reply's trace fields and the results as JSON.
 
-Measured on November 23, 2026, on a laptop with the mock models, the default settings and 3 runs per fault:
+Measured on November 26, 2026, with the mock models, the default settings (window 20, 5 samples minimum, 50% threshold, 60 s cooldown), semantic actions on with a baseline of 0, and 3 runs per fault. The gateway ran under uvicorn with the in-memory store in a cloud container, not under Compose. Each run started from clean windows, and the three runs of each fault gave the same counts, with times within 0.01 s:
 
-| Fault | Time to disable | Standard requests until disabled | Bad replies to customers before that | 503s | False interventions | Time until the model serves again | Median latency: normal / fault until the disable / after the disable |
+| Fault | Time to disable | Standard requests until disabled | Bad replies to customers: until the disable / whole run | 503s | False interventions | Time from clearing the fault until the model serves again | Median latency: normal / fault until the disable / after the disable |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `outage` | 6.3–8.3 s | 6–7 | 0 | 0 | 0 | 55.7–56.5 s | 121 / 471 / 351 ms |
-| `bad_format` | 5.8 s | 7 | 7 | 0 | 0 | 56.4–56.6 s | 121 / 121 / 351 ms |
-| `label_swap` | 1.4 s | 3 | 3 | 0 | 0 | 56.2 s | 121 / 121 / 351 ms |
+| `outage` | 3.5 s | 6 | 0 / 0 | 0 | 0 | 58.6 s | 121 / 472 / 351 ms |
+| `bad_format` | 3.1 s | 6 | 6 / 6 | 0 | 0 | 58.6 s | 121 / 121 / 351 ms |
+| `label_swap` | 2.1 s | 4 | 4 / 4 | 0 | 0 | 58.1 s | 121 / 121 / 351 ms |
 
-The latency column comes from a second run on November 24, 2026, after the script began reporting latency before and after the disable separately: 3 runs per fault in a cloud container, with the gateway run by uvicorn and the in-memory store instead of Compose. In that run the request and bad-reply counts were the same as above, and the times were within 0.5 s.
+These replace the November 23 numbers, which depended on the order the scenarios ran in: each run then started with the windows the last one left.
 
 How to read it:
 - **The controller counts requests, not seconds.** The times above follow from one message every 0.5 s. With other traffic, the request counts are what carry over.
-- **How fast it acts depends on the healthy calls already in the window.** Each run starts with about 7 healthy calls, so it takes 7 failures to reach 50%. With a full window of 20 healthy calls it would take 10. `label_swap` was fast because a re-enable clears the semantic window. Its 3 wrong intents out of 10 scored replies were above the 0 baseline plus the 0.15 margin. With 50 healthy samples in the window it would take 8.
+- **How fast it acts depends on the healthy calls already in the window.** Each run starts with 6 healthy calls to the small model (3 of every 4 normal messages), so it takes 6 failures to reach 50%. With a full window of 20 healthy calls it would take 10. For `label_swap`, 4 wrong intents out of 10 scored replies were above the 0 baseline plus the 0.15 margin; 10 is the semantic minimum.
 - **During an outage, customers got no bad replies or 503s,** but each request waited for the failed call before the large model answered. That's the higher latency until the disable.
 - **After the disable, the large model answers the small model's route.** The mock large model is slower (about 350 ms), so the latency after the disable shows the reroute, not a slower small model.
-- **The time until the model serves again is the rest of the 60 s cooldown.** The gateway doesn't notice that a fault is fixed; it tries the model again when the cooldown ends.
+- **The time until the model serves again is the rest of the 60 s cooldown.** The gateway doesn't notice that a fault is fixed; it tries the model again when the cooldown ends. The cooldown starts at the disable, and the script sends 4 more messages before it clears the fault, so about 58 s of the 60 are left.
 - **"No false interventions" covers 72 normal requests only.** That's too few to say anything about a false intervention rate.
 
 These are mock models with simulated latency, so the numbers show how the loop behaves. They say nothing about real models.
