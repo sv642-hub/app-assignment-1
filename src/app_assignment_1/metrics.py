@@ -27,6 +27,21 @@ JEV_FALLBACK_REASONS = (
 )
 
 
+# What happened when the small model's score was below the threshold.
+# escalated: the large model's reply was used. shadow: escalation is off, so
+# the small reply was kept. large_unusable, no_time, large_failed and
+# large_format_failed: the large model could not be used, so the small reply
+# was kept.
+ESCALATION_OUTCOMES = (
+    "escalated",
+    "shadow",
+    "large_unusable",
+    "no_time",
+    "large_failed",
+    "large_format_failed",
+)
+
+
 class GatewayMetrics:
     def __init__(self, gateway: "Gateway"):
         self.registry = CollectorRegistry()
@@ -96,6 +111,22 @@ class GatewayMetrics:
         )
         for backend in gateway.backends:
             self.semantic_not_compared.labels(backend.config.name)
+        self.escalation_score = Histogram(
+            "gateway_escalation_score",
+            "The small model's intent confidence on replies that passed the "
+            "format check, when it gave one. Recorded with escalation on or off.",
+            buckets=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1),
+            registry=self.registry,
+        )
+        self.escalations = Counter(
+            "gateway_escalations",
+            "Small-model replies whose score was below the escalation "
+            "threshold, by outcome.",
+            ["outcome"],
+            registry=self.registry,
+        )
+        for outcome in ESCALATION_OUTCOMES:
+            self.escalations.labels(outcome)
         self.registry.register(_GatewayStateCollector(gateway))
 
     def render(self) -> bytes:

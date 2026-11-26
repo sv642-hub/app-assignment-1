@@ -286,6 +286,22 @@ def test_postgres_keeps_no_message_text(postgres_url: str) -> None:
     assert not any("zebra-quartz" in row for row in jev)
 
 
+def test_postgres_copies_the_escalation_fields_into_columns(
+    postgres_url: str,
+) -> None:
+    settings = Settings(_env_file=None, escalation_enabled=True)
+    with TestClient(create_app(settings, store=PostgresStore(postgres_url, 10))) as c:
+        # The mock models give 0.3 for a message they cannot match.
+        chat = c.post("/v1/chat", json={"message": "zzz qqq"}).json()
+    assert chat["trace"]["escalated"] is True
+    with psycopg.connect(postgres_url) as conn:
+        row = conn.execute(
+            "SELECT escalation_score, escalated FROM requests WHERE id = %s",
+            (chat["id"],),
+        ).fetchone()
+    assert row == (0.3, True)
+
+
 def test_migrations_run_once(postgres_url: str) -> None:
     async def main() -> None:
         async with await psycopg.AsyncConnection.connect(postgres_url) as conn:

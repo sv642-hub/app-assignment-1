@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 from collections.abc import Callable
 from pathlib import Path
 
@@ -58,6 +59,7 @@ def test_request_and_valid_reply() -> None:
         assert body["max_tokens"] == 512
         assert body["temperature"] == 0.0
         assert body["chat_template_kwargs"] == {"enable_thinking": False}
+        assert body["logprobs"] is True
 
         system, user = body["messages"]
         assert system["role"] == "system"
@@ -75,7 +77,13 @@ def test_request_and_valid_reply() -> None:
             json={"choices": [{"message": {"content": REPLY.model_dump_json()}}]},
         )
 
-    assert generate(handler) == REPLY
+    reply = generate(handler)
+    assert (
+        BackendReply.model_validate(reply.model_dump(include=set(REPLY.model_fields)))
+        == REPLY
+    )
+    # No logprobs in the response: the reply still counts, without a score.
+    assert reply.label_confidence is None
     assert "enum" not in BackendReply.model_json_schema()["properties"]["intent"]
 
 
@@ -125,3 +133,47 @@ def test_invalid_completion_is_an_output_error(content: str | None) -> None:
 
     with pytest.raises(BackendOutputError, match=r"^Backend returned invalid output$"):
         generate(handler)
+
+
+def test_reply_carries_the_intent_token_confidence() -> None:
+    content = REPLY.model_dump_json()
+    start = content.index("card_arrival")
+    pieces = [content[:start], "card", "_arrival", content[start + 12 :]]
+    tokens = [
+        {"token": pieces[0], "logprob": -5.0},
+        {"token": pieces[1], "logprob": -0.1},
+        {"token": pieces[2], "logprob": -0.2},
+        {"token": pieces[3], "logprob": -7.0},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": content}, "logprobs": {"content": tokens}}
+                ]
+            },
+        )
+
+    reply = generate(handler)
+    assert reply.label_confidence == pytest.approx(math.exp(-0.3))
+
+
+def test_unreadable_logprobs_only_lose_the_score() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"content": REPLY.model_dump_json()},
+                        "logprobs": {"content": "not a list"},
+                    }
+                ]
+            },
+        )
+
+    reply = generate(handler)
+    assert reply.intent == REPLY.intent
+    assert reply.label_confidence is None

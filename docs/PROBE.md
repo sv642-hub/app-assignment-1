@@ -42,6 +42,10 @@ The probe passes only if all three of these hold (`gate_passes`):
 
 The standard error is about 0.2 to 0.3 points at 4,000 runs and 0.5 at 2,000. So at the floor, the difference interval alone passes slightly too often, about 3% against 2.5%, which matches the review of #62. The full rule passes less often, because both intervals must clear zero. The worst case is token confidence ranking below chance: then only the probe-above-chance interval matters, at about 2.35%. A lopsided set like 100 and 3 passes about twice as often as it should, even under the full rule, which is why the floor exists. To rerun one row: `uv run python scripts/probe_false_pass.py --correct 20 --wrong 20 --runs 4000 --condition difference`.
 
+## Live escalation (token confidence for now)
+
+The gateway can already escalate a message from the small model to the large one when the small model looks unsure (`confidence.py`, README "Escalation"). It is off by default. Today the score is token confidence: the joint probability of the intent label's tokens, from vLLM's logprobs. These are raw probabilities, before the JSON schema constrains the output, as vLLM returns them by default. The probe would replace that score only if it passes the gate below. The 0.5 threshold is a placeholder until the escalation curve on dev data picks one.
+
 ## Still to build
 
 - A real `ActivationExtractor` for Qwen3-1.7B, run offline. Torch and Transformers should go in a separate optional extra, so the gateway image stays small.

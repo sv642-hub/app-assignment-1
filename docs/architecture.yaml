@@ -204,8 +204,8 @@ components:
     style: stretch
     items:
       - built: Skeleton and gate check
-      - todo: Load Qwen3-1.7B outside vLLM; real activations
-      - todo: Gate run a week after the GPU host and dev split
+      - built: "Escalation to 4B on token confidence, off by default"
+      - todo: "Real Qwen3-1.7B activations and gate run on the GPU"
 
   ci:
     title: CI smoke tests (GitHub Actions)
