@@ -48,3 +48,6 @@ live-checks/
 
 # Analysis exports (scripts/export_analysis.py)
 exports/
+
+# Jev route-order experiment call logs (scripts/evaluate_jev_order.py)
+results/
