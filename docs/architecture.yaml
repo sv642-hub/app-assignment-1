@@ -48,7 +48,8 @@ components:
       - built: React (Vite) build served by Caddy
       - built: Chat (the Playground)
       - built: "Health: per-model window, Jev breaker, semantic monitor, recent requests, usage, chaos walkthrough"
-      - todo: Deployments and Jev screens
+      - built: "Jev screen: mode, breaker, usage, intent agreement"
+      - todo: Deployments screen
       - todo: Chaos mode screen
 
   api_routes:
@@ -88,9 +89,9 @@ components:
     title: Format validation
     owner: "Verness · Yanzhen: constrained JSON"
     items:
-      - built: Allowed label, reply present, no unfilled slots
+      - built: Replies from approved cards; model text discarded
       - simulated: Schema check on mock replies
-      - built: Label check against 78 labels
+      - built: 78 labels; facts checked against the chosen card
 
   fault_hooks:
     title: Fault injection hooks
@@ -256,7 +257,7 @@ layout:
     browser: [30, 190, 215, 120]
     team_app: [30, 340, 215, 110]
     proxy: [300, 190, 270, 135]
-    frontend: [300, 345, 270, 285]
+    frontend: [300, 345, 270, 305]
     api_routes: [620, 240, 340, 180]
     router_client: [965, 240, 340, 180]
     canary_splitter: [620, 425, 340, 150]
