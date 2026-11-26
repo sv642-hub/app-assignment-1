@@ -687,7 +687,11 @@ class Gateway:
         if not self.reply_check_enabled:
             return
         skipped = self.metrics.reply_check_skipped
-        if pending.first is None:
+        first = pending.first
+        if first is None or (
+            first.route.choice is None and first.intent.choice is None
+        ):
+            # No first answer to compare with, so a second call buys nothing.
             skipped.labels("no_first_answer").inc()
         elif pending.format_failed:
             # The customer got a fixed apology, not the model's reply.

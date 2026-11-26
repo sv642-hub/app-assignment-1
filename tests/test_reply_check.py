@@ -270,6 +270,72 @@ def test_skipped_without_a_first_answer(
     assert not store.reply_checks
 
 
+class _PartialFirst(MockJevRouter):
+    """First call returns a valid result with chosen answers missing."""
+
+    def __init__(self, path: Path, route_missing: bool, intent_missing: bool):
+        super().__init__(path)
+        self.route_missing = route_missing
+        self.intent_missing = intent_missing
+        self.checks = 0
+
+    async def route(self, message: str) -> Any:
+        result = await super().route(message)
+        missing = JevAnswer(error_type="missing_answer")
+        return result.model_copy(
+            update={
+                "route": missing if self.route_missing else result.route,
+                "intent": missing if self.intent_missing else result.intent,
+            }
+        )
+
+    async def check_reply(self, message: str, reply: str) -> ReplyCheckResult:
+        self.checks += 1
+        return await super().check_reply(message, reply)
+
+
+def test_skipped_when_both_first_answers_are_missing(backends_path: Path) -> None:
+    store = MemoryStore(100)
+    settings = make_settings(backends_path, jev_reply_check_enabled=True)
+    router = _PartialFirst(Path("config/intents.json"), True, True)
+    with TestClient(create_app(settings, router=router, store=store)) as client:
+        chat(client)
+        settle(client)
+        assert (
+            metric(
+                client, "gateway_reply_check_skipped_total", reason="no_first_answer"
+            )
+            == 1
+        )
+    assert router.checks == 0
+    assert not store.reply_checks
+
+
+@pytest.mark.parametrize("route_missing", [True, False])
+def test_partly_valid_first_result_is_still_compared(
+    backends_path: Path, route_missing: bool
+) -> None:
+    store = MemoryStore(100)
+    settings = make_settings(backends_path, jev_reply_check_enabled=True)
+    router = _PartialFirst(
+        Path("config/intents.json"), route_missing, not route_missing
+    )
+    with TestClient(create_app(settings, router=router, store=store)) as client:
+        chat(client)
+        settle(client)
+        assert (
+            metric(
+                client, "gateway_reply_check_skipped_total", reason="no_first_answer"
+            )
+            == 0
+        )
+    assert router.checks == 1
+    [check] = store.reply_checks
+    assert check.status == "ok"
+    assert (check.route_first is None) == route_missing
+    assert (check.intent_first is None) == (not route_missing)
+
+
 def test_too_many_checks_in_flight_are_skipped(backends_path: Path) -> None:
     class Slow(MockJevRouter):
         async def check_reply(self, message: str, reply: str) -> ReplyCheckResult:

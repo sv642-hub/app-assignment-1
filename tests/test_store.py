@@ -660,3 +660,36 @@ def test_postgres_release_survives_a_restart(postgres_url: str, tmp_path) -> Non
         small = {r["name"]: r for r in health["releases"]}["qwen3-1.7b"]
         assert (small["version"], small["status"]) == ("v2-bad-format", "watching")
         assert [e["action"] for e in health["release_history"]] == ["deployed"]
+
+
+def test_migration_numbers_are_unique() -> None:
+    """The runner keys files by their number, so two files with the same
+    number would collide on a fresh database or be skipped on an upgrade."""
+    numbers = [path.name.split("_", 1)[0] for path in MIGRATIONS.glob("*.sql")]
+    assert len(numbers) == len(set(numbers))
+
+
+def test_migrations_upgrade_from_every_applied_prefix(
+    postgres_url: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A database that already ran the first k files gets exactly the rest."""
+    files = sorted(MIGRATIONS.glob("*.sql"))
+
+    async def main() -> None:
+        for k in range(1, len(files)):
+            async with await psycopg.AsyncConnection.connect(postgres_url) as conn:
+                await conn.execute("DROP SCHEMA IF EXISTS up CASCADE")
+                await conn.execute("CREATE SCHEMA up")
+                await conn.execute("SET search_path TO up")
+                old = tmp_path / f"old{k}"
+                old.mkdir()
+                for path in files[:k]:
+                    (old / path.name).write_text(path.read_text(encoding="utf-8"))
+                monkeypatch.setattr("app_assignment_1.store.MIGRATIONS", old)
+                assert await migrate(conn) == [p.name for p in files[:k]]
+                monkeypatch.setattr("app_assignment_1.store.MIGRATIONS", MIGRATIONS)
+                assert await migrate(conn) == [p.name for p in files[k:]]
+                assert await migrate(conn) == []
+                await conn.execute("DROP SCHEMA up CASCADE")
+
+    asyncio.run(main())
