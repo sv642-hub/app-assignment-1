@@ -36,7 +36,7 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 - `tests/`: pytest suite. Frontend tests are in `frontend/src/App.test.jsx`.
 - `scripts/smoke_compose.py`: smoke test against the public proxy.
 - `scripts/make_banking77_split.py`: downloads Banking77 at a pinned commit and writes `data/banking77_split.csv`; `--check` fails if it differs.
-- `data/banking77_split.csv`: the committed split (`text`, `intent`, `split`, `source_row`). Banking77 is by PolyAI, CC BY 4.0. Never regenerate it with different settings once results depend on it.
+- `data/banking77_split.csv`: the committed split (`text`, `intent`, `split`, `source_row`); source, paper and licence in `data/README.md`. Banking77 is by PolyAI, CC BY 4.0. A test pins its SHA-256. Never regenerate it with different settings once results depend on it.
 - `scripts/probe_false_pass.py`: simulates how often the probe gate passes with no signal (see `docs/PROBE.md`).
 - `scripts/e2e_check.py`: end-to-end check of a running gateway (routing, reply format, monitors, optional Prometheus counters); labels the run mock or real from `/v1/health`. Python 3.9, standard library only. See `docs/E2E_CHECK.md`.
 - `scripts/export_analysis.py`: exports requests and Jev assessments from Postgres as JSON Lines for analysis, without reply text.
