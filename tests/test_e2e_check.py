@@ -228,3 +228,56 @@ def test_unbalanced_quote_in_metrics_cmd_is_a_fail_line(e2e, monkeypatch, tmp_pa
         serve(e2e, monkeypatch, client)
         results = e2e.run("http://test", metrics_cmd="echo 'oops")
     assert results.failed >= 1
+
+
+def test_prometheus_matches_health_on_same_gateway(e2e, monkeypatch, tmp_path, capsys):
+    with TestClient(create_app(settings_for(tmp_path))) as client:
+        serve(e2e, monkeypatch, client)
+        monkeypatch.setattr(
+            e2e,
+            "read_metrics",
+            lambda url, cmd: e2e.parse_metrics(client.get("/metrics").text),
+        )
+        results = e2e.run("http://test", metrics_cmd="unused")
+    out = capsys.readouterr().out
+    assert results.failed == 0, out
+    assert "Prometheus completed calls match /v1/health" in out
+
+
+def test_metrics_from_another_gateway_fail_the_match(e2e, monkeypatch, tmp_path):
+    with TestClient(create_app(settings_for(tmp_path))) as client:
+        serve(e2e, monkeypatch, client)
+        other = [e2e.parse_metrics("gateway_chat_requests_total 0\n")]
+
+        def read_metrics(url, cmd):
+            if len(other) == 1:
+                return other.pop()
+            return e2e.parse_metrics(
+                "gateway_chat_requests_total 99\n"
+                "gateway_backend_calls_completed_total 99\n"
+            )
+
+        monkeypatch.setattr(e2e, "read_metrics", read_metrics)
+        results = e2e.run("http://test", metrics_cmd="unused")
+    assert results.failed >= 1
+
+
+def test_default_compose_command_failure_is_a_skip(e2e, monkeypatch, tmp_path, capsys):
+    def read_metrics(url, cmd):
+        raise OSError("no compose project")
+
+    with TestClient(create_app(settings_for(tmp_path))) as client:
+        serve(e2e, monkeypatch, client)
+        monkeypatch.setattr(e2e, "read_metrics", read_metrics)
+        results = e2e.run("http://test", metrics_cmd="docker", auto_metrics=True)
+    out = capsys.readouterr().out
+    assert results.failed == 0, out
+    assert "SKIP: Prometheus counters (default Compose command failed" in out
+
+
+def test_compose_metrics_command_splits_into_a_valid_argv(e2e):
+    import shlex
+
+    argv = shlex.split(e2e.COMPOSE_METRICS_CMD)
+    assert argv[:5] == ["docker", "compose", "exec", "-T", "gateway"]
+    assert "/metrics" in argv[-1]

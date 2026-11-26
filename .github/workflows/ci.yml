@@ -88,6 +88,8 @@ jobs:
         run: docker compose up -d --build --wait --wait-timeout 180
       - name: Check the public proxy
         run: python3 scripts/smoke_compose.py http://localhost:8080
+      - name: End-to-end check with Prometheus counters (mock backends)
+        run: python3 scripts/e2e_check.py --base-url http://localhost:8080
       - name: Check Prometheus scrapes the gateway
         run: |
           for attempt in $(seq 1 20); do

@@ -33,6 +33,7 @@ import argparse
 import json
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -57,6 +58,14 @@ BACKEND_MOVEMENT_REASONS = {
     "selected_backend_unavailable",
     "semantic_last_resort",
 }
+
+# Reads the gateway's internal /metrics from inside the Compose gateway
+# container, run from the repo root on the Compose host.
+COMPOSE_METRICS_CMD = (
+    "docker compose exec -T gateway python -c "
+    "'import urllib.request as u; "
+    'print(u.urlopen("http://127.0.0.1:8000/metrics").read().decode())\''
+)
 
 METRIC_LINE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+(\S+)")
 
@@ -127,7 +136,7 @@ def monitor_by_model(health):
     return {item["name"]: item for item in health["monitor"]}
 
 
-def run(base, metrics_url=None, metrics_cmd=None):
+def run(base, metrics_url=None, metrics_cmd=None, auto_metrics=False):
     results = Results()
 
     try:
@@ -149,11 +158,19 @@ def run(base, metrics_url=None, metrics_cmd=None):
     )
     model_for_route = {item["route"]: item["name"] for item in before["backends"]}
     metrics_start = None
+    metrics_skip_reason = "no metrics source (see --metrics-url, --metrics-cmd)"
     if metrics_url or metrics_cmd:
         try:
             metrics_start = read_metrics(metrics_url, metrics_cmd)
         except (URLError, OSError, ValueError, subprocess.SubprocessError) as exc:
-            results.check(False, "metrics source reachable", type(exc).__name__)
+            if auto_metrics:
+                # Nothing was asked for: the default docker command not working
+                # (no Compose stack in this folder) is not a failure.
+                metrics_skip_reason = (
+                    "default Compose command failed: " + type(exc).__name__
+                )
+            else:
+                results.check(False, "metrics source reachable", type(exc).__name__)
 
     sent = {}
     agreements = 0
@@ -322,6 +339,17 @@ def run(base, metrics_url=None, metrics_cmd=None):
             completed >= delivered,
             f"Prometheus: gateway_backend_calls_completed rose by {completed:g}",
         )
+        # Both counters come from the same gateway, so their rises must match.
+        # A mismatch means /metrics belongs to another gateway.
+        health_completed = sum(
+            used_after[m]["completed_calls"] - used_before[m]["completed_calls"]
+            for m in used_after
+        )
+        results.check(
+            completed == health_completed,
+            "Prometheus completed calls match /v1/health",
+            f"Prometheus +{completed:g}, Health +{health_completed}",
+        )
         for series in (
             "gateway_model_disabled",
             "gateway_monitor_failure_rate",
@@ -331,8 +359,8 @@ def run(base, metrics_url=None, metrics_cmd=None):
                 any(key[0] == series for key in metrics_end[1]),
                 f"Prometheus: {series} is exported",
             )
-    elif not (metrics_url or metrics_cmd):
-        results.skip("Prometheus counters", "no --metrics-url or --metrics-cmd given")
+    elif not metrics_start and (auto_metrics or not (metrics_url or metrics_cmd)):
+        results.skip("Prometheus counters", metrics_skip_reason)
 
     if latencies:
         ordered = sorted(latencies)
@@ -350,8 +378,17 @@ def main(argv=None):
     parser.add_argument(
         "--metrics-cmd", help="command that prints the gateway /metrics text"
     )
+    parser.add_argument(
+        "--no-metrics", action="store_true", help="skip the Prometheus checks"
+    )
     args = parser.parse_args(argv)
-    results = run(args.base_url.rstrip("/"), args.metrics_url, args.metrics_cmd)
+    metrics_cmd, auto = args.metrics_cmd, False
+    # With no source given, try the Compose command when docker is installed,
+    # so the Prometheus checks run by default on the Compose host.
+    if not (args.metrics_url or metrics_cmd or args.no_metrics):
+        if shutil.which("docker"):
+            metrics_cmd, auto = COMPOSE_METRICS_CMD, True
+    results = run(args.base_url.rstrip("/"), args.metrics_url, metrics_cmd, auto)
     print(
         f"\n{results.passed} passed, {results.failed} failed, {results.skipped} skipped"
     )
