@@ -281,31 +281,31 @@ def build() -> dict:
     answered = "sum(increase(gateway_chat_requests_total[$__range]))"
     bad_share = f"({unavailable} / ({answered} + {unavailable}))"
     row("Overview")
-    stat("Gateway", 'up{job="gateway"}', w=3,
+    stat("Gateway", 'up{job="gateway"}', w=6,
          mappings=[{"type": "value", "options": {
              "0": {"text": "DOWN", "color": "red"},
              "1": {"text": "UP", "color": "green"}}}])  # fmt: skip
-    stat("Models disabled", "sum(gateway_model_disabled)", w=3,
+    stat("Models disabled", "sum(gateway_model_disabled)", w=6,
          thresholds=_steps(("green", None), ("red", 1)),
          desc="Models the controller has switched off right now.")  # fmt: skip
-    stat("In flight now", "gateway_chat_in_flight", w=3,
+    stat("In flight now", "gateway_chat_in_flight", w=6,
          thresholds=_steps(("green", None), ("orange", 5), ("red", 20)),
          desc="Requests being handled right now.")  # fmt: skip
     stat("Requests per second", f"sum(rate(gateway_chat_requests_total[{R}]))",
-         unit="reqps", w=3, decimals=2)  # fmt: skip
-    stat("Answered, no 503", f"1 - {bad_share}", unit="percentunit", w=4,
+         unit="reqps", w=6, decimals=2)  # fmt: skip
+    stat("Answered, no 503", f"1 - {bad_share}", unit="percentunit", w=8,
          decimals=2, thresholds=_steps(("red", None), ("orange", 0.98),
                                        ("green", SLO_AVAILABILITY)),
          desc="Share of requests answered without a 503 in the selected time "
               "range. Target 99%.")  # fmt: skip
     stat("Error budget left", f"1 - {bad_share} / {1 - SLO_AVAILABILITY}",
-         unit="percentunit", w=4, decimals=0,
+         unit="percentunit", w=8, decimals=0,
          thresholds=_steps(("red", None), ("orange", 0.25), ("green", 0.5)),
          desc="1 means no 503s; 0 means the 1% allowance is used up; below 0 "
               "means the target is missed. Over the selected time range, not "
               "30 days.")  # fmt: skip
     stat("Jev calls", "sum(increase(gateway_jev_answered_calls_total[$__range]))",
-         w=2, decimals=0, desc="Answered Jev calls in the time range.")  # fmt: skip
+         w=8, decimals=0, desc="Answered Jev calls in the time range.")  # fmt: skip
 
     # --- Golden signals ---------------------------------------------------
     row("Latency (percentiles, per model)")
