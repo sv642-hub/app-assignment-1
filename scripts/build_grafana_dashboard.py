@@ -1,5 +1,7 @@
 # ruff: noqa: E501
-"""Writes grafana/dashboards/smart-gateway.json, the dashboard Grafana loads.
+"""Writes the two dashboards Grafana loads, in grafana/dashboards/:
+smart-gateway-summary.json (embedded in the app) and smart-gateway.json (the
+full one).
 
 The JSON is generated so panels stay short to edit here and the file stays
 consistent. Edit this script, run it, and commit both. `--check` fails if the
@@ -12,7 +14,7 @@ import json
 import sys
 from pathlib import Path
 
-OUT = Path(__file__).resolve().parents[1] / "grafana/dashboards/smart-gateway.json"
+DASHBOARDS = Path(__file__).resolve().parents[1] / "grafana/dashboards"
 PROM = {"type": "prometheus", "uid": "prometheus"}
 PG = {"type": "grafana-postgresql-datasource", "uid": "postgres"}
 R = "$__rate_interval"
@@ -43,6 +45,14 @@ def _add(panel: dict, w: int, h: int) -> None:
     _next_id += 1
     panel["gridPos"] = _place(w, h)
     _panels.append(panel)
+
+
+def _reset() -> None:
+    """Start an empty dashboard."""
+    global _next_id
+    _panels.clear()
+    _next_id = 1
+    _cursor.update(x=0, y=0, row_h=0)
 
 
 def row(title: str) -> None:
@@ -117,8 +127,7 @@ def timeseries(
             "targets": _prom(exprs),
             "fieldConfig": {"defaults": defaults, "overrides": []},
             "options": {
-                "legend": {"displayMode": "table", "placement": "bottom",
-                           "calcs": ["lastNotNull"]},
+                "legend": {"displayMode": "list", "placement": "bottom"},
                 "tooltip": {"mode": "multi", "sort": "desc"},
             },
         },
@@ -190,9 +199,10 @@ def sql_table(title, sql, w=12, h=8, desc=""):
     )
 
 
-def sql_series(title, sql, w=12, h=8, desc="", stack=True):
+def sql_series(title, sql, w=12, h=8, desc="", stack=True, interval=None):
     _add(
         {
+            **({"interval": interval} if interval else {}),
             "type": "timeseries",
             "title": title,
             "description": desc,
@@ -200,6 +210,8 @@ def sql_series(title, sql, w=12, h=8, desc="", stack=True):
             "targets": _sql(sql, "time_series"),
             "fieldConfig": {
                 "defaults": {
+                    "decimals": 0,
+                    "min": 0,
                     "custom": {
                         "drawStyle": "bars",
                         "fillOpacity": 60,
@@ -234,16 +246,42 @@ def sql_bars(title, sql, w=12, h=8, desc=""):
     )  # fmt: skip
 
 
-def text(title, content, w=8, h=6):
+def model_health(w: int, h: int) -> None:
     _add(
         {
-            "type": "text",
-            "title": title,
-            "options": {"mode": "markdown", "content": content},
+            "type": "state-timeline",
+            "title": "Model health (controller)",
+            "datasource": PROM,
+            "targets": _prom([("gateway_model_disabled", "{{model}}")]),
+            "fieldConfig": {
+                "defaults": {
+                    "mappings": [{"type": "value", "options": {
+                        "0": {"text": "serving", "color": "green"},
+                        "1": {"text": "disabled", "color": "red"}}}],
+                    "custom": {"fillOpacity": 70},
+                },
+                "overrides": [],
+            },
+            "options": {"showValue": "never", "mergeValues": True,
+                        "legend": {"showLegend": False}},
         },
         w,
         h,
-    )
+    )  # fmt: skip
+
+
+def interventions(title: str, where: str = "", desc: str = "") -> None:
+    """Counted from the saved interventions, so each event is one whole bar. A
+    Prometheus increase() over a short step showed no data."""
+    sql_series(
+        title,
+        "SELECT $__timeGroupAlias(at, $__interval), "
+        "action || ' ' || backend AS metric, count(*) AS value "
+        f"FROM interventions WHERE $__timeFilter(at){where} "
+        "GROUP BY 1, 2 ORDER BY 1",
+        desc=desc,
+        interval="1m",
+    )  # fmt: skip
 
 
 def quantiles(metric: str, by: str, selector: str = "") -> list[tuple[str, str]]:
@@ -255,7 +293,15 @@ def quantiles(metric: str, by: str, selector: str = "") -> list[tuple[str, str]]
     return out
 
 
-OPEN_ROWS = ("Overview", "Latency (percentiles, per model)")
+def percentiles(metric: str, by: str, selector: str, wanted) -> list[tuple[str, str]]:
+    """One line per percentile in `wanted` and `by` value."""
+    return [
+        pair for pair in quantiles(metric, by, selector)
+        if pair[1].split(" ")[0] in wanted
+    ]  # fmt: skip
+
+
+OPEN_ROWS = ("Overview", "Latency")
 
 
 def _fold(panels: list[dict]) -> list[dict]:
@@ -275,30 +321,104 @@ def _fold(panels: list[dict]) -> list[dict]:
     return out
 
 
-def build() -> dict:
-    # --- Overview ---------------------------------------------------------
-    unavailable = "sum(increase(gateway_chat_unavailable_total[$__range]))"
-    answered = "sum(increase(gateway_chat_requests_total[$__range]))"
-    bad_share = f"({unavailable} / ({answered} + {unavailable}))"
-    row("Overview")
-    stat("Gateway", 'up{job="gateway"}', w=6,
+UNAVAILABLE = "sum(increase(gateway_chat_unavailable_total[$__range]))"
+ANSWERED = "sum(increase(gateway_chat_requests_total[$__range]))"
+BAD_SHARE = f"({UNAVAILABLE} / ({ANSWERED} + {UNAVAILABLE}))"
+FORMAT_PASS = (
+    f'sum by (model) (rate(gateway_chat_requests_total{{format_check="passed"}}[{R}]))'
+    f" / sum by (model) (rate(gateway_chat_requests_total[{R}]))"
+)
+AGREEMENT = (
+    f'sum by (model) (rate(gateway_semantic_samples_total{{sample="agree"}}[{R}]))'
+    f" / sum by (model) (rate(gateway_semantic_samples_total"
+    f'{{sample=~"agree|disagree"}}[{R}]))'
+)
+
+
+def gateway_stat(w: int) -> None:
+    stat("Gateway", 'up{job="gateway"}', w=w,
          mappings=[{"type": "value", "options": {
              "0": {"text": "DOWN", "color": "red"},
              "1": {"text": "UP", "color": "green"}}}])  # fmt: skip
-    stat("Models disabled", "sum(gateway_model_disabled)", w=6,
+
+
+def disabled_stat(w: int) -> None:
+    stat("Models disabled", "sum(gateway_model_disabled)", w=w,
          thresholds=_steps(("green", None), ("red", 1)),
          desc="Models the controller has switched off right now.")  # fmt: skip
-    stat("In flight now", "gateway_chat_in_flight", w=6,
-         thresholds=_steps(("green", None), ("orange", 5), ("red", 20)),
-         desc="Requests being handled right now.")  # fmt: skip
+
+
+def traffic_stat(w: int) -> None:
     stat("Requests per second", f"sum(rate(gateway_chat_requests_total[{R}]))",
-         unit="reqps", w=6, decimals=2)  # fmt: skip
-    stat("Answered, no 503", f"1 - {bad_share}", unit="percentunit", w=8,
+         unit="reqps", w=w, decimals=2)  # fmt: skip
+
+
+def answered_stat(w: int) -> None:
+    stat("Answered, no 503", f"1 - {BAD_SHARE}", unit="percentunit", w=w,
          decimals=2, thresholds=_steps(("red", None), ("orange", 0.98),
                                        ("green", SLO_AVAILABILITY)),
          desc="Share of requests answered without a 503 in the selected time "
               "range. Target 99%.")  # fmt: skip
-    stat("Error budget left", f"1 - {bad_share} / {1 - SLO_AVAILABILITY}",
+
+
+def traffic_by_model(w: int, h: int) -> None:
+    timeseries("Requests per second by model",
+               [(f"sum by (model) (rate(gateway_chat_requests_total[{R}]))",
+                 "{{model}}")], unit="reqps", stack=True, minimum=0,
+               w=w, h=h)  # fmt: skip
+
+
+def burn(window: str) -> str:
+    """How fast `window` spends the availability error budget."""
+    return (
+        f"(sum(rate(gateway_chat_unavailable_total[{window}])) / "
+        f"(sum(rate(gateway_chat_requests_total[{window}])) + "
+        f"sum(rate(gateway_chat_unavailable_total[{window}])))) "
+        f"/ {1 - SLO_AVAILABILITY}"
+    )
+
+
+def build_summary() -> dict:
+    """Eight panels for the app's Metrics screen: is it up, how fast, which
+    model answers, did the controller act, are the replies good."""
+    _reset()
+    gateway_stat(6)
+    disabled_stat(6)
+    traffic_stat(6)
+    answered_stat(6)
+    timeseries(
+        "Latency p95 by model",
+        percentiles("gateway_chat_answer_latency_seconds", "model", "", ("p95",)),
+        unit="s", w=12, h=7, minimum=0,
+        desc="Whole gateway time for answered requests.",
+    )  # fmt: skip
+    traffic_by_model(12, 7)
+    model_health(12, 7)
+    timeseries(
+        "Reply quality by model",
+        [(FORMAT_PASS, "format passed {{model}}"),
+         (AGREEMENT, "agrees with Jev {{model}}")],
+        unit="percentunit", w=12, h=7, minimum=0, maximum=1,
+        desc="Share of replies that passed the format check, and share whose "
+             "intent matched Jev's. Agreement is not a measure of accuracy.",
+    )  # fmt: skip
+    return _dashboard(
+        "smart-gateway-summary", "Smart AI Gateway summary", list(_panels), []
+    )
+
+
+def build() -> dict:
+    # --- Overview ---------------------------------------------------------
+    _reset()
+    row("Overview")
+    gateway_stat(6)
+    disabled_stat(6)
+    stat("In flight now", "gateway_chat_in_flight", w=6,
+         thresholds=_steps(("green", None), ("orange", 5), ("red", 20)),
+         desc="Requests being handled right now.")  # fmt: skip
+    traffic_stat(6)
+    answered_stat(8)
+    stat("Error budget left", f"1 - {BAD_SHARE} / {1 - SLO_AVAILABILITY}",
          unit="percentunit", w=8, decimals=0,
          thresholds=_steps(("red", None), ("orange", 0.25), ("green", 0.5)),
          desc="1 means no 503s; 0 means the 1% allowance is used up; below 0 "
@@ -308,7 +428,16 @@ def build() -> dict:
          w=8, decimals=0, desc="Answered Jev calls in the time range.")  # fmt: skip
 
     # --- Golden signals ---------------------------------------------------
-    row("Latency (percentiles, per model)")
+    row("Latency")
+    timeseries(
+        "Request latency by model (p50 and p95)",
+        percentiles("gateway_chat_answer_latency_seconds", "model",
+                    f"{{{MODEL}}}", ("p50", "p95")),
+        unit="s", w=24, minimum=0,
+        desc="Whole gateway time for answered requests: Jev, model, checks.",
+    )  # fmt: skip
+
+    row("Latency detail")
     timeseries(
         "Request latency percentiles by model",
         quantiles("gateway_chat_answer_latency_seconds", "model",
@@ -340,9 +469,7 @@ def build() -> dict:
     )  # fmt: skip
 
     row("Traffic, errors, saturation")
-    timeseries("Requests per second by model",
-               [(f"sum by (model) (rate(gateway_chat_requests_total[{R}]))",
-                 "{{model}}")], unit="reqps", stack=True, minimum=0)  # fmt: skip
+    traffic_by_model(8, 8)
     timeseries("Requests per second by route",
                [(f"sum by (route) (rate(gateway_chat_requests_total[{R}]))",
                  "{{route}}")], unit="reqps", stack=True, minimum=0)  # fmt: skip
@@ -378,11 +505,6 @@ def build() -> dict:
 
     # --- SLO ----------------------------------------------------------------
     row("SLOs and error budget")
-    burn = lambda w: (  # noqa: E731
-        f"(sum(rate(gateway_chat_unavailable_total[{w}])) / "
-        f"(sum(rate(gateway_chat_requests_total[{w}])) + "
-        f"sum(rate(gateway_chat_unavailable_total[{w}])))) / {1 - SLO_AVAILABILITY}"
-    )
     timeseries("Availability burn rate (target 99% answered)",
                [(burn("5m"), "5 minutes"), (burn("1h"), "1 hour"),
                 (burn("6h"), "6 hours")], minimum=0,
@@ -414,26 +536,11 @@ def build() -> dict:
           f"[{R}]))", f"{LARGE} under {LARGE_TARGET_S} s")],
         unit="percentunit", minimum=0, maximum=1,
     )  # fmt: skip
-    text("Detection target",
-         "**Detect a faulty model in under 30 s.** There is no live metric for "
-         "this yet. The controller's own timing is in the *Time models stayed "
-         "disabled* table below (from the stored interventions), and "
-         "`scripts/measure_recovery.py` (PR #104) measures detection and "
-         "recovery per fault. The real-Qwen hang run took 186 s to disable, "
-         "which misses this target.", w=24, h=4)  # fmt: skip
-
     # --- Quality ------------------------------------------------------------
     row("Reply quality")
-    timeseries("Format check pass rate by model",
-               [(f'sum by (model) (rate(gateway_chat_requests_total{{'
-                 f'format_check="passed"}}[{R}])) / '
-                 f"sum by (model) (rate(gateway_chat_requests_total[{R}]))",
-                 "{{model}}")], unit="percentunit", minimum=0, maximum=1)  # fmt: skip
-    timeseries("Qwen vs Jev intent agreement by model",
-               [(f'sum by (model) (rate(gateway_semantic_samples_total{{'
-                 f'sample="agree"}}[{R}])) / '
-                 f'sum by (model) (rate(gateway_semantic_samples_total{{'
-                 f'sample=~"agree|disagree"}}[{R}]))', "{{model}}")],
+    timeseries("Format check pass rate by model", [(FORMAT_PASS, "{{model}}")],
+               unit="percentunit", minimum=0, maximum=1)  # fmt: skip
+    timeseries("Qwen vs Jev intent agreement by model", [(AGREEMENT, "{{model}}")],
                unit="percentunit", minimum=0, maximum=1,
                desc="The model's intent label against Jev's intent answer for "
                     "the same message. There is one Jev call per request, made "
@@ -460,38 +567,16 @@ def build() -> dict:
 
     # --- Self healing -------------------------------------------------------
     row("Self-healing and releases")
-    _add(
-        {
-            "type": "state-timeline",
-            "title": "Model health (controller)",
-            "datasource": PROM,
-            "targets": _prom([("gateway_model_disabled", "{{model}}")]),
-            "fieldConfig": {
-                "defaults": {
-                    "mappings": [{"type": "value", "options": {
-                        "0": {"text": "serving", "color": "green"},
-                        "1": {"text": "disabled", "color": "red"}}}],
-                    "custom": {"fillOpacity": 70},
-                },
-                "overrides": [],
-            },
-            "options": {"showValue": "never", "mergeValues": True,
-                        "legend": {"showLegend": False}},
-        },
-        12,
-        6,
-    )  # fmt: skip
+    model_health(12, 6)
     timeseries("Monitor failure rate and window size",
                [("gateway_monitor_failure_rate", "failure rate {{model}}"),
                 ("gateway_monitor_window_samples", "samples {{model}}")],
                w=12, h=6, minimum=0)  # fmt: skip
-    timeseries("Controller interventions",
-               [("sum by (action, model) (increase("
-                 "gateway_controller_interventions_total[$__interval]))",
-                 "{{action}} {{model}}")], bars=True, stack=True, minimum=0,
-               w=12, h=7,
-               desc="Disabled, re-enabled, rolled back and operator actions. "
-                    "The same events are marked on every graph.")  # fmt: skip
+    interventions(
+        "Controller interventions",
+        desc="Disabled, re-enabled, rolled back and operator actions. "
+             "The same events are marked on every graph.",
+    )  # fmt: skip
     stat("Rollbacks", 'sum(increase(gateway_controller_interventions_total{'
          'action="rolled_back"}[$__range]))', w=3, h=7, decimals=0,
          thresholds=_steps(("green", None), ("orange", 1)))  # fmt: skip
@@ -504,9 +589,9 @@ def build() -> dict:
         "lead(at) OVER (PARTITION BY backend ORDER BY at) AS next_at, "
         "lead(action) OVER (PARTITION BY backend ORDER BY at) AS next_action "
         "FROM interventions) "
-        "SELECT at AS time, backend, action AS disabled_by, "
-        "next_action AS ended_by, "
-        "round(extract(epoch FROM next_at - at)::numeric, 1) AS seconds_disabled "
+        "SELECT at AS time, backend, "
+        "round(extract(epoch FROM next_at - at)::numeric, 1) AS seconds_disabled, "
+        "action AS disabled_by, next_action AS ended_by "
         "FROM e WHERE action IN ('disabled', 'operator_disabled') "
         "AND next_at IS NOT NULL AND $__timeFilter(at) ORDER BY at DESC LIMIT 100",
         desc="From the saved interventions: how long each disable lasted "
@@ -568,66 +653,54 @@ def build() -> dict:
         "SELECT option_order[1] || '-first' AS \"order\", choice, count(*) AS calls "
         "FROM jev_assessments WHERE $__timeFilter(finished_at) AND "
         "question = 'route' AND status = 'ok' AND option_order IS NOT NULL "
-        "GROUP BY 1, 2 ORDER BY 1, 2", w=8,
+        "GROUP BY 1, 2 ORDER BY 1, 2", w=12,
     )  # fmt: skip
-    text("1st vs 2nd Jev",
-         "The gateway makes **one** Jev call per request, before the model "
-         "answers. It returns the route and the intent together. There is no "
-         "second Jev call that scores the model's reply.\n\n"
-         "What is compared today is the model's intent label against Jev's "
-         "intent answer: see *Qwen vs Jev intent agreement* above. The "
-         "standard-first vs complex-first comparison needs the order-swap run "
-         "(PRs #89, #90).", w=24, h=4)  # fmt: skip
-
     # --- Security -----------------------------------------------------------
     row("Security")
     timeseries("Operator route auth failures",
                [(f"sum by (reason) "
                  f"(increase(gateway_operator_auth_failures_total[{R}]))",
-                 "{{reason}}")], bars=True, stack=True, minimum=0,
+                 "{{reason}}")], bars=True, stack=True, minimum=0, w=12,
                desc="401 and 403 on /v1/operator and /v1/faults. Normally flat zero.")  # fmt: skip
-    timeseries("Operator actions",
-               [("sum by (action, model) (increase("
-                 'gateway_controller_interventions_total{action=~"operator_.*"}'
-                 "[$__interval]))", "{{action}} {{model}}")], bars=True,
-               stack=True, minimum=0)  # fmt: skip
-    text("What is exposed",
-         "Only port 8080 is published. Prometheus, Postgres and the gateway "
-         "stay on the Compose network. Grafana is reached through the proxy at "
-         "`/grafana`, as an anonymous **viewer**: no login, no editing. "
-         "Postgres panels use a read-only database user.", w=8, h=8)  # fmt: skip
+    interventions("Operator actions", " AND action LIKE 'operator%'")
 
+    return _dashboard(
+        "smart-gateway", "Smart AI Gateway", _fold(_panels), [model_variable()]
+    )
+
+
+def model_variable() -> dict:
     return {
-        "uid": "smart-gateway",
-        "title": "Smart AI Gateway",
+        "name": "model",
+        "label": "Model",
+        "type": "query",
+        "datasource": PROM,
+        "query": {
+            "query": "label_values(gateway_chat_requests_total, model)",
+            "refId": "model",
+        },
+        "definition": "label_values(gateway_chat_requests_total, model)",
+        "refresh": 2,
+        "multi": True,
+        "includeAll": True,
+        "allValue": ".+",
+        "current": {"text": "All", "value": "$__all"},
+    }
+
+
+def _dashboard(uid: str, title: str, panels: list[dict], variables: list) -> dict:
+    return {
+        "uid": uid,
+        "title": title,
         "tags": ["smart-gateway"],
         "timezone": "browser",
         "schemaVersion": 39,
         "version": 1,
         "editable": False,
         "refresh": "30s",
-        "time": {"from": "now-1h", "to": "now"},
+        "time": {"from": "now-15m", "to": "now"},
         "graphTooltip": 1,
-        "templating": {
-            "list": [
-                {
-                    "name": "model",
-                    "label": "Model",
-                    "type": "query",
-                    "datasource": PROM,
-                    "query": {
-                        "query": "label_values(gateway_chat_requests_total, model)",
-                        "refId": "model",
-                    },
-                    "definition": "label_values(gateway_chat_requests_total, model)",
-                    "refresh": 2,
-                    "multi": True,
-                    "includeAll": True,
-                    "allValue": ".+",
-                    "current": {"text": "All", "value": "$__all"},
-                }
-            ]
-        },
+        "templating": {"list": variables},
         "annotations": {
             "list": [
                 {
@@ -648,19 +721,23 @@ def build() -> dict:
                 }
             ]
         },
-        "panels": _fold(_panels),
+        "panels": panels,
     }
 
 
 def main() -> int:
-    text_out = json.dumps(build(), indent=2) + "\n"
-    if "--check" in sys.argv:
-        if not OUT.exists() or OUT.read_text() != text_out:
-            print(f"{OUT} is out of date; run scripts/build_grafana_dashboard.py")
+    for name, make in (
+        ("smart-gateway.json", build),
+        ("smart-gateway-summary.json", build_summary),
+    ):
+        out = DASHBOARDS / name
+        text_out = json.dumps(make(), indent=2) + "\n"
+        if "--check" not in sys.argv:
+            out.write_text(text_out)
+            print(f"wrote {out}")
+        elif not out.exists() or out.read_text() != text_out:
+            print(f"{out} is out of date; run scripts/build_grafana_dashboard.py")
             return 1
-        return 0
-    OUT.write_text(text_out)
-    print(f"wrote {OUT}")
     return 0
 
 

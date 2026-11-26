@@ -70,7 +70,9 @@ function validTurn(t) {
     trace.format_errors.every((error) => typeof error === "string") &&
     (trace.fallback_reason == null || typeof trace.fallback_reason === "string") &&
     (trace.controller_action == null || typeof trace.controller_action === "string") &&
-    (trace.confidence == null || typeof trace.confidence === "number")
+    (trace.confidence == null || typeof trace.confidence === "number") &&
+    (trace.model == null || typeof trace.model === "string") &&
+    (trace.latency_ms == null || typeof trace.latency_ms === "number")
   );
 }
 
@@ -94,11 +96,43 @@ const TOPICS = [
   "the wrong amount of cash received",
 ];
 
+const ROUTERS = { mock_jev: "Jev (mock)", jev: "Jev", rule_router: "Keyword rules" };
+
+const timeText = (ms) => (typeof ms === "number" ? `${Math.round(ms)} ms` : "not recorded");
+
+// The workflow in one line: who routed, which route, which model, the check.
+function ReplyPath({ trace }) {
+  const steps = [
+    ["Router", ROUTERS[trace.router] ?? trace.router],
+    ["Route", trace.route],
+    ["Model", trace.model ?? "not recorded"],
+    ["Check", `format ${trace.format_check}`],
+  ];
+  return (
+    <div>
+      <ol className="path" aria-label="How this reply was made">
+        {steps.map(([name, value]) => (
+          <li key={name} className={name === "Check" && trace.format_check === "failed" ? "path-bad" : undefined}>
+            <span className="path-name">{name}</span>
+            <span className="mono">{value}</span>
+          </li>
+        ))}
+      </ol>
+      <p className="muted note">
+        Answered in {timeText(trace.latency_ms)}
+        {trace.mocked ? ", from a mock model with a simulated delay." : "."}
+      </p>
+    </div>
+  );
+}
+
 function detailRows(result) {
   const t = result.trace;
   return [
     ["Intent", result.intent],
     ["Route", t.route],
+    ["Model", t.model ?? "not recorded"],
+    ["Time", timeText(t.latency_ms)],
     ["Routing source", t.router],
     ["Reply source", t.reply_source],
     ["Format check", t.format_errors.length ? `${t.format_check} (${t.format_errors.join(", ")})` : t.format_check],
@@ -122,6 +156,7 @@ function Reply({ result }) {
       </div>
       {open && (
         <div className="details">
+          <ReplyPath trace={result.trace} />
           {result.policy_facts.length > 0 && (
             <div>
               <h2 className="details-heading">Grounded in policy card</h2>

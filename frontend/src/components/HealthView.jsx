@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 const ACTION_LABELS = {
   disabled: "disabled",
   "re-enabled": "re-enabled",
@@ -13,8 +15,22 @@ const RELEASE_STATUS = {
   rolled_back: { label: "Rolled back", tone: "watch" },
 };
 
+const LOG_ROWS = 5;
+
+// The first LOG_ROWS rows of a log, and the button that shows the rest.
+function useShortLog(rows, noun) {
+  const [open, setOpen] = useState(false);
+  const button = rows.length > LOG_ROWS && (
+    <button type="button" className="link-button show-more" aria-expanded={open} onClick={() => setOpen(!open)}>
+      {open ? `Show the newest ${LOG_ROWS} ${noun}` : `Show all ${rows.length} ${noun}`}
+    </button>
+  );
+  return [open ? rows : rows.slice(0, LOG_ROWS), button];
+}
+
 function ReleasesCard({ releases, history }) {
   const log = [...(history ?? [])].reverse();
+  const [shown, showMore] = useShortLog(log, "release changes");
   return (
     <section className="card">
       <h2>Releases</h2>
@@ -60,7 +76,7 @@ function ReleasesCard({ releases, history }) {
               </tr>
             </thead>
             <tbody>
-              {log.map((e) => (
+              {shown.map((e) => (
                 <tr key={`${e.at}-${e.backend}-${e.action}`}>
                   <td className="mono">{formatTime(e.at)}</td>
                   <td className="mono">{e.backend}</td>
@@ -76,6 +92,7 @@ function ReleasesCard({ releases, history }) {
           </table>
         </div>
       )}
+      {showMore}
     </section>
   );
 }
@@ -331,7 +348,7 @@ function usageNote(health) {
     return "Mock mode: token usage and estimated cost are unavailable. No model-provider inference calls are made.";
   }
   return [
-    jev ? "Jev calls go to TypeSafe; their tokens and cost are on the Jev router card." : "Jev is a mock.",
+    jev ? "Jev calls go to TypeSafe; their tokens and cost are on the Jev screen." : "Jev is a mock.",
     qwen
       ? "The Qwen models run on vLLM. Their token usage is not reported yet, and their cost is GPU time, which is not measured."
       : "The Qwen models are mocks, so their token usage and cost are unavailable.",
@@ -390,6 +407,114 @@ function ModelCard({ model, threshold }) {
   );
 }
 
+// One line for what the Jev screen shows in full.
+function JevSummary({ breaker, semantic }) {
+  if (!breaker && !semantic?.length) return null;
+  const jev = breaker && BREAKER_PILLS[breaker.state];
+  return (
+    <section className="card summary-line" aria-label="Jev summary">
+      {jev && (
+        <span>
+          <strong>Jev router</strong> <span className={`pill pill-${jev.tone}`}>{jev.text}</span>
+        </span>
+      )}
+      {semantic?.length > 0 && (
+        <span>
+          <strong>Intent check</strong>
+          {semantic.map((m) => {
+            const pill = SEMANTIC_PILLS[m.status] ?? { tone: "neutral", text: m.status };
+            return (
+              <span key={m.name} className="summary-model">
+                <span className="mono">{m.name}</span> <span className={`pill pill-${pill.tone}`}>{pill.text}</span>
+              </span>
+            );
+          })}
+        </span>
+      )}
+      <a href="#/jev">Open Jev</a>
+    </section>
+  );
+}
+
+function InterventionsCard({ interventions }) {
+  const log = [...interventions].reverse();
+  const [shown, showMore] = useShortLog(log, "interventions");
+  return (
+    <section className="card">
+      <h2>Interventions</h2>
+      <p className="muted small">With Postgres, as in Compose, this log is kept across gateway restarts. A restart puts every model back in service, so an entry may say disabled for a model that is serving now.</p>
+      {log.length === 0 ? (
+        <p className="muted small">No interventions recorded.</p>
+      ) : (
+        <div className="table-scroll">
+          <table className="log" aria-label="Interventions">
+            <thead>
+              <tr>
+                <th scope="col">Time</th>
+                <th scope="col">Model</th>
+                <th scope="col">Action</th>
+                <th scope="col">Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((entry) => (
+                <tr key={`${entry.at}-${entry.backend}-${entry.action}`}>
+                  <td className="mono">{formatTime(entry.at)}</td>
+                  <td className="mono">{entry.backend}</td>
+                  <td>
+                    <span className={`pill action-${entry.action}`}>{ACTION_LABELS[entry.action] ?? entry.action}</span>
+                  </td>
+                  <td>{entry.reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {showMore}
+    </section>
+  );
+}
+
+function RecentRequestsCard({ requests }) {
+  const [shown, showMore] = useShortLog(requests, "requests");
+  return (
+    <section className="card">
+      <h2>Recent completed requests</h2>
+      <p className="muted small">Up to 20 retained requests that got a reply, newest first, including replies that failed the format check. Requests that got no reply (HTTP 503) are not listed. Kept across gateway restarts when it uses Postgres, as in Compose.</p>
+      {!requests.length ? (
+        <p className="muted small">No retained completed requests.</p>
+      ) : (
+        <div className="table-scroll">
+          <table className="log" aria-label="Recent completed requests">
+            <thead>
+              <tr>
+                <th scope="col">Completed</th>
+                <th scope="col">Route</th>
+                <th scope="col">Actual model</th>
+                <th scope="col">Fallback</th>
+                <th scope="col">Format check</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((r, i) => (
+                <tr key={`${r.completed_at}-${i}`}>
+                  <td className="mono">{new Date(r.completed_at).toLocaleString()}</td>
+                  <td>{r.route}</td>
+                  <td className="mono">{r.model}</td>
+                  <td>{r.fallback_reason ?? "none"}</td>
+                  <td>{r.format_check}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {showMore}
+    </section>
+  );
+}
+
 export default function HealthView({ health, error }) {
   return (
     <div className="health">
@@ -419,7 +544,6 @@ function HealthBody({ health }) {
   const models = describeModels(health);
   const banner = bannerFor(health, models);
   const rules = health.controller;
-  const log = [...health.interventions].reverse();
 
   return (
     <>
@@ -435,77 +559,15 @@ function HealthBody({ health }) {
         {models.map((model) => (
           <ModelCard key={model.name} model={model} threshold={rules.failure_threshold} />
         ))}
-        {health.jev_breaker && <JevCard breaker={health.jev_breaker} usage={health.jev_usage} />}
       </div>
 
-      {health.semantic && health.semantic_rules && <SemanticCard semantic={health.semantic} rules={health.semantic_rules} />}
+      <JevSummary breaker={health.jev_breaker} semantic={health.semantic} />
+
+      <InterventionsCard interventions={health.interventions} />
 
       {health.releases?.length > 0 && <ReleasesCard releases={health.releases} history={health.release_history} />}
 
-      <section className="card">
-        <h2>Recent completed requests</h2>
-        <p className="muted small">Up to 20 retained requests that got a reply, newest first, including replies that failed the format check. Requests that got no reply (HTTP 503) are not listed. Kept across gateway restarts when it uses Postgres, as in Compose.</p>
-        {!health.recent_requests?.length ? (
-          <p className="muted small">No retained completed requests.</p>
-        ) : (
-          <div className="table-scroll">
-            <table className="log" aria-label="Recent completed requests">
-              <thead>
-                <tr>
-                  <th scope="col">Completed</th>
-                  <th scope="col">Route</th>
-                  <th scope="col">Actual model</th>
-                  <th scope="col">Fallback</th>
-                  <th scope="col">Format check</th>
-                </tr>
-              </thead>
-              <tbody>
-                {health.recent_requests.map((r, i) => (
-                  <tr key={`${r.completed_at}-${i}`}>
-                    <td className="mono">{new Date(r.completed_at).toLocaleString()}</td>
-                    <td>{r.route}</td>
-                    <td className="mono">{r.model}</td>
-                    <td>{r.fallback_reason ?? "none"}</td>
-                    <td>{r.format_check}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-      <section className="card">
-        <h2>Interventions</h2>
-        <p className="muted small">With Postgres, as in Compose, this log is kept across gateway restarts. A restart puts every model back in service, so an entry may say disabled for a model that is serving now.</p>
-        {log.length === 0 ? (
-          <p className="muted small">No interventions recorded.</p>
-        ) : (
-          <div className="table-scroll">
-            <table className="log" aria-label="Interventions">
-              <thead>
-                <tr>
-                  <th scope="col">Time</th>
-                  <th scope="col">Model</th>
-                  <th scope="col">Action</th>
-                  <th scope="col">Reason</th>
-                </tr>
-              </thead>
-              <tbody>
-                {log.map((entry) => (
-                  <tr key={`${entry.at}-${entry.backend}-${entry.action}`}>
-                    <td className="mono">{formatTime(entry.at)}</td>
-                    <td className="mono">{entry.backend}</td>
-                    <td>
-                      <span className={`pill action-${entry.action}`}>{ACTION_LABELS[entry.action] ?? entry.action}</span>
-                    </td>
-                    <td>{entry.reason}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+      <RecentRequestsCard requests={health.recent_requests ?? []} />
 
       <section className="card">
         <h2>Usage since gateway startup</h2>
@@ -538,23 +600,10 @@ function HealthBody({ health }) {
         </div>
       </section>
 
-      <section className="card">
-        <h2>Try a simulated failure</h2>
-        <p>Normal questions never inject faults. The team runs this as a demo, on a host testers do not use. The demo starts the gateway with the README's chaos override, which corrupts every small-model reply.</p>
-        <ol>
-          <li>In Chat, send “My card has not arrived” {rules.min_samples} times.</li>
-          <li>Open Show details: each reply fails its format check. After {rules.min_samples} failed replies, the controller disables qwen3-1.7b.</li>
-          <li>Send it once more: qwen3-4b answers. Health shows the format failures, the disabled small model and an intervention.</li>
-          <li>Finish within {rules.cooldown_seconds} s. After the cooldown, the small model is enabled again and fails again.</li>
-        </ol>
-        <p>
-          This tests format failures and rerouting only. A wrong answer that passes the format check is not caught by the controller. The semantic monitor
-          above reports it: the README&apos;s label-swap override shows how.
-        </p>
-      </section>
-
-      <section className="card">
-        <h2>Controller rules</h2>
+      <details className="card fold">
+        <summary>
+          <h2>Controller rules</h2>
+        </summary>
         <p className="muted small">
           A model is taken out of service when its failure rate (failed format checks and failed calls) crosses the threshold. The last working model is never disabled.
         </p>
@@ -576,7 +625,26 @@ function HealthBody({ health }) {
             <strong>{rules.cooldown_seconds} s</strong>
           </div>
         </div>
-      </section>
+      </details>
+
+      <details className="card fold">
+        <summary>
+          <h2>Try a simulated failure</h2>
+        </summary>
+        <p>Normal questions never inject faults. The team runs this as a demo, on a host testers do not use. The demo starts the gateway with the README's chaos override, which corrupts every small-model reply.</p>
+        <ol>
+          <li>In Chat, send “My card has not arrived” {rules.min_samples} times.</li>
+          <li>Open Show details: each reply fails its format check. After {rules.min_samples} failed replies, the controller disables qwen3-1.7b.</li>
+          <li>Send it once more: qwen3-4b answers. Health shows the format failures, the disabled small model and an intervention.</li>
+          <li>Finish within {rules.cooldown_seconds} s. After the cooldown, the small model is enabled again and fails again.</li>
+        </ol>
+        <p>
+          This tests format failures and rerouting only.{" "}
+          {health.semantic_rules?.actions_enabled
+            ? "A wrong answer that passes the format check is caught separately: semantic actions are on, so the controller takes a model out of service when it differs from Jev above the baseline. The Jev screen shows this."
+            : "A wrong answer that passes the format check is not caught by the controller. The semantic monitor on the Jev screen reports it: the README's label-swap override shows how."}
+        </p>
+      </details>
     </>
   );
 }

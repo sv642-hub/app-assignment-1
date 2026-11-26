@@ -24,6 +24,12 @@ function renderWith(gateway) {
   return user;
 }
 
+// Jev and Metrics sit behind the Settings button.
+async function openFromSettings(user, name) {
+  await user.click(screen.getByRole("button", { name: "Settings" }));
+  await user.click(screen.getByRole("button", { name, exact: true }));
+}
+
 describe("Chat", () => {
   it("sends multiple turns when randomUUID is unavailable over HTTP", async () => {
     vi.stubGlobal("crypto", {});
@@ -52,7 +58,7 @@ describe("Chat", () => {
     expect(await screen.findByText(/Freeze your card in the fictional app/)).toBeInTheDocument();
     expect(gateway.sent).toEqual([{ message: "I lost my card" }]);
     expect(screen.getByText("complex")).toHaveClass("route-complex");
-    // The model and timings are internal: not shown to the customer.
+    // The model and timings stay behind Show details.
     expect(screen.queryByText(/qwen3/)).not.toBeInTheDocument();
     expect(screen.queryByText(/ms\b/)).not.toBeInTheDocument();
   });
@@ -67,7 +73,30 @@ describe("Chat", () => {
     const table = screen.getByRole("table");
     expect(within(table).getByText("lost_or_stolen_card")).toBeInTheDocument();
     expect(within(table).getByText("262a55b9-3baa-4e0b-8abc-58fb91432cf2")).toBeInTheDocument();
-    expect(within(table).queryByText(/qwen3/)).not.toBeInTheDocument();
+    expect(within(table).getByText("qwen3-4b")).toBeInTheDocument();
+    expect(within(table).getByText("351 ms")).toBeInTheDocument();
+
+    const path = screen.getByRole("list", { name: "How this reply was made" });
+    expect(within(path).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "RouterJev (mock)",
+      "Routecomplex",
+      "Modelqwen3-4b",
+      "Checkformat passed",
+    ]);
+    expect(screen.getByText(/Answered in 351 ms, from a mock model/)).toBeInTheDocument();
+  });
+
+  it("marks a failed format check and the rule router in the reply path", async () => {
+    const trace = { ...lostCardReply.trace, router: "rule_router", format_check: "failed", confidence: null, mocked: false };
+    const gateway = fakeGateway({ chat: () => gateway.json({ ...lostCardReply, trace }) });
+    const user = renderWith(gateway);
+    await user.type(screen.getByLabelText("Message"), "I lost my card{Enter}");
+    await user.click(await screen.findByRole("button", { name: "Show details" }));
+
+    const path = screen.getByRole("list", { name: "How this reply was made" });
+    expect(within(path).getByText("Keyword rules")).toBeInTheDocument();
+    expect(within(path).getByText("format failed").closest("li")).toHaveClass("path-bad");
+    expect(screen.getByText("Answered in 351 ms.")).toBeInTheDocument();
   });
 
   it("explains a 503 instead of failing silently", async () => {
@@ -104,13 +133,14 @@ describe("Health", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Gateway unreachable");
     expect(screen.queryByText("All systems normal")).not.toBeInTheDocument();
     expect(screen.queryByText("Serving")).not.toBeInTheDocument();
-    expect(screen.queryByText("Gateway healthy")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Gateway healthy" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Gateway unreachable" })).toBeInTheDocument();
 
     await act(async () => { await poll(); });
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.getByText("All systems normal")).toBeInTheDocument();
     expect(screen.getAllByText("Serving")).toHaveLength(2);
-    expect(screen.getByText("Gateway healthy")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Gateway healthy" })).toBeInTheDocument();
   });
 
   it("shows a healthy gateway", async () => {
@@ -144,7 +174,7 @@ describe("Health", () => {
     // Newest intervention first.
     const rows = within(screen.getByRole("table", { name: "Interventions" })).getAllByRole("row");
     expect(rows[1]).toHaveTextContent("100% over last 5");
-    expect(screen.getByText("Gateway degraded")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Gateway degraded" })).toBeInTheDocument();
   });
 
   it("counts failed calls as failures and explains the mix", async () => {
@@ -162,7 +192,7 @@ describe("Health", () => {
   it("shows the Jev breaker calling Jev when it is closed", async () => {
     const user = renderWith(fakeGateway({ health: healthyHealth }));
 
-    await user.click(screen.getByRole("button", { name: "Health" }));
+    await openFromSettings(user, "Jev");
 
     const jev = await screen.findByRole("region", { name: "Jev router" });
     expect(within(jev).getByText("Calling Jev")).toBeInTheDocument();
@@ -183,11 +213,13 @@ describe("Health", () => {
     expect(banner).not.toHaveTextContent("Degraded");
     expect(screen.queryByText("All systems normal")).not.toBeInTheDocument();
     expect(screen.getAllByText("Serving")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Gateway healthy" })).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Jev summary" })).getByText("Skipped")).toHaveClass("pill-bad");
 
+    await openFromSettings(user, "Jev");
     const jev = screen.getByRole("region", { name: "Jev router" });
     expect(within(jev).getByText("Skipped")).toHaveClass("pill-bad");
     expect(within(jev).getByText("5 of 5")).toBeInTheDocument();
-    expect(screen.getByText("Gateway healthy")).toBeInTheDocument();
   });
 
   it("shows a half-open Jev breaker as waiting, not failing", async () => {
@@ -199,7 +231,7 @@ describe("Health", () => {
     const banner = await screen.findByRole("status");
     expect(banner).toHaveClass("banner-note");
     expect(banner).toHaveTextContent("The next message tries Jev again.");
-    const pill = within(screen.getByRole("region", { name: "Jev router" })).getByText("Waiting for next message");
+    const pill = within(screen.getByRole("region", { name: "Jev summary" })).getByText("Waiting for next message");
     expect(pill).toHaveClass("pill-neutral");
   });
 
@@ -220,9 +252,43 @@ describe("Health", () => {
     const user = renderWith(fakeGateway({ health: older }));
 
     await user.click(screen.getByRole("button", { name: "Health" }));
-
     expect(await screen.findByText("All systems normal")).toBeInTheDocument();
+    expect(screen.queryByText("Jev router")).not.toBeInTheDocument();
+
+    await openFromSettings(user, "Jev");
     expect(screen.queryByRole("region", { name: "Jev router" })).not.toBeInTheDocument();
+  });
+
+  it("sums up Jev and the intent check in one line, without the full cards", async () => {
+    const user = renderWith(fakeGateway({ health: healthyHealth }));
+    await user.click(screen.getByRole("button", { name: "Health" }));
+
+    const summary = await screen.findByRole("region", { name: "Jev summary" });
+    expect(within(summary).getByText("Calling Jev")).toBeInTheDocument();
+    expect(summary).toHaveTextContent("qwen3-1.7b No baseline set");
+    expect(summary).toHaveTextContent("qwen3-4b Collecting");
+    expect(within(summary).getByRole("link", { name: "Open Jev" })).toHaveAttribute("href", "#/jev");
+    expect(screen.queryByRole("region", { name: "Jev router" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Semantic monitor" })).not.toBeInTheDocument();
+  });
+
+  it("shows five interventions until asked for all of them", async () => {
+    const interventions = Array.from({ length: 8 }, (_, i) => ({
+      at: `2026-10-30T14:0${i}:00Z`, backend: "qwen3-1.7b", action: "disabled", reason: `reason ${i}`,
+    }));
+    const user = renderWith(fakeGateway({ health: { ...healthyHealth, interventions } }));
+    await user.click(screen.getByRole("button", { name: "Health" }));
+
+    const table = await screen.findByRole("table", { name: "Interventions" });
+    expect(within(table).getAllByRole("row")).toHaveLength(6);
+    expect(within(table).getByText("reason 7")).toBeInTheDocument();
+    expect(within(table).queryByText("reason 2")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Show all 8 interventions" }));
+    expect(within(table).getAllByRole("row")).toHaveLength(9);
+
+    await user.click(screen.getByRole("button", { name: "Show the newest 5 interventions" }));
+    expect(within(table).getAllByRole("row")).toHaveLength(6);
   });
 
   it("opens on the Health screen from its link", async () => {
@@ -267,7 +333,15 @@ describe("Releases", () => {
 describe("Semantic monitor", () => {
   async function openHealth(health) {
     const user = renderWith(fakeGateway({ health }));
-    await user.click(screen.getByRole("button", { name: "Health" }));
+    await user.click(screen.getByRole("button", { name: /^Health/ }));
+    await screen.findByRole("region", { name: "Jev summary" });
+    return user;
+  }
+
+  // The full table and the Jev card are on the Jev screen.
+  async function openJev(health) {
+    const user = renderWith(fakeGateway({ health }));
+    await openFromSettings(user, "Jev");
     return screen.findByRole("table", { name: "Semantic monitor" });
   }
 
@@ -276,7 +350,7 @@ describe("Semantic monitor", () => {
   }
 
   it("shows rates without flagging them when no baseline is set", async () => {
-    const table = await openHealth(healthyHealth);
+    const table = await openJev(healthyHealth);
 
     const small = row(table, "qwen3-1.7b");
     expect(within(small).getByText("No baseline set")).toHaveClass("pill-neutral");
@@ -285,35 +359,42 @@ describe("Semantic monitor", () => {
     expect(within(row(table, "qwen3-4b")).getByText("Collecting")).toBeInTheDocument();
     expect(row(table, "qwen3-4b")).toHaveTextContent("1 of 3 differ");
     expect(screen.getByText(/No healthy baseline is set yet/)).toBeInTheDocument();
-    expect(screen.getByText("All systems normal")).toBeInTheDocument();
   });
 
   it("flags a model above the baseline in the table and the banner", async () => {
-    const table = await openHealth(labelSwapHealth);
-
-    const small = row(table, "qwen3-1.7b");
-    expect(within(small).getByText("Above baseline")).toHaveClass("pill-bad");
-    expect(small).toHaveTextContent("100% (10 of 10)");
-    expect(within(row(table, "qwen3-4b")).getByText("Normal")).toHaveClass("pill-good");
+    const user = await openHealth(labelSwapHealth);
 
     const banner = screen.getByRole("status");
     expect(banner).toHaveClass("banner-bad");
     expect(banner).toHaveTextContent("Possible wrong intents");
     expect(banner).toHaveTextContent("qwen3-1.7b's intent differs from Jev's on 100% of recent replies (10 of 10), above the 0% baseline.");
-    expect(screen.getByText(/Flagged above 15%: the 0% baseline plus a 15% margin/)).toBeInTheDocument();
     // The models still serve, so the gateway's own status is unchanged.
-    expect(screen.getByText("Gateway healthy")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Gateway healthy" })).toBeInTheDocument();
+
+    await openFromSettings(user, "Jev");
+    const table = screen.getByRole("table", { name: "Semantic monitor" });
+    const small = row(table, "qwen3-1.7b");
+    expect(within(small).getByText("Above baseline")).toHaveClass("pill-bad");
+    expect(small).toHaveTextContent("100% (10 of 10)");
+    expect(within(row(table, "qwen3-4b")).getByText("Normal")).toHaveClass("pill-good");
+    expect(screen.getByText(/Flagged above 15%: the 0% baseline plus a 15% margin/)).toBeInTheDocument();
   });
 
   it("says the controller takes no action while semantic actions are off", async () => {
-    await openHealth(labelSwapHealth);
+    const user = await openHealth(labelSwapHealth);
 
     expect(screen.getByRole("status")).toHaveTextContent("semantic actions are off, so the controller takes no action.");
+    expect(screen.getByText(/is not caught by the controller/)).toBeInTheDocument();
+
+    await openFromSettings(user, "Jev");
     expect(screen.getByText(/Semantic actions are off, so it only reports/)).toBeInTheDocument();
   });
 
   it("shows the controller disabling a model for its disagreement with Jev", async () => {
-    await openHealth(semanticActionHealth);
+    const user = await openHealth(semanticActionHealth);
+    // The demo steps must not say wrong intents go uncaught while actions are on.
+    expect(screen.queryByText(/is not caught by the controller/)).not.toBeInTheDocument();
+    expect(screen.getByText(/is caught separately: semantic actions are on/)).toBeInTheDocument();
 
     const banner = screen.getByRole("status");
     expect(banner).toHaveTextContent("Degraded");
@@ -322,12 +403,14 @@ describe("Semantic monitor", () => {
     expect(banner).toHaveTextContent("qwen3-1.7b's intent differs from Jev's on 100% of recent replies (10 of 10), above the 0% baseline.");
     expect(banner).not.toHaveTextContent("takes no action");
     expect(banner).not.toHaveTextContent("keeps it in service");
-    expect(screen.getByText(/Semantic actions are on: when a model is above the baseline/)).toBeInTheDocument();
     const small = screen.getByRole("region", { name: "qwen3-1.7b" });
     expect(within(small).getByText("Disabled")).toBeInTheDocument();
     expect(within(small).getByText("0% (0 of 10)")).toBeInTheDocument();
     const rows = within(screen.getByRole("table", { name: "Interventions" })).getAllByRole("row");
     expect(rows[1]).toHaveTextContent("intent differs from Jev's on 100% of last 10 scored replies");
+
+    await openFromSettings(user, "Jev");
+    expect(screen.getByText(/Semantic actions are on: when a model is above the baseline/)).toBeInTheDocument();
   });
 
   it("says when the controller keeps the last working model in service", async () => {
@@ -378,7 +461,7 @@ describe("Semantic monitor", () => {
 
   it("shows Jev tokens and the estimated cost", async () => {
     const jev_usage = { mocked: false, answered_calls: 3, input_tokens: 6000, output_tokens: 21, estimated_cost_usd: 0.000252 };
-    await openHealth({ ...healthyHealth, jev_usage });
+    await openJev({ ...healthyHealth, jev_usage });
 
     const jev = screen.getByRole("region", { name: "Jev router" });
     expect(within(jev).getByText("6,000 in, 21 out (3 calls)")).toBeInTheDocument();
@@ -392,19 +475,23 @@ describe("Semantic monitor", () => {
     [0, "$0"],
   ])("never shows a nonzero cost as $0.0000 (%s)", async (cost, text) => {
     const jev_usage = { mocked: false, answered_calls: 1, input_tokens: 400, output_tokens: 7, estimated_cost_usd: cost };
-    await openHealth({ ...healthyHealth, jev_usage });
+    await openJev({ ...healthyHealth, jev_usage });
     expect(within(screen.getByRole("region", { name: "Jev router" })).getByText(text)).toBeInTheDocument();
   });
 
   it("says how many replies were not compared with Jev", async () => {
     const semantic = labelSwapHealth.semantic.map((m) => (m.name === "qwen3-1.7b" ? { ...m, not_compared: 7 } : m));
-    await openHealth({ ...labelSwapHealth, semantic });
+    await openJev({ ...labelSwapHealth, semantic });
 
     expect(screen.getByText(/Not compared since the gateway started: 7 from qwen3-1.7b/)).toBeInTheDocument();
   });
 
   it("shows low coverage instead of a healthy rate while Jev is down", async () => {
-    const table = await openHealth(lowCoverageHealth);
+    const user = await openHealth(lowCoverageHealth);
+    expect(screen.getByRole("status")).toHaveTextContent("Keyword rules are routing while Jev is skipped");
+
+    await openFromSettings(user, "Jev");
+    const table = screen.getByRole("table", { name: "Semantic monitor" });
 
     const small = row(table, "qwen3-1.7b");
     expect(within(small).getByText("Low coverage")).toHaveClass("pill-neutral");
@@ -412,7 +499,6 @@ describe("Semantic monitor", () => {
     expect(small).toHaveTextContent("0% (0 of 12)");
     // An empty window has no rate and no coverage, never 0%.
     expect(within(row(table, "qwen3-4b")).getAllByText("no data yet")).toHaveLength(2);
-    expect(screen.getByRole("status")).toHaveTextContent("Keyword rules are routing while Jev is skipped");
   });
 
   it("adds the semantic alert to a degraded banner", async () => {
@@ -429,7 +515,7 @@ describe("Semantic monitor", () => {
     const semantic = healthyHealth.semantic.map((m) =>
       m.name === "qwen3-4b" ? { ...m, rerouted_agreements: 0, rerouted_disagreements: 0, rerouted_no_signal: 5 } : m,
     );
-    const table = await openHealth({ ...healthyHealth, semantic });
+    const table = await openJev({ ...healthyHealth, semantic });
 
     expect(row(table, "qwen3-4b")).toHaveTextContent("5 without a Jev answer");
     expect(row(table, "qwen3-1.7b")).toHaveTextContent("none");
@@ -440,11 +526,13 @@ describe("Semantic monitor", () => {
     const semantic = labelSwapHealth.semantic.map((m) =>
       m.name === "qwen3-1.7b" ? { ...m, samples: 33, agreements: 28, disagreements: 5, disagreement_rate: 0.152 } : m,
     );
-    const table = await openHealth({ ...labelSwapHealth, semantic });
+    const user = await openHealth({ ...labelSwapHealth, semantic });
+    expect(screen.getByRole("status")).toHaveTextContent("on 15.2% of recent replies (5 of 33)");
 
+    await openFromSettings(user, "Jev");
+    const table = screen.getByRole("table", { name: "Semantic monitor" });
     expect(row(table, "qwen3-1.7b")).toHaveTextContent("15.2% (5 of 33)");
     expect(screen.getByText(/Flagged above 15%:/)).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("on 15.2% of recent replies (5 of 33)");
   });
 
   it("hides the card when the gateway does not report the monitor", async () => {
@@ -454,6 +542,7 @@ describe("Semantic monitor", () => {
     await user.click(screen.getByRole("button", { name: "Health" }));
 
     expect(await screen.findByText("All systems normal")).toBeInTheDocument();
+    await openFromSettings(user, "Jev");
     expect(screen.queryByRole("region", { name: "Semantic monitor" })).not.toBeInTheDocument();
   });
 });
@@ -497,7 +586,8 @@ describe("Issue 31", () => {
   ])("names real Qwen when jev_mode is %s and mode is %s", async (jevMode, mode, sidebar, note) => {
     const health = { ...healthyHealth, jev_mode: jevMode, mode };
     const user = renderWith(fakeGateway({ health }));
-    expect(await screen.findByText(sidebar)).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Gateway healthy" }));
+    expect(screen.getByText(sidebar)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Health" }));
     expect(await screen.findByText(note)).toBeInTheDocument();
     expect(screen.queryByText(/Mock mode: token usage/)).not.toBeInTheDocument();
@@ -506,7 +596,8 @@ describe("Issue 31", () => {
   it("says Jev calls go to TypeSafe when Jev is real", async () => {
     const health = { ...healthyHealth, jev_mode: "real", router: "jev" };
     const user = renderWith(fakeGateway({ health }));
-    expect(await screen.findByText("Real Jev (TypeSafe); Qwen is simulated")).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Gateway healthy" }));
+    expect(screen.getByText("Real Jev (TypeSafe); Qwen is simulated")).toBeInTheDocument();
     expect(screen.queryByText(/Mock mode: Jev and Qwen/)).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Health" }));
     expect(await screen.findByText(/Jev calls go to TypeSafe/)).toBeInTheDocument();
@@ -535,6 +626,49 @@ describe("Issue 32", () => {
     // Numbers come from the controller rules in the fixture.
     expect(screen.getByText(/After 5 failed replies, the controller disables qwen3-1\.7b/)).toBeInTheDocument();
     expect(screen.getByText(/Finish within 60 s/)).toBeInTheDocument();
+  });
+});
+
+describe("Sidebar", () => {
+  it("shows the status words only after the dot is pressed, and closes them again", async () => {
+    const user = renderWith(fakeGateway());
+    const dot = await screen.findByRole("button", { name: "Gateway healthy" });
+    expect(screen.queryByText("Gateway healthy")).not.toBeInTheDocument();
+    expect(dot).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(dot);
+    expect(screen.getByText("Gateway healthy")).toBeInTheDocument();
+    expect(screen.getByText("Mock mode: Jev and Qwen are simulated")).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByText("Gateway healthy")).not.toBeInTheDocument();
+    expect(dot).toHaveFocus();
+
+    await user.click(dot);
+    await user.click(screen.getByLabelText("Message"));
+    expect(screen.queryByText("Gateway healthy")).not.toBeInTheDocument();
+  });
+
+  it("keeps Jev and Metrics behind Settings, and closes it on leaving them", async () => {
+    const user = renderWith(fakeGateway());
+    const settings = screen.getByRole("button", { name: "Settings" });
+    expect(screen.queryByRole("button", { name: "Jev" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Metrics" })).not.toBeInTheDocument();
+
+    await openFromSettings(user, "Metrics");
+    expect(window.location.hash).toBe("#/metrics");
+    expect(settings).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Metrics" })).toHaveAttribute("aria-current", "page");
+
+    await user.click(screen.getByRole("button", { name: "Chat" }));
+    expect(settings).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: "Jev" })).not.toBeInTheDocument();
+  });
+
+  it("opens Settings on a direct link to one of its screens", () => {
+    window.location.hash = "#/jev";
+    renderWith(fakeGateway());
+    expect(screen.getByRole("button", { name: "Settings" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Jev" })).toHaveAttribute("aria-current", "page");
   });
 });
 

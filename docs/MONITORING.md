@@ -27,7 +27,7 @@ Two limits to keep in mind:
 
 ## Where to look
 
-1. **Health screen:** `http://localhost:8080/#/health`, refreshed every 5 seconds. It shows a banner when a model is out or above the semantic baseline, and a note while Jev is skipped. Below it are the monitor and semantic tables, recent requests and the intervention log.
+1. **Health screen:** `http://localhost:8080/#/health`, refreshed every 5 seconds. It shows a banner when a model is out or above the semantic baseline, and a note while Jev is skipped. Below it are each model's monitor, one line on Jev and the intent check, then the intervention log, releases and recent requests (five rows each until you ask for all). The full Jev router and semantic monitor cards are on the Jev screen, under Settings in the sidebar.
 2. **`GET /v1/health`:** the same data as JSON. The fields that matter most here:
    - `status`: `degraded` when any model is unavailable, disabled or held;
    - `monitor`: per model, the samples, failures, `disabled_by_controller`, `disabled_for` (`failure` or `semantic`), `disabled_by_operator`, `disabled_for_seconds` and `answering`;
@@ -119,7 +119,7 @@ It clears when the window's failure rate drops below 25%.
 
 It can fire only when `APP_SEMANTIC_BASELINE_DISAGREEMENT_RATE` is set. Without a baseline, the status is `no_baseline` and nothing is flagged.
 
-Check the semantic table on Health:
+Check the semantic table on the Jev screen:
 - **Coverage:** the rate only means something with enough Jev answers behind it. Low coverage gives the status `low_coverage`, not this alert.
 - **Mock mode:** Jev and both models share one keyword classifier, and the label-swap override sets a baseline of 0. Any disagreement there is a simulated fault: `compose.labelswap.yml`, or `/v1/faults` with `label_swap`.
 - **Real mode:** Jev can be wrong too, and the baseline is a placeholder until it is set from dev data. Look at recent requests before trusting the rate.
@@ -171,7 +171,7 @@ It clears when the share of 503s stays under 20%.
 Routing still works, but by word count only. The semantic monitor also loses its signal: without Jev's intent answer, replies score `no_signal` and coverage drops. So during a Jev outage [PossibleWrongIntents](#possiblewrongintents) can't fire, and Health shows `low_coverage` instead.
 
 Check:
-- `jev_breaker` on Health: an `open` state and its consecutive failures.
+- `jev_breaker`, on the Jev screen: an `open` state and its consecutive failures.
 - The logs: `Jev routing failed; using rule router (...)`. The type in brackets says why, for example `timeout` or an error code from the client.
 
 Do: in real mode, check the TypeSafe API key in `env/.env`, the network from the gateway, and the provider's status. The gateway needs no action: the breaker tries Jev again every 30 s and closes on the first success. In mock mode this should not happen; if it does, look at the logs.
@@ -218,4 +218,6 @@ curl -fsS -X POST -H "$H" -H 'Content-Type: application/json' \
 
 ## Dashboard
 
-The Metrics screen (Grafana, at `/grafana`) plots the same series the alerts use, plus per-model latency percentiles, in-flight requests, Jev call latency and auth failures. Its rows and targets are listed in the README under Grafana dashboard. A hung model call shows first in *In-flight requests*, because a latency histogram only counts calls that have finished. The latency targets there (small under 2 s, large under 4 s at p95) are proposals, not measured values.
+Grafana (at `/grafana`) has two dashboards. The summary on the app's Metrics screen has eight panels. The full dashboard, linked from there, plots the same series the alerts use, plus per-model latency percentiles, in-flight requests, Jev call latency and auth failures. Its rows and targets are listed in the README under Grafana dashboard. A hung model call shows first in *In-flight requests*, because a latency histogram only counts calls that have finished. The latency targets there (small under 2 s, large under 4 s at p95) are proposals, not measured values.
+
+The detection target is to catch a faulty model in under 30 s. There is no live metric for it. The full dashboard's *Time models stayed disabled* table shows how long each disable lasted, and `scripts/measure_recovery.py` (PR #104) measures detection and recovery per fault. The real-Qwen hang run took 186 s to disable, which misses this target.

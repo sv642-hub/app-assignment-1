@@ -10,7 +10,7 @@
   "editable": false,
   "refresh": "30s",
   "time": {
-    "from": "now-1h",
+    "from": "now-15m",
     "to": "now"
   },
   "graphTooltip": 1,
@@ -504,7 +504,7 @@
     },
     {
       "type": "row",
-      "title": "Latency (percentiles, per model)",
+      "title": "Latency",
       "collapsed": false,
       "panels": [],
       "id": 9,
@@ -517,7 +517,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Request latency percentiles by model",
+      "title": "Request latency by model (p50 and p95)",
       "description": "Whole gateway time for answered requests: Jev, model, checks.",
       "datasource": {
         "type": "prometheus",
@@ -541,30 +541,8 @@
             "uid": "prometheus"
           },
           "refId": "B",
-          "expr": "histogram_quantile(0.9, sum by (le, model) (rate(gateway_chat_answer_latency_seconds_bucket{model=~\"$model\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{model}}",
-          "instant": false,
-          "range": true
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "refId": "C",
           "expr": "histogram_quantile(0.95, sum by (le, model) (rate(gateway_chat_answer_latency_seconds_bucket{model=~\"$model\"}[$__rate_interval])))",
           "legendFormat": "p95 {{model}}",
-          "instant": false,
-          "range": true
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "refId": "D",
-          "expr": "histogram_quantile(0.99, sum by (le, model) (rate(gateway_chat_answer_latency_seconds_bucket{model=~\"$model\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{model}}",
           "instant": false,
           "range": true
         }
@@ -589,11 +567,8 @@
       },
       "options": {
         "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "lastNotNull"
-          ]
+          "displayMode": "list",
+          "placement": "bottom"
         },
         "tooltip": {
           "mode": "multi",
@@ -604,287 +579,382 @@
       "gridPos": {
         "x": 0,
         "y": 10,
-        "w": 12,
+        "w": 24,
         "h": 8
       }
     },
     {
-      "type": "timeseries",
-      "title": "Qwen call latency percentiles by model",
-      "description": "Only the call to the model, so Jev time is not mixed in.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
+      "type": "row",
+      "title": "Latency detail",
+      "collapsed": true,
+      "panels": [
         {
+          "type": "timeseries",
+          "title": "Request latency percentiles by model",
+          "description": "Whole gateway time for answered requests: Jev, model, checks.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "refId": "A",
-          "expr": "histogram_quantile(0.5, sum by (le, model) (rate(gateway_backend_call_latency_seconds_bucket{model=~\"$model\",outcome=\"ok\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{model}}",
-          "instant": false,
-          "range": true
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "refId": "A",
+              "expr": "histogram_quantile(0.5, sum by (le, model) (rate(gateway_chat_answer_latency_seconds_bucket{model=~\"$model\"}[$__rate_interval])))",
+              "legendFormat": "p50 {{model}}",
+              "instant": false,
+              "range": true
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "refId": "B",
+              "expr": "histogram_quantile(0.9, sum by (le, model) (rate(gateway_chat_answer_latency_seconds_bucket{model=~\"$model\"}[$__rate_interval])))",
+              "legendFormat": "p90 {{model}}",
+              "instant": false,
+              "range": true
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "refId": "C",
+              "expr": "histogram_quantile(0.95, sum by (le, model) (rate(gateway_chat_answer_latency_seconds_bucket{model=~\"$model\"}[$__rate_interval])))",
+              "legendFormat": "p95 {{model}}",
+              "instant": false,
+              "range": true
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "refId": "D",
+              "expr": "histogram_quantile(0.99, sum by (le, model) (rate(gateway_chat_answer_latency_seconds_bucket{model=~\"$model\"}[$__rate_interval])))",
+              "legendFormat": "p99 {{model}}",
+              "instant": false,
+              "range": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "drawStyle": "line"
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "id": 12,
+          "gridPos": {
+            "x": 0,
+            "y": 19,
+            "w": 12,
+            "h": 8
+          }
         },
         {
+          "type": "timeseries",
+          "title": "Qwen call latency percentiles by model",
+          "description": "Only the call to the model, so Jev time is not mixed in.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "refId": "B",
-          "expr": "histogram_quantile(0.9, sum by (le, model) (rate(gateway_backend_call_latency_seconds_bucket{model=~\"$model\",outcome=\"ok\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{model}}",
-          "instant": false,
-          "range": true
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "refId": "A",
+              "expr": "histogram_quantile(0.5, sum by (le, model) (rate(gateway_backend_call_latency_seconds_bucket{model=~\"$model\",outcome=\"ok\"}[$__rate_interval])))",
+              "legendFormat": "p50 {{model}}",
+              "instant": false,
+              "range": true
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "refId": "B",
+              "expr": "histogram_quantile(0.9, sum by (le, model) (rate(gateway_backend_call_latency_seconds_bucket{model=~\"$model\",outcome=\"ok\"}[$__rate_interval])))",
+              "legendFormat": "p90 {{model}}",
+              "instant": false,
+              "range": true
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "refId": "C",
+              "expr": "histogram_quantile(0.95, sum by (le, model) (rate(gateway_backend_call_latency_seconds_bucket{model=~\"$model\",outcome=\"ok\"}[$__rate_interval])))",
+              "legendFormat": "p95 {{model}}",
+              "instant": false,
+              "range": true
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "refId": "D",
+              "expr": "histogram_quantile(0.99, sum by (le, model) (rate(gateway_backend_call_latency_seconds_bucket{model=~\"$model\",outcome=\"ok\"}[$__rate_interval])))",
+              "legendFormat": "p99 {{model}}",
+              "instant": false,
+              "range": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "drawStyle": "line"
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "id": 13,
+          "gridPos": {
+            "x": 12,
+            "y": 19,
+            "w": 12,
+            "h": 8
+          }
         },
         {
+          "type": "timeseries",
+          "title": "Request latency percentiles, all requests incl. 503s",
+          "description": "Not split by model. 503s are in this histogram.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "refId": "C",
-          "expr": "histogram_quantile(0.95, sum by (le, model) (rate(gateway_backend_call_latency_seconds_bucket{model=~\"$model\",outcome=\"ok\"}[$__rate_interval])))",
-          "legendFormat": "p95 {{model}}",
-          "instant": false,
-          "range": true
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "refId": "A",
+              "expr": "histogram_quantile(0.5, sum by (le) (rate(gateway_chat_latency_seconds_bucket[$__rate_interval])))",
+              "legendFormat": "p50",
+              "instant": false,
+              "range": true
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "refId": "B",
+              "expr": "histogram_quantile(0.9, sum by (le) (rate(gateway_chat_latency_seconds_bucket[$__rate_interval])))",
+              "legendFormat": "p90",
+              "instant": false,
+              "range": true
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "refId": "C",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(gateway_chat_latency_seconds_bucket[$__rate_interval])))",
+              "legendFormat": "p95",
+              "instant": false,
+              "range": true
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "refId": "D",
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(gateway_chat_latency_seconds_bucket[$__rate_interval])))",
+              "legendFormat": "p99",
+              "instant": false,
+              "range": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "drawStyle": "line"
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "id": 14,
+          "gridPos": {
+            "x": 0,
+            "y": 27,
+            "w": 12,
+            "h": 8
+          }
         },
         {
+          "type": "timeseries",
+          "title": "Request latency percentiles by route",
+          "description": "standard and complex routes, whichever model answered.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "refId": "D",
-          "expr": "histogram_quantile(0.99, sum by (le, model) (rate(gateway_backend_call_latency_seconds_bucket{model=~\"$model\",outcome=\"ok\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{model}}",
-          "instant": false,
-          "range": true
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "refId": "A",
+              "expr": "histogram_quantile(0.5, sum by (le, route) (rate(gateway_chat_answer_latency_seconds_bucket[$__rate_interval])))",
+              "legendFormat": "p50 {{route}}",
+              "instant": false,
+              "range": true
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "refId": "B",
+              "expr": "histogram_quantile(0.9, sum by (le, route) (rate(gateway_chat_answer_latency_seconds_bucket[$__rate_interval])))",
+              "legendFormat": "p90 {{route}}",
+              "instant": false,
+              "range": true
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "refId": "C",
+              "expr": "histogram_quantile(0.95, sum by (le, route) (rate(gateway_chat_answer_latency_seconds_bucket[$__rate_interval])))",
+              "legendFormat": "p95 {{route}}",
+              "instant": false,
+              "range": true
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "refId": "D",
+              "expr": "histogram_quantile(0.99, sum by (le, route) (rate(gateway_chat_answer_latency_seconds_bucket[$__rate_interval])))",
+              "legendFormat": "p99 {{route}}",
+              "instant": false,
+              "range": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "drawStyle": "line"
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "id": 15,
+          "gridPos": {
+            "x": 12,
+            "y": 27,
+            "w": 12,
+            "h": 8
+          }
         }
       ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "drawStyle": "line"
-          },
-          "min": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
       "id": 11,
-      "gridPos": {
-        "x": 12,
-        "y": 10,
-        "w": 12,
-        "h": 8
-      }
-    },
-    {
-      "type": "timeseries",
-      "title": "Request latency percentiles, all requests incl. 503s",
-      "description": "Not split by model. 503s are in this histogram.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "refId": "A",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(gateway_chat_latency_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "p50",
-          "instant": false,
-          "range": true
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "refId": "B",
-          "expr": "histogram_quantile(0.9, sum by (le) (rate(gateway_chat_latency_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "p90",
-          "instant": false,
-          "range": true
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "refId": "C",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(gateway_chat_latency_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "p95",
-          "instant": false,
-          "range": true
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "refId": "D",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(gateway_chat_latency_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "p99",
-          "instant": false,
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "drawStyle": "line"
-          },
-          "min": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "id": 12,
       "gridPos": {
         "x": 0,
         "y": 18,
-        "w": 12,
-        "h": 8
-      }
-    },
-    {
-      "type": "timeseries",
-      "title": "Request latency percentiles by route",
-      "description": "standard and complex routes, whichever model answered.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "refId": "A",
-          "expr": "histogram_quantile(0.5, sum by (le, route) (rate(gateway_chat_answer_latency_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "p50 {{route}}",
-          "instant": false,
-          "range": true
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "refId": "B",
-          "expr": "histogram_quantile(0.9, sum by (le, route) (rate(gateway_chat_answer_latency_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "p90 {{route}}",
-          "instant": false,
-          "range": true
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "refId": "C",
-          "expr": "histogram_quantile(0.95, sum by (le, route) (rate(gateway_chat_answer_latency_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "p95 {{route}}",
-          "instant": false,
-          "range": true
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "refId": "D",
-          "expr": "histogram_quantile(0.99, sum by (le, route) (rate(gateway_chat_answer_latency_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "p99 {{route}}",
-          "instant": false,
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "drawStyle": "line"
-          },
-          "min": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "id": 13,
-      "gridPos": {
-        "x": 12,
-        "y": 18,
-        "w": 12,
-        "h": 8
+        "w": 24,
+        "h": 1
       }
     },
     {
@@ -933,21 +1003,18 @@
           },
           "options": {
             "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull"
-              ]
+              "displayMode": "list",
+              "placement": "bottom"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "id": 15,
+          "id": 17,
           "gridPos": {
             "x": 0,
-            "y": 27,
+            "y": 36,
             "w": 8,
             "h": 8
           }
@@ -993,21 +1060,18 @@
           },
           "options": {
             "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull"
-              ]
+              "displayMode": "list",
+              "placement": "bottom"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "id": 16,
+          "id": 18,
           "gridPos": {
             "x": 8,
-            "y": 27,
+            "y": 36,
             "w": 8,
             "h": 8
           }
@@ -1053,21 +1117,18 @@
           },
           "options": {
             "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull"
-              ]
+              "displayMode": "list",
+              "placement": "bottom"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "id": 17,
+          "id": 19,
           "gridPos": {
             "x": 16,
-            "y": 27,
+            "y": 36,
             "w": 8,
             "h": 8
           }
@@ -1113,21 +1174,18 @@
           },
           "options": {
             "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull"
-              ]
+              "displayMode": "list",
+              "placement": "bottom"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "id": 18,
+          "id": 20,
           "gridPos": {
             "x": 0,
-            "y": 35,
+            "y": 44,
             "w": 8,
             "h": 8
           }
@@ -1173,21 +1231,18 @@
           },
           "options": {
             "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull"
-              ]
+              "displayMode": "list",
+              "placement": "bottom"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "id": 19,
+          "id": 21,
           "gridPos": {
             "x": 8,
-            "y": 35,
+            "y": 44,
             "w": 8,
             "h": 8
           }
@@ -1244,21 +1299,18 @@
           },
           "options": {
             "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull"
-              ]
+              "displayMode": "list",
+              "placement": "bottom"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "id": 20,
+          "id": 22,
           "gridPos": {
             "x": 16,
-            "y": 35,
+            "y": 44,
             "w": 8,
             "h": 8
           }
@@ -1304,21 +1356,18 @@
           },
           "options": {
             "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull"
-              ]
+              "displayMode": "list",
+              "placement": "bottom"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "id": 21,
+          "id": 23,
           "gridPos": {
             "x": 0,
-            "y": 43,
+            "y": 52,
             "w": 8,
             "h": 8
           }
@@ -1386,30 +1435,27 @@
           },
           "options": {
             "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull"
-              ]
+              "displayMode": "list",
+              "placement": "bottom"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "id": 22,
+          "id": 24,
           "gridPos": {
             "x": 8,
-            "y": 43,
+            "y": 52,
             "w": 8,
             "h": 8
           }
         }
       ],
-      "id": 14,
+      "id": 16,
       "gridPos": {
         "x": 0,
-        "y": 26,
+        "y": 35,
         "w": 24,
         "h": 1
       }
@@ -1498,21 +1544,18 @@
           },
           "options": {
             "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull"
-              ]
+              "displayMode": "list",
+              "placement": "bottom"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "id": 24,
+          "id": 26,
           "gridPos": {
             "x": 0,
-            "y": 52,
+            "y": 61,
             "w": 8,
             "h": 8
           }
@@ -1585,21 +1628,18 @@
           },
           "options": {
             "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull"
-              ]
+              "displayMode": "list",
+              "placement": "bottom"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "id": 25,
+          "id": 27,
           "gridPos": {
             "x": 8,
-            "y": 52,
+            "y": 61,
             "w": 8,
             "h": 8
           }
@@ -1657,45 +1697,27 @@
           },
           "options": {
             "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull"
-              ]
+              "displayMode": "list",
+              "placement": "bottom"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "id": 26,
+          "id": 28,
           "gridPos": {
             "x": 16,
-            "y": 52,
+            "y": 61,
             "w": 8,
             "h": 8
           }
-        },
-        {
-          "type": "text",
-          "title": "Detection target",
-          "options": {
-            "mode": "markdown",
-            "content": "**Detect a faulty model in under 30 s.** There is no live metric for this yet. The controller's own timing is in the *Time models stayed disabled* table below (from the stored interventions), and `scripts/measure_recovery.py` (PR #104) measures detection and recovery per fault. The real-Qwen hang run took 186 s to disable, which misses this target."
-          },
-          "id": 27,
-          "gridPos": {
-            "x": 0,
-            "y": 60,
-            "w": 24,
-            "h": 4
-          }
         }
       ],
-      "id": 23,
+      "id": 25,
       "gridPos": {
         "x": 0,
-        "y": 51,
+        "y": 60,
         "w": 24,
         "h": 1
       }
@@ -1747,21 +1769,18 @@
           },
           "options": {
             "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull"
-              ]
+              "displayMode": "list",
+              "placement": "bottom"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "id": 29,
+          "id": 30,
           "gridPos": {
             "x": 0,
-            "y": 65,
+            "y": 70,
             "w": 8,
             "h": 8
           }
@@ -1808,21 +1827,18 @@
           },
           "options": {
             "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull"
-              ]
+              "displayMode": "list",
+              "placement": "bottom"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "id": 30,
+          "id": 31,
           "gridPos": {
             "x": 8,
-            "y": 65,
+            "y": 70,
             "w": 8,
             "h": 8
           }
@@ -1880,21 +1896,18 @@
           },
           "options": {
             "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull"
-              ]
+              "displayMode": "list",
+              "placement": "bottom"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "id": 31,
+          "id": 32,
           "gridPos": {
             "x": 16,
-            "y": 65,
+            "y": 70,
             "w": 8,
             "h": 8
           }
@@ -1940,21 +1953,18 @@
           },
           "options": {
             "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull"
-              ]
+              "displayMode": "list",
+              "placement": "bottom"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "id": 32,
+          "id": 33,
           "gridPos": {
             "x": 0,
-            "y": 73,
+            "y": 78,
             "w": 8,
             "h": 8
           }
@@ -2000,21 +2010,18 @@
           },
           "options": {
             "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull"
-              ]
+              "displayMode": "list",
+              "placement": "bottom"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "id": 33,
+          "id": 34,
           "gridPos": {
             "x": 8,
-            "y": 73,
+            "y": 78,
             "w": 8,
             "h": 8
           }
@@ -2082,30 +2089,27 @@
           },
           "options": {
             "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull"
-              ]
+              "displayMode": "list",
+              "placement": "bottom"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "id": 34,
+          "id": 35,
           "gridPos": {
             "x": 16,
-            "y": 73,
+            "y": 78,
             "w": 8,
             "h": 8
           }
         }
       ],
-      "id": 28,
+      "id": 29,
       "gridPos": {
         "x": 0,
-        "y": 64,
+        "y": 69,
         "w": 24,
         "h": 1
       }
@@ -2165,10 +2169,10 @@
               "showLegend": false
             }
           },
-          "id": 36,
+          "id": 37,
           "gridPos": {
             "x": 0,
-            "y": 82,
+            "y": 87,
             "w": 12,
             "h": 6
           }
@@ -2225,71 +2229,8 @@
           },
           "options": {
             "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull"
-              ]
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "id": 37,
-          "gridPos": {
-            "x": 12,
-            "y": 82,
-            "w": 12,
-            "h": 6
-          }
-        },
-        {
-          "type": "timeseries",
-          "title": "Controller interventions",
-          "description": "Disabled, re-enabled, rolled back and operator actions. The same events are marked on every graph.",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-              },
-              "refId": "A",
-              "expr": "sum by (action, model) (increase(gateway_controller_interventions_total[$__interval]))",
-              "legendFormat": "{{action}} {{model}}",
-              "instant": false,
-              "range": true
-            }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "unit": "short",
-              "custom": {
-                "lineWidth": 1,
-                "fillOpacity": 25,
-                "showPoints": "never",
-                "spanNulls": false,
-                "stacking": {
-                  "mode": "normal",
-                  "group": "A"
-                },
-                "drawStyle": "bars"
-              },
-              "min": 0
-            },
-            "overrides": []
-          },
-          "options": {
-            "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull"
-              ]
+              "displayMode": "list",
+              "placement": "bottom"
             },
             "tooltip": {
               "mode": "multi",
@@ -2298,10 +2239,61 @@
           },
           "id": 38,
           "gridPos": {
-            "x": 0,
-            "y": 88,
+            "x": 12,
+            "y": 87,
             "w": 12,
-            "h": 7
+            "h": 6
+          }
+        },
+        {
+          "interval": "1m",
+          "type": "timeseries",
+          "title": "Controller interventions",
+          "description": "Disabled, re-enabled, rolled back and operator actions. The same events are marked on every graph.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "postgres"
+              },
+              "refId": "A",
+              "format": "time_series",
+              "rawQuery": true,
+              "editorMode": "code",
+              "rawSql": "SELECT $__timeGroupAlias(at, $__interval), action || ' ' || backend AS metric, count(*) AS value FROM interventions WHERE $__timeFilter(at) GROUP BY 1, 2 ORDER BY 1"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "min": 0,
+              "custom": {
+                "drawStyle": "bars",
+                "fillOpacity": 60,
+                "stacking": {
+                  "mode": "normal",
+                  "group": "A"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "id": 39,
+          "gridPos": {
+            "x": 0,
+            "y": 93,
+            "w": 12,
+            "h": 8
           }
         },
         {
@@ -2355,10 +2347,10 @@
               ]
             }
           },
-          "id": 39,
+          "id": 40,
           "gridPos": {
             "x": 12,
-            "y": 88,
+            "y": 93,
             "w": 3,
             "h": 7
           }
@@ -2406,10 +2398,10 @@
               }
             }
           ],
-          "id": 40,
+          "id": 41,
           "gridPos": {
             "x": 15,
-            "y": 88,
+            "y": 93,
             "w": 9,
             "h": 7
           }
@@ -2432,7 +2424,7 @@
               "format": "table",
               "rawQuery": true,
               "editorMode": "code",
-              "rawSql": "WITH e AS (SELECT at, backend, action, lead(at) OVER (PARTITION BY backend ORDER BY at) AS next_at, lead(action) OVER (PARTITION BY backend ORDER BY at) AS next_action FROM interventions) SELECT at AS time, backend, action AS disabled_by, next_action AS ended_by, round(extract(epoch FROM next_at - at)::numeric, 1) AS seconds_disabled FROM e WHERE action IN ('disabled', 'operator_disabled') AND next_at IS NOT NULL AND $__timeFilter(at) ORDER BY at DESC LIMIT 100"
+              "rawSql": "WITH e AS (SELECT at, backend, action, lead(at) OVER (PARTITION BY backend ORDER BY at) AS next_at, lead(action) OVER (PARTITION BY backend ORDER BY at) AS next_action FROM interventions) SELECT at AS time, backend, round(extract(epoch FROM next_at - at)::numeric, 1) AS seconds_disabled, action AS disabled_by, next_action AS ended_by FROM e WHERE action IN ('disabled', 'operator_disabled') AND next_at IS NOT NULL AND $__timeFilter(at) ORDER BY at DESC LIMIT 100"
             }
           ],
           "fieldConfig": {
@@ -2442,10 +2434,10 @@
           "options": {
             "showHeader": true
           },
-          "id": 41,
+          "id": 42,
           "gridPos": {
             "x": 0,
-            "y": 95,
+            "y": 101,
             "w": 12,
             "h": 8
           }
@@ -2478,19 +2470,19 @@
           "options": {
             "showHeader": true
           },
-          "id": 42,
+          "id": 43,
           "gridPos": {
             "x": 12,
-            "y": 95,
+            "y": 101,
             "w": 12,
             "h": 8
           }
         }
       ],
-      "id": 35,
+      "id": 36,
       "gridPos": {
         "x": 0,
-        "y": 81,
+        "y": 86,
         "w": 24,
         "h": 1
       }
@@ -2574,21 +2566,18 @@
           },
           "options": {
             "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull"
-              ]
+              "displayMode": "list",
+              "placement": "bottom"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "id": 44,
+          "id": 45,
           "gridPos": {
             "x": 0,
-            "y": 104,
+            "y": 110,
             "w": 8,
             "h": 8
           }
@@ -2634,21 +2623,18 @@
           },
           "options": {
             "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull"
-              ]
+              "displayMode": "list",
+              "placement": "bottom"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "id": 45,
+          "id": 46,
           "gridPos": {
             "x": 8,
-            "y": 104,
+            "y": 110,
             "w": 8,
             "h": 8
           }
@@ -2694,21 +2680,18 @@
           },
           "options": {
             "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull"
-              ]
+              "displayMode": "list",
+              "placement": "bottom"
             },
             "tooltip": {
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "id": 46,
+          "id": 47,
           "gridPos": {
             "x": 16,
-            "y": 104,
+            "y": 110,
             "w": 8,
             "h": 8
           }
@@ -2760,10 +2743,10 @@
               ]
             }
           },
-          "id": 47,
+          "id": 48,
           "gridPos": {
             "x": 0,
-            "y": 112,
+            "y": 118,
             "w": 4,
             "h": 4
           }
@@ -2815,10 +2798,10 @@
               ]
             }
           },
-          "id": 48,
+          "id": 49,
           "gridPos": {
             "x": 4,
-            "y": 112,
+            "y": 118,
             "w": 4,
             "h": 4
           }
@@ -2846,6 +2829,8 @@
           ],
           "fieldConfig": {
             "defaults": {
+              "decimals": 0,
+              "min": 0,
               "custom": {
                 "drawStyle": "bars",
                 "fillOpacity": 60,
@@ -2863,10 +2848,10 @@
               "placement": "bottom"
             }
           },
-          "id": 49,
+          "id": 50,
           "gridPos": {
             "x": 8,
-            "y": 112,
+            "y": 118,
             "w": 12,
             "h": 8
           }
@@ -2907,10 +2892,10 @@
               "displayMode": "list"
             }
           },
-          "id": 50,
+          "id": 51,
           "gridPos": {
             "x": 0,
-            "y": 120,
+            "y": 126,
             "w": 12,
             "h": 8
           }
@@ -2943,34 +2928,19 @@
           "options": {
             "showHeader": true
           },
-          "id": 51,
-          "gridPos": {
-            "x": 12,
-            "y": 120,
-            "w": 8,
-            "h": 8
-          }
-        },
-        {
-          "type": "text",
-          "title": "1st vs 2nd Jev",
-          "options": {
-            "mode": "markdown",
-            "content": "The gateway makes **one** Jev call per request, before the model answers. It returns the route and the intent together. There is no second Jev call that scores the model's reply.\n\nWhat is compared today is the model's intent label against Jev's intent answer: see *Qwen vs Jev intent agreement* above. The standard-first vs complex-first comparison needs the order-swap run (PRs #89, #90)."
-          },
           "id": 52,
           "gridPos": {
-            "x": 0,
-            "y": 128,
-            "w": 24,
-            "h": 4
+            "x": 12,
+            "y": 126,
+            "w": 12,
+            "h": 8
           }
         }
       ],
-      "id": 43,
+      "id": 44,
       "gridPos": {
         "x": 0,
-        "y": 103,
+        "y": 109,
         "w": 24,
         "h": 1
       }
@@ -3021,11 +2991,8 @@
           },
           "options": {
             "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull"
-              ]
+              "displayMode": "list",
+              "placement": "bottom"
             },
             "tooltip": {
               "mode": "multi",
@@ -3035,83 +3002,59 @@
           "id": 54,
           "gridPos": {
             "x": 0,
-            "y": 133,
-            "w": 8,
+            "y": 135,
+            "w": 12,
             "h": 8
           }
         },
         {
+          "interval": "1m",
           "type": "timeseries",
           "title": "Operator actions",
           "description": "",
           "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
           },
           "targets": [
             {
               "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
+                "type": "grafana-postgresql-datasource",
+                "uid": "postgres"
               },
               "refId": "A",
-              "expr": "sum by (action, model) (increase(gateway_controller_interventions_total{action=~\"operator_.*\"}[$__interval]))",
-              "legendFormat": "{{action}} {{model}}",
-              "instant": false,
-              "range": true
+              "format": "time_series",
+              "rawQuery": true,
+              "editorMode": "code",
+              "rawSql": "SELECT $__timeGroupAlias(at, $__interval), action || ' ' || backend AS metric, count(*) AS value FROM interventions WHERE $__timeFilter(at) AND action LIKE 'operator%' GROUP BY 1, 2 ORDER BY 1"
             }
           ],
           "fieldConfig": {
             "defaults": {
-              "unit": "short",
+              "decimals": 0,
+              "min": 0,
               "custom": {
-                "lineWidth": 1,
-                "fillOpacity": 25,
-                "showPoints": "never",
-                "spanNulls": false,
+                "drawStyle": "bars",
+                "fillOpacity": 60,
                 "stacking": {
                   "mode": "normal",
                   "group": "A"
-                },
-                "drawStyle": "bars"
-              },
-              "min": 0
+                }
+              }
             },
             "overrides": []
           },
           "options": {
             "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull"
-              ]
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "desc"
+              "displayMode": "list",
+              "placement": "bottom"
             }
           },
           "id": 55,
           "gridPos": {
-            "x": 8,
-            "y": 133,
-            "w": 8,
-            "h": 8
-          }
-        },
-        {
-          "type": "text",
-          "title": "What is exposed",
-          "options": {
-            "mode": "markdown",
-            "content": "Only port 8080 is published. Prometheus, Postgres and the gateway stay on the Compose network. Grafana is reached through the proxy at `/grafana`, as an anonymous **viewer**: no login, no editing. Postgres panels use a read-only database user."
-          },
-          "id": 56,
-          "gridPos": {
-            "x": 16,
-            "y": 133,
-            "w": 8,
+            "x": 12,
+            "y": 135,
+            "w": 12,
             "h": 8
           }
         }
@@ -3119,7 +3062,7 @@
       "id": 53,
       "gridPos": {
         "x": 0,
-        "y": 132,
+        "y": 134,
         "w": 24,
         "h": 1
       }

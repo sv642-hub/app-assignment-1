@@ -47,7 +47,7 @@ components:
     items:
       - built: React (Vite) build served by Caddy
       - built: Chat (the Playground)
-      - built: "Health: per-model window, Jev breaker, semantic monitor, recent requests, usage, chaos walkthrough"
+      - built: "Health: per-model window, Jev summary, interventions, recent requests, usage, chaos walkthrough"
       - built: "Jev screen: mode, breaker, usage, intent agreement"
       - todo: Deployments screen
       - todo: Chaos mode screen
@@ -137,7 +137,7 @@ components:
       - built: Request, error and controller metrics
       - built: Semantic and Jev cost metrics
       - built: Alert rules, tested with promtool
-      - built: Grafana dashboard, viewer only
+      - built: Grafana summary and full dashboard, viewer only
       - todo: vLLM targets; Qwen cost
 
   postgres:
