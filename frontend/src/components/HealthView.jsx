@@ -2,10 +2,102 @@ const ACTION_LABELS = {
   disabled: "disabled",
   "re-enabled": "re-enabled",
   kept_last_backend: "kept last backend",
+  operator_disabled: "disabled by operator",
+  operator_enabled: "enabled by operator",
+  rolled_back: "rolled back",
 };
+
+const RELEASE_STATUS = {
+  stable: { label: "Stable", tone: "good" },
+  watching: { label: "Watching", tone: "neutral" },
+  rolled_back: { label: "Rolled back", tone: "watch" },
+};
+
+function ReleasesCard({ releases, history }) {
+  const log = [...(history ?? [])].reverse();
+  return (
+    <section className="card">
+      <h2>Releases</h2>
+      <p className="muted small">The version each model serves. After a deploy the controller watches the model; if it crosses the failure threshold before the watch ends, the controller rolls it back to the last good version instead of disabling it. Versions change mock settings only.</p>
+      <div className="table-scroll">
+        <table className="log" aria-label="Releases">
+          <thead>
+            <tr>
+              <th scope="col">Model</th>
+              <th scope="col">Version</th>
+              <th scope="col">Status</th>
+              <th scope="col">Rollback target</th>
+            </tr>
+          </thead>
+          <tbody>
+            {releases.map((r) => {
+              const status = RELEASE_STATUS[r.status] ?? { label: r.status, tone: "neutral" };
+              return (
+                <tr key={r.name}>
+                  <td className="mono">{r.name}</td>
+                  <td className="mono">{r.version}</td>
+                  <td>
+                    <span className={`pill pill-${status.tone}`}>{status.label}</span>
+                    {r.status === "watching" && <span className="muted small"> {r.watched_samples} of {r.watch_samples} calls</span>}
+                  </td>
+                  <td className="mono">{r.rollback_target ?? "none"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {log.length > 0 && (
+        <div className="table-scroll">
+          <table className="log" aria-label="Release history">
+            <thead>
+              <tr>
+                <th scope="col">Time</th>
+                <th scope="col">Model</th>
+                <th scope="col">Change</th>
+                <th scope="col">By</th>
+                <th scope="col">Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {log.map((e) => (
+                <tr key={`${e.at}-${e.backend}-${e.action}`}>
+                  <td className="mono">{formatTime(e.at)}</td>
+                  <td className="mono">{e.backend}</td>
+                  <td>
+                    {e.action === "confirmed" ? `confirmed ${e.version}` : `${e.action === "deployed" ? "deployed" : "rolled back to"} ${e.version}`}
+                    {e.from_version && e.action !== "confirmed" && <span className="muted small"> (was {e.from_version})</span>}
+                  </td>
+                  <td>{e.actor}</td>
+                  <td>{e.reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
 
 function percent(value) {
   return `${Math.round(value * 100)}%`;
+}
+
+// One decimal unless it is a whole number, so a rate just above a threshold
+// (15.2% against 15%) does not round to look equal to it.
+function finePercent(value) {
+  const tenths = Math.round(value * 1000) / 10;
+  return Number.isInteger(tenths) ? `${tenths}%` : `${tenths.toFixed(1)}%`;
+}
+
+// Rerouted replies: how many differ from Jev, and how many had no Jev answer.
+function reroutedText(m) {
+  const scoredRerouted = m.rerouted_agreements + m.rerouted_disagreements;
+  const parts = [];
+  if (scoredRerouted) parts.push(`${m.rerouted_disagreements} of ${scoredRerouted} differ`);
+  if (m.rerouted_no_signal) parts.push(`${m.rerouted_no_signal} without a Jev answer`);
+  return parts.join("; ") || "none";
 }
 
 function formatTime(iso) {
@@ -17,8 +109,8 @@ function formatTime(iso) {
 export function describeModels(health) {
   const monitors = Object.fromEntries(health.monitor.map((m) => [m.name, m]));
   const models = health.backends.map((b) => {
-    const m = monitors[b.name] ?? { samples: 0, format_failures: 0, call_errors: 0, failure_rate: null };
-    const usable = b.available && !m.disabled_by_controller;
+    const m = monitors[b.name] ?? { samples: 0, format_failures: 0, call_errors: 0, failure_rate: null, answering: false };
+    const usable = b.available && !m.disabled_by_controller && !m.disabled_by_operator;
     return { ...b, ...m, usable };
   });
   return models.map((model) => {
@@ -43,11 +135,50 @@ function breakerText(breaker) {
   return "The Jev cool-off has ended. The next message tries Jev again. Until a call succeeds, keyword rules route messages.";
 }
 
+const SEMANTIC_PILLS = {
+  normal: { tone: "good", text: "Normal" },
+  above_baseline: { tone: "bad", text: "Above baseline" },
+  collecting: { tone: "neutral", text: "Collecting" },
+  no_baseline: { tone: "neutral", text: "No baseline set" },
+  low_coverage: { tone: "neutral", text: "Low coverage" },
+};
+
+function scored(model) {
+  return model.agreements + model.disagreements;
+}
+
+// One sentence per model whose disagreement with Jev is above the baseline,
+// plus what the controller did about it.
+function semanticText(health, models) {
+  const rules = health.semantic_rules;
+  const disabled = new Set(models.filter((m) => m.disabled_by_controller).map((m) => m.name));
+  return (health.semantic ?? [])
+    .filter((m) => m.status === "above_baseline")
+    .map((m) => {
+      const found = `${m.name}'s intent differs from Jev's on ${finePercent(m.disagreement_rate)} of recent replies (${m.disagreements} of ${scored(m)}), above the ${finePercent(rules.baseline_disagreement_rate)} baseline.`;
+      if (!rules.actions_enabled) return `${found} These replies pass the format check, and semantic actions are off, so the controller takes no action.`;
+      // The model-down sentence already says the controller disabled it.
+      if (disabled.has(m.name)) return found;
+      // The controller only acts while the other model is serving and has
+      // answered recently without failing. The gateway reports that as
+      // `answering`, so the banner never works it out from a rounded rate.
+      const other = models.find((o) => o.name !== m.name);
+      if (!other?.usable) return `${found} The controller keeps it in service because the other model is not available.`;
+      if (!other.answering) {
+        return `${found} The controller keeps it in service until ${other.name} has answered recently without failing.`;
+      }
+      return `${found} The controller takes it out of service on its next reply.`;
+    })
+    .join(" ");
+}
+
 function bannerFor(health, models) {
   // `status` is about the models only. A skipped Jev is a neutral note: the
   // models still answer, and keyword rules pick the route.
   const jev = breakerText(health.jev_breaker);
+  const semantic = semanticText(health, models);
   if (health.status === "ok") {
+    if (semantic) return { tone: "bad", title: "Possible wrong intents", text: [semantic, jev].filter(Boolean).join(" ") };
     if (jev) return { tone: "note", title: "Keyword rules are routing while Jev is skipped", text: `Both models are serving. ${jev}` };
     return { tone: "good", title: "All systems normal", text: "Both models are serving their routes. No controller action is in effect." };
   }
@@ -56,16 +187,97 @@ function bannerFor(health, models) {
     return { tone: "bad", title: "No model available", text: "Chat requests return an error until a model comes back." };
   }
   const up = models.find((m) => m.usable);
-  const parts = down.map((m) =>
-    m.disabled_by_controller
-      ? `${m.name} was disabled by the controller. ${m.route[0].toUpperCase() + m.route.slice(1)} requests are going to ${up.name} until the cooldown ends.`
-      : `${m.name} is marked unavailable in the config. Its requests are going to ${up.name}.`,
-  );
+  const parts = down.map((m) => {
+    const route = m.route[0].toUpperCase() + m.route.slice(1);
+    if (m.disabled_by_operator) return `${m.name} was disabled by an operator. ${route} requests are going to ${up.name} until an operator enables it.`;
+    if (!m.disabled_by_controller) return `${m.name} is marked unavailable in the config. Its requests are going to ${up.name}.`;
+    const moved = `${m.name} was disabled by the controller. ${route} requests are going to ${up.name} until the cooldown ends.`;
+    // Disabled only for its intents: it still answers when the other model fails.
+    return m.disabled_for === "semantic" ? `${moved} If ${up.name} fails a request, the gateway still sends it to ${m.name} as a last resort.` : moved;
+  });
+  if (semantic) parts.push(semantic);
   if (jev) parts.push(jev);
   return { tone: "bad", title: "Degraded", text: parts.join(" ") };
 }
 
-function JevCard({ breaker }) {
+function SemanticCard({ semantic, rules }) {
+  const baseline = rules.baseline_disagreement_rate;
+  return (
+    <section className="card" aria-label="Semantic monitor">
+      <h2>Semantic monitor</h2>
+      <p className="muted small">
+        A model can give a well-formed reply for the wrong intent, which the format check cannot see. For each reply that passed the format check, the
+        monitor compares the model&apos;s intent with Jev&apos;s, over the last {rules.window} replies per model.{" "}
+        {rules.actions_enabled
+          ? "Semantic actions are on: when a model is above the baseline, the controller takes it out of service, with the same cooldown and last-model rule as format failures."
+          : "Semantic actions are off, so it only reports and the controller takes no action."}
+      </p>
+      <div className="table-scroll">
+        <table className="log" aria-label="Semantic monitor">
+          <thead>
+            <tr>
+              <th scope="col">Model</th>
+              <th scope="col">Status</th>
+              <th scope="col">Differs from Jev</th>
+              <th scope="col">Had a Jev answer</th>
+              <th scope="col">Rerouted traffic</th>
+            </tr>
+          </thead>
+          <tbody>
+            {semantic.map((m) => {
+              const pill = SEMANTIC_PILLS[m.status] ?? { tone: "neutral", text: m.status };
+              return (
+                <tr key={m.name}>
+                  <td className="mono">{m.name}</td>
+                  <td>
+                    <span className={`pill pill-${pill.tone}`}>{pill.text}</span>
+                  </td>
+                  <td>{m.disagreement_rate === null ? "no data yet" : `${finePercent(m.disagreement_rate)} (${m.disagreements} of ${scored(m)})`}</td>
+                  <td>{m.coverage === null ? "no data yet" : `${percent(m.coverage)} (${scored(m)} of ${m.samples})`}</td>
+                  <td>{reroutedText(m)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="muted small">
+        {baseline === null
+          ? "No healthy baseline is set yet, so rates are shown but never flagged. It should come from dev data."
+          : `Flagged above ${finePercent(baseline + rules.alert_margin)}: the ${finePercent(baseline)} baseline plus a ${finePercent(rules.alert_margin)} margin.`}{" "}
+        A model needs {rules.min_samples} scored replies first, and at least {percent(rules.min_coverage)} of its replies need a Jev answer, so a Jev outage
+        does not look like a healthy model. In mock mode, Jev and both models use the same keyword matcher, so a healthy model always agrees.
+      </p>
+      {semantic.some((m) => m.not_compared) ? (
+        <p className="muted small">
+          Not compared since the gateway started:{" "}
+          {semantic
+            .filter((m) => m.not_compared)
+            .map((m) => `${m.not_compared} from ${m.name}`)
+            .join(", ")}
+          . One of Jev and the model is a mock and the other is real, so their intents differ by design and would say nothing about the model.
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+function usageText(usage) {
+  if (!usage.answered_calls) return "none yet";
+  return `${usage.input_tokens.toLocaleString()} in, ${usage.output_tokens.toLocaleString()} out (${usage.answered_calls} calls)`;
+}
+
+function costText(usage) {
+  const cost = usage.estimated_cost_usd;
+  if (cost === null) return "price not set";
+  if (cost === 0) return "$0";
+  // Four decimals would show a cost under $0.0001 as $0.0000, so show three
+  // significant figures instead.
+  if (cost < 0.0001) return "$" + cost.toFixed(Math.ceil(-Math.log10(cost)) + 2);
+  return "$" + cost.toFixed(4);
+}
+
+function JevCard({ breaker, usage }) {
   const pill = BREAKER_PILLS[breaker.state];
   return (
     <section className="card model-card" aria-label="Jev router">
@@ -93,15 +305,46 @@ function JevCard({ breaker }) {
           <div className="muted">Cool-off</div>
           <strong>{breaker.cooldown_seconds} s</strong>
         </div>
+        {usage && (
+          <>
+            <div className="stat">
+              <div className="muted">Tokens since start</div>
+              <strong>{usageText(usage)}</strong>
+            </div>
+            <div className="stat">
+              <div className="muted">Estimated cost</div>
+              <strong>{costText(usage)}</strong>
+            </div>
+          </>
+        )}
       </div>
+      {usage?.mocked && <p className="muted small">Mock Jev reports no tokens, so these stay at 0 until real Jev is on.</p>}
     </section>
   );
 }
 
+// What the usage table can and cannot show, for mock or real Jev and Qwen.
+function usageNote(health) {
+  const jev = health.jev_mode === "real";
+  const qwen = health.mode === "real";
+  if (!jev && !qwen) {
+    return "Mock mode: token usage and estimated cost are unavailable. No model-provider inference calls are made.";
+  }
+  return [
+    jev ? "Jev calls go to TypeSafe; their tokens and cost are on the Jev router card." : "Jev is a mock.",
+    qwen
+      ? "The Qwen models run on vLLM. Their token usage is not reported yet, and their cost is GPU time, which is not measured."
+      : "The Qwen models are mocks, so their token usage and cost are unavailable.",
+  ].join(" ");
+}
+
 function ModelCard({ model, threshold }) {
   const rate = model.failure_rate ?? 0;
-  const status = model.disabled_by_controller ? "Disabled" : model.available ? "Serving" : "Unavailable";
-  const extra = model.disabled_by_controller
+  const disabled = model.disabled_by_controller || model.disabled_by_operator;
+  const status = disabled ? "Disabled" : model.available ? "Serving" : "Unavailable";
+  const extra = model.disabled_by_operator
+    ? ["Re-enables", "when an operator enables it"]
+    : model.disabled_by_controller
     ? ["Re-enables in", `${Math.ceil(model.disabled_for_seconds ?? 0)} s`]
     : model.covering.length
       ? ["Also serving", `${model.covering.join(", ")} (rerouted)`]
@@ -192,8 +435,12 @@ function HealthBody({ health }) {
         {models.map((model) => (
           <ModelCard key={model.name} model={model} threshold={rules.failure_threshold} />
         ))}
-        {health.jev_breaker && <JevCard breaker={health.jev_breaker} />}
+        {health.jev_breaker && <JevCard breaker={health.jev_breaker} usage={health.jev_usage} />}
       </div>
+
+      {health.semantic && health.semantic_rules && <SemanticCard semantic={health.semantic} rules={health.semantic_rules} />}
+
+      {health.releases?.length > 0 && <ReleasesCard releases={health.releases} history={health.release_history} />}
 
       <section className="card">
         <h2>Recent completed requests</h2>
@@ -262,7 +509,10 @@ function HealthBody({ health }) {
 
       <section className="card">
         <h2>Usage since gateway startup</h2>
-        <p>Mock mode: token usage and estimated cost are unavailable. No model-provider inference calls are made. Infrastructure costs are not measured; these figures cannot establish routing savings.</p>
+        <p>
+          {usageNote(health)}{" "}
+          Infrastructure costs are not measured; these figures cannot establish routing savings.
+        </p>
         <p className="muted small">Totals include fallback attempts and do not expire with the monitoring window. A completed call may still fail the format check. In-flight or cancelled calls can leave attempts greater than completed plus failed calls. Resets on restart.</p>
         <div className="table-scroll">
           <table className="log" aria-label="Usage since gateway startup">
@@ -297,7 +547,10 @@ function HealthBody({ health }) {
           <li>Send it once more: qwen3-4b answers. Health shows the format failures, the disabled small model and an intervention.</li>
           <li>Finish within {rules.cooldown_seconds} s. After the cooldown, the small model is enabled again and fails again.</li>
         </ol>
-        <p>This tests format failures and rerouting only. A wrong answer that passes the format check is not detected.</p>
+        <p>
+          This tests format failures and rerouting only. A wrong answer that passes the format check is not caught by the controller. The semantic monitor
+          above reports it: the README&apos;s label-swap override shows how.
+        </p>
       </section>
 
       <section className="card">

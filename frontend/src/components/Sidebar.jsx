@@ -4,7 +4,16 @@ const SCREENS = [
   { id: "chat", label: "Chat" },
   { id: "health", label: "Health" },
 ];
-const COMING_SOON = ["Jev", "Dashboard"];
+
+// Jev and Qwen are each mock or real (health.jev_mode and health.mode).
+function modeText(health) {
+  const jev = health?.jev_mode === "real";
+  const qwen = health?.mode === "real";
+  if (jev && qwen) return "Real Jev (TypeSafe) and real Qwen (vLLM)";
+  if (jev) return "Real Jev (TypeSafe); Qwen is simulated";
+  if (qwen) return "Real Qwen (vLLM); Jev is simulated";
+  return "Mock mode: Jev and Qwen are simulated";
+}
 
 export default function Sidebar({ view, onNavigate, onNewChat, health, healthError }) {
   const degraded = health?.status === "degraded";
@@ -45,20 +54,20 @@ export default function Sidebar({ view, onNavigate, onNewChat, health, healthErr
             )}
           </button>
         ))}
-        {COMING_SOON.map((label) => (
-          <button key={label} type="button" className="nav-item" disabled>
-            {label}
-            <span className="soon">soon</span>
-          </button>
-        ))}
       </nav>
+
+      <p className="muted sidebar-note">
+        Jev normally picks the route. Open Show details on a reply to see which router handled it.
+      </p>
 
       <div className="status-card">
         <span className="status-line">
           <span className={`dot dot-${status.tone}`} aria-hidden="true" />
           {status.text}
         </span>
-        <span className="muted">Mock mode: Jev and Qwen are simulated</span>
+        <span className="muted">
+          {modeText(health)}
+        </span>
       </div>
     </aside>
   );

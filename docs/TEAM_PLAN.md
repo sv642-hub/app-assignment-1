@@ -38,7 +38,12 @@ Final project for DSAN 6700. This file records who owns what. Owners decide and 
 
 ## Probe gate
 
-The probe must beat the model's own token-probability confidence (AUROC on the dev set) by **Friday, November 20, 2026**. If it does not, it is reported as an offline result and stays out of the live system.
+The probe must beat the model's own token-probability confidence (AUROC on the dev set) within **one week after both of these are ready**:
+
+- Qwen3-1.7B runs on the GPU host, so the probe can read real activations.
+- The Banking77 development split exists.
+
+If it does not, it is reported as an offline result and stays out of the live system. The earlier date, Friday, November 20, 2026, was moved because the GPU host is not deployed yet, so the probe cannot be tested.
 
 ## Diagrams
 

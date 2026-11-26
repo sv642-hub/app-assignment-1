@@ -229,12 +229,13 @@ def test_jev_timeout_has_its_own_label(settings):
 
 
 def test_message_reply_and_id_never_appear_in_metrics(settings):
-    message = "Zebraquokka 4111 my card has not arrived"
+    # Hyphens, because a bare "4111" can appear inside a metric's timestamp.
+    message = "Zebraquokka 4111-1111-1111-1111 my card has not arrived"
     with TestClient(create_app(settings)) as client:
         result = client.post("/v1/chat", json={"message": message}).json()
         text = client.get("/metrics").text
     assert "Zebraquokka" not in text
-    assert "4111" not in text
+    assert "4111-1111" not in text
     assert result["reply"] not in text
     assert result["id"] not in text
 

@@ -1,0 +1,114 @@
+# GPU host only: the two Qwen models served by vLLM. This is its own Compose
+# project on the Jetstream2 GPU instance, not an override of compose.yml.
+#
+#   docker compose -f compose.gpu.yml --env-file env/gpu.env -p smart-gateway-gpu up -d --wait
+#
+# Each server binds only to the GPU host's private IP (VLLM_BIND_IP in
+# env/gpu.env), so only the CPU instance on the private network can reach it.
+# Compose refuses to start without VLLM_BIND_IP instead of binding to 0.0.0.0.
+# The security group must also allow 8001-8002 from the CPU instance only.
+#
+# Every /v1 request also needs the key VLLM_API_KEY from env/gpu.env, sent as
+# "Authorization: Bearer <key>". Compose refuses to start without it. vLLM
+# reads it from the environment, so it is not on the process command line.
+# /health and /metrics stay open (vLLM guards only /v1), so the healthcheck and
+# a Prometheus scrape need no key. The network rules stay the main protection;
+# the key covers a security group that gets loosened by mistake.
+#
+# HF_HUB_OFFLINE: set it to 1 in env/gpu.env after the first download, so later
+# starts load from MODEL_CACHE_DIR without contacting Hugging Face.
+#
+# The Hugging Face cache (weights and tokenizers, about 12 GB) lives in a host
+# directory, MODEL_CACHE_DIR in env/gpu.env, also required. On Jetstream2 use
+# an attached volume such as /media/volume/gpu-models: the vLLM image alone
+# takes about 37 GB, so the instance's 58 GB root disk cannot hold the models.
+#
+# Pinned: vLLM v0.33.0 and each model's Hugging Face commit. Change a pin in a
+# pull request, not on the host. --served-model-name matches `name` in
+# config/backends.json.
+#
+# --max-model-len 4096: the system prompt is 1,644 tokens with the pinned
+# tokenizer, a 2,000-character message about 500 and a 4,000-character reply
+# about 750, so the longest request is about 3,000 tokens.
+#
+# Sized for the Jetstream2 GRID A100X-20C vGPU (20.0 GiB). --gpu-memory-utilization
+# is a share of the full 20.0 GiB, but the vGPU reserves about 2.16 GiB that
+# nvidia-smi does not show, so CUDA sees only 17.84 GiB free before anything
+# starts. vllm-large starts second and needs its whole share free at that
+# point. 0.33 (6.6 GiB) + 0.54 (10.8 GiB) = 17.4 GiB fits in 17.84; the
+# earlier 0.35 + 0.55 (18.0 GiB) did not, and vllm-large failed to start.
+# Measured for vllm-small at 0.35: weights 3.22 GiB, peak activation 0.66,
+# CUDA graphs 0.05, KV cache 3.04. Measured at 0.33 + 0.54 (2026-11-23): KV
+# cache 3.15 GiB small and 3.01 GiB large (21,872 tokens); nvidia-smi showed
+# 18,630 of 20,480 MiB used.
+#
+# The margin is tiny: vllm-large started with 10.82 GiB free against the
+# 10.8 GiB it asks for. depends_on orders only the first start. If one
+# container restarts on its own while the other runs, its memory check may
+# fail. Restart both together (down, then up) rather than one at a time. If
+# vllm-large keeps failing its check, lower vllm-small to 0.32 (not tested).
+# On a GPU without this reservation there is room to raise both shares.
+# --max-num-seqs 8 (default 256) keeps activation and CUDA-graph memory small,
+# which leaves more for the KV cache; a demo never runs 8 requests at once
+# per model. vLLM refuses to start unless one 4,096-token request fits in the
+# KV cache (0.44 GiB small, 0.56 GiB large). If vllm-small still does not
+# start, add --enforce-eager to it (less memory, somewhat slower).
+
+x-vllm: &vllm
+  image: vllm/vllm-openai:v0.33.0@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e
+  environment:
+    VLLM_API_KEY: "${VLLM_API_KEY:?set VLLM_API_KEY in env/gpu.env (openssl rand -hex 32)}"
+    HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-0}"
+  volumes:
+    - "${MODEL_CACHE_DIR:?set MODEL_CACHE_DIR in env/gpu.env to the model directory}:/root/.cache/huggingface"
+  ipc: host
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: 1
+            capabilities: [gpu]
+  healthcheck:
+    test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+    interval: 15s
+    timeout: 5s
+    retries: 5
+    # The first start downloads the weights into MODEL_CACHE_DIR.
+    start_period: 900s
+  # Docker's own restart at boot starts both servers at once, without
+  # depends_on, so after an unshelve one can fail the memory check. The
+  # systemd unit in deploy/autostart/ starts them in order instead (README,
+  # "Start at boot").
+  restart: unless-stopped
+
+services:
+  vllm-small:
+    <<: *vllm
+    command:
+      - --model=Qwen/Qwen3-1.7B
+      - --revision=70d244cc86ccca08cf5af4e1e306ecf908b1ad5e
+      - --served-model-name=qwen3-1.7b
+      - --max-model-len=4096
+      - --max-num-seqs=8
+      - --gpu-memory-utilization=0.33
+    ports:
+      - "${VLLM_BIND_IP:?set VLLM_BIND_IP in env/gpu.env to the GPU host private IP}:8001:8000"
+
+  # Starts after vllm-small is healthy, so its memory check sees the small
+  # model's share already taken.
+  vllm-large:
+    <<: *vllm
+    command:
+      - --model=Qwen/Qwen3-4B
+      - --revision=1cfa9a7208912126459214e8b04321603b3df60c
+      - --served-model-name=qwen3-4b
+      - --max-model-len=4096
+      - --max-num-seqs=8
+      - --gpu-memory-utilization=0.54
+    ports:
+      - "${VLLM_BIND_IP:?set VLLM_BIND_IP in env/gpu.env to the GPU host private IP}:8002:8000"
+    depends_on:
+      vllm-small:
+        condition: service_healthy
+

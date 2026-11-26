@@ -17,7 +17,7 @@ from typing import NamedTuple
 
 SEED = 6700
 DEV_SHARE = 0.2
-SPLIT_PATH = Path("data/banking77_split.csv")
+SPLIT_PATH = Path(__file__).resolve().parents[2] / "data" / "banking77_split.csv"
 SPLITS = ("train", "dev")
 
 
@@ -29,7 +29,20 @@ class Example(NamedTuple):
 
 
 def normalize(text: str) -> str:
-    return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
+    """The key two messages share when they count as the same message.
+
+    NFKC, casefold, dashes to spaces, other punctuation dropped (currency signs
+    are symbols, not punctuation, so they stay) and whitespace collapsed, so
+    "top-up" matches "top up" and "limit ?" matches "limit?".
+    """
+    chars = []
+    for char in unicodedata.normalize("NFKC", text).casefold():
+        category = unicodedata.category(char)
+        if category == "Pd":
+            chars.append(" ")
+        elif not category.startswith("P"):
+            chars.append(char)
+    return " ".join("".join(chars).split())
 
 
 def make_split(

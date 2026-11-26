@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import os
 from pathlib import Path
 
 import httpx
@@ -25,6 +26,11 @@ async def main() -> None:
     parser.add_argument("--base-url", required=True, help="Server URL without /v1")
     parser.add_argument("--model", required=True, help="Model name exposed by vLLM")
     parser.add_argument(
+        "--api-key",
+        default=os.environ.get("VLLM_API_KEY"),
+        help="vLLM API key (default: the VLLM_API_KEY environment variable)",
+    )
+    parser.add_argument(
         "--simulate",
         choices=("ok", "unavailable", "slow", "invalid_json"),
         help="Select a local stub response. Failure modes exit with an error.",
@@ -47,6 +53,9 @@ async def main() -> None:
         async with httpx.AsyncClient(
             base_url=base_url,
             params={"simulate": args.simulate} if args.simulate else None,
+            headers=(
+                {"Authorization": f"Bearer {args.api_key}"} if args.api_key else None
+            ),
             timeout=0.5 if args.simulate == "slow" else 60.0,
         ) as client:
             backend = VLLMBackend(

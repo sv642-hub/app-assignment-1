@@ -100,7 +100,8 @@ Yanzhen’s Qwen backends implement the existing `Backend` Protocol. Yanzhen and
 - An `unknown` reply has no policy facts and asks the customer to describe their banking problem, as the `Backend` Protocol docstring already requires (#24).
 - **Intents without a card:** the backend returns the intent, `reply=""` and `policy_facts=[]`, so it generates no text that would be thrown away.
   - The gateway first checks that the intent is one of the 67 recognized uncarded intents. It then inserts a fixed message that the demo does not cover that topic, so no reply invents policy. It discards any text a backend sends anyway.
-  - The gateway skips `check_reply` only in this case, because `check_reply` treats an empty reply as a format failure. Schema, label and policy-facts checks still run.
+  - The gateway skips `check_reply` only in this case, because `check_reply` treats an empty reply as a format failure. Schema and label checks still run.
+  - Policy facts sent anyway are dropped and counted in `gateway_uncarded_facts_dropped_total`, not failed. The first real test-set run (#109) showed that failing them disabled healthy models: 36–39% of replies failed this way, against the controller's 0.5 threshold.
 - **`reply_source`:** add separate values for a reply a real model generated and for the fixed uncarded-intent reply. Keep `policy_template` for the mock backends’ templates only.
 - `generate` raises a typed failure for a transport error, a timeout or invalid output (truncated or schema-invalid JSON), so the gateway can record distinct error codes. Exception messages must not contain provider message text, because the gateway logs the exception type.
 - Each call exposes the backend `version_id` and the token usage (`input_tokens`, `output_tokens`). `BackendReply` has neither field today, so agree where they go.
@@ -110,6 +111,7 @@ Yanzhen’s Qwen backends implement the existing `Backend` Protocol. Yanzhen and
 
 - **Deadlines:** add a configurable **total request deadline** (start at 45 seconds) with a **reserve for the alternate** (start at 15 seconds).
   - The first attempt gets the total, minus the reserve, minus the time already used (routing). After 2 seconds of routing, that is 28 seconds.
+  - When no other model is usable (the selected one is disabled or unavailable, or the alternate is), the one model that can answer gets all the time left. Holding back a reserve for a fallback that cannot run would only cut its chance short.
   - The alternate gets whatever time is left, with no minimum check. The first attempt’s budget already keeps the reserve for it. A check that “at least the reserve remains” would stop the alternate after every first-attempt timeout, because timers fire slightly late.
   - **First attempt timed out:** this is the model’s failure, whichever timer fires first (Yanzhen’s client timeout or the gateway’s budget). The gateway calls `record_error`, and the attempt counts as one outage sample. So a hung model still gets disabled.
   - **Alternate cut short by the time left:** the gateway records `deadline_exceeded`. It gives no sample in either direction, because the model got a shortened chance. Health shows a separate count of these.
