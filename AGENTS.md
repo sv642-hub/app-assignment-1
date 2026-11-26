@@ -20,6 +20,7 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 - `src/app_assignment_1/breaker.py`: the Jev circuit breaker; while it is open the gateway skips Jev and uses the rule router.
 - `src/app_assignment_1/backends.py`: `Backend` interface and `MockBackend` (the mock Qwen backends).
 - `src/app_assignment_1/intents.py`: keyword matching over the configured intents, shared by the mocks.
+- `src/app_assignment_1/banking77.py`: the Banking77 development split (`make_split`, `load_split`) for offline evaluation; dev is 20% of Banking77 train per intent, seeded.
 - `src/app_assignment_1/labels.py`: loads the shared labels (77 Banking77 intents plus `unknown`) and derives `option_set_version`.
 - `src/app_assignment_1/monitor.py`: in-memory failure monitor (format failures and failed calls) and `Controller`; new interventions wait in `unsaved` until the gateway stores them. While a new release is watched, the controller rolls it back instead of disabling the model.
 - `src/app_assignment_1/releases.py`: model releases: the version each model serves (`base` or one from `config/releases.json`), the rollback target, and the release events saved through `Store` and reloaded at startup.
@@ -34,6 +35,8 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 - `config/`: `labels.json` (the 78 labels Jev and Qwen classify into), `intents.json`, `policy_cards.json`, `backends.json`, `releases.json` (versions an operator can deploy to each model), plus `backends.chaos.json`, `backends.outage.json` and `backends.labelswap.json` for simulated faults.
 - `tests/`: pytest suite. Frontend tests are in `frontend/src/App.test.jsx` and `frontend/src/JevView.test.jsx`.
 - `scripts/smoke_compose.py`: smoke test against the public proxy.
+- `scripts/make_banking77_split.py`: downloads Banking77 at a pinned commit and writes `data/banking77_split.csv`; `--check` fails if it differs.
+- `data/banking77_split.csv`: the committed split (`text`, `intent`, `split`, `source_row`); source, paper and licence in `data/README.md`. Banking77 is by PolyAI, CC BY 4.0. A test pins its SHA-256. Never regenerate it with different settings once results depend on it.
 - `scripts/probe_false_pass.py`: simulates how often the probe gate passes with no signal (see `docs/PROBE.md`).
 - `scripts/e2e_check.py`: end-to-end check of a running gateway (routing, reply format, monitors, optional Prometheus counters); labels the run mock or real from `/v1/health`. Python 3.9, standard library only. See `docs/E2E_CHECK.md`.
 - `scripts/export_analysis.py`: exports requests and Jev assessments from Postgres as JSON Lines for analysis, without reply text.
@@ -82,6 +85,9 @@ cd ..
 
 # Run the stack
 docker compose up -d --build --wait
+
+# Rebuild or check the Banking77 development split (downloads about 1 MB)
+uv run python scripts/make_banking77_split.py --check
 
 # Redraw the architecture diagram after editing docs/architecture.yaml
 uv run python scripts/render_architecture.py
