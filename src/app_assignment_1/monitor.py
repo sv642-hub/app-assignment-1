@@ -46,6 +46,7 @@ class Controller:
         settings: Settings,
         clock: Callable[[], float] = time.monotonic,
     ):
+        names = list(names)
         self.windows: dict[BackendName, deque[Outcome]] = {
             name: deque(maxlen=settings.monitor_window) for name in names
         }
@@ -59,9 +60,12 @@ class Controller:
         # fills the window slowly (each call waits out its timeout), so a
         # streak disables the model before monitor_min_samples calls.
         self.timeouts: Counter[BackendName] = Counter()
-        # When the first failure still in a model's window started, so a
-        # disable can report how long the fault went undetected.
-        self.first_failure: dict[BackendName, float] = {}
+        # When each call in a model's window started (None for an answer),
+        # kept in step with the window, so a disable can report how long the
+        # fault went undetected from the earliest failure still in the window.
+        self.starts: dict[BackendName, deque[float | None]] = {
+            name: deque(maxlen=settings.monitor_window) for name in names
+        }
         # Called with a model's name, the reason and the seconds from the
         # first failure to the disable.
         self.on_detect: list[Callable[[BackendName, DetectReason, float], None]] = []
@@ -102,7 +106,7 @@ class Controller:
     def _clear_window(self, name: BackendName) -> None:
         self.windows[name].clear()
         self.timeouts[name] = 0
-        self.first_failure.pop(name, None)
+        self.starts[name].clear()
 
     def _note(
         self,
@@ -249,11 +253,10 @@ class Controller:
     ) -> str | None:
         window = self.windows[name]
         window.append(outcome)
+        self.starts[name].append(
+            None if outcome == "ok" else self.clock() - call_seconds
+        )
         self.timeouts[name] = self.timeouts[name] + 1 if timed_out else 0
-        if outcome != "ok":
-            self.first_failure.setdefault(name, self.clock() - call_seconds)
-        elif outcome == "ok" and window.count("ok") == len(window):
-            self.first_failure.pop(name, None)
         failures = sum(item != "ok" for item in window)
         rate = failures / len(window)
         window_trips = len(window) >= self.min_samples and rate >= self.threshold
@@ -356,7 +359,8 @@ class Controller:
         self.disabled_until[name] = self.clock() + self.cooldown
         self.disabled_for[name] = kind
         self._note(name, "disabled", reason)
-        started = self.first_failure.get(name)
+        failed_at = [t for t in self.starts[name] if t is not None]
+        started = min(failed_at) if failed_at else None
         if detect is not None and started is not None:
             for hook in self.on_detect:
                 hook(name, detect, max(0.0, self.clock() - started))

@@ -376,6 +376,46 @@ def test_detection_reports_the_onset_of_a_mixed_failure_run(tmp_path):
     assert seen == [("qwen3-1.7b", "format_failure", 15)]
 
 
+def test_detection_ignores_a_failure_that_left_the_window(tmp_path):
+    clock = Clock()
+    c = Controller(
+        ["qwen3-1.7b", "qwen3-4b"],
+        make_settings(
+            tmp_path,
+            monitor_window=4,
+            monitor_min_samples=4,
+            monitor_failure_threshold=0.75,
+        ),
+        clock,
+    )
+    seen = []
+    c.on_detect.append(lambda *args: seen.append(args))
+    # failure, success, success, failure, failure, failure at seconds 0..5
+    for second, failed in enumerate([True, False, False, True, True, True]):
+        clock.now = second
+        c.record("qwen3-1.7b", failed, can_disable=True)
+    # The window holds seconds 2..5; its earliest failure is at second 3.
+    assert seen == [("qwen3-1.7b", "format_failure", 2)]
+
+
+def test_detection_dates_a_timed_out_call_from_its_start_inside_the_window(tmp_path):
+    clock = Clock()
+    c = Controller(
+        ["qwen3-1.7b", "qwen3-4b"],
+        make_settings(tmp_path, monitor_window=20, monitor_min_samples=5),
+        clock,
+    )
+    seen = []
+    c.on_detect.append(lambda *args: seen.append(args))
+    clock.now = 10
+    c.record("qwen3-1.7b", False, can_disable=True)
+    for now in (16, 22, 28):
+        clock.now = now
+        c.record_error("qwen3-1.7b", True, timed_out=True, call_seconds=6)
+    # The first hung call started at 16 - 6 = 10; disabled at 28.
+    assert seen == [("qwen3-1.7b", "timeout", 18)]
+
+
 def hang_settings(tmp_path, **overrides):
     return make_settings(
         tmp_path,
