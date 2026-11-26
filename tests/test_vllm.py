@@ -177,3 +177,24 @@ def test_unreadable_logprobs_only_lose_the_score() -> None:
     reply = generate(handler)
     assert reply.intent == REPLY.intent
     assert reply.label_confidence is None
+
+
+@pytest.mark.parametrize("bad", [1000, 0.5])
+def test_positive_logprob_keeps_the_reply_and_loses_the_score(bad: float) -> None:
+    content = REPLY.model_dump_json()
+    start = content.index("card_arrival")
+    tokens = [
+        {"token": content[:start], "logprob": -0.1},
+        {"token": "card_arrival", "logprob": bad},
+        {"token": content[start + 12 :], "logprob": -0.1},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = {"choices": [{"message": {"content": content}}]}
+        body["choices"][0]["logprobs"] = {"content": tokens}
+        return httpx.Response(200, json=body)
+
+    reply = generate(handler)
+    # The validated reply still reaches the caller; only the score is lost.
+    assert reply.intent == REPLY.intent
+    assert reply.label_confidence is None

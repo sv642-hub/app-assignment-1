@@ -62,3 +62,14 @@ def test_nan_logprob_gives_no_score() -> None:
 
 def test_minus_infinity_is_probability_zero() -> None:
     assert label_confidence(CONTENT, tokens([CONTENT], [-math.inf])) == 0.0
+
+
+def test_positive_logprob_gives_no_score() -> None:
+    content = '{"intent":"card_arrival"}'
+    start = content.index("card_arrival")
+    tokens = [
+        {"token": content[:start], "logprob": -0.1},
+        {"token": "card_arrival", "logprob": 1000},
+        {"token": content[start + 12 :], "logprob": -0.1},
+    ]
+    assert label_confidence(content, tokens) is None

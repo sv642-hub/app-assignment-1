@@ -34,12 +34,17 @@ def label_confidence(content: str, tokens: Sequence[Any]) -> float | None:
     token, with `token` and `logprob`. A token counts when any of its
     characters fall inside the intent value, so a token that also holds the
     closing quote still counts. Returns None when the tokens do not spell
-    `content` exactly or the value cannot be found, rather than guess.
+    `content` exactly, a log probability is above 0, or the value cannot be
+    found, rather than guess.
     """
     try:
         texts = [str(item["token"]) for item in tokens]
         logprobs = [float(item["logprob"]) for item in tokens]
     except (KeyError, TypeError, ValueError):
+        return None
+    # A log probability is never above 0. A larger value is a malformed block,
+    # and exp() of it can overflow; better no score than a wrong one.
+    if any(logprob > 0 for logprob in logprobs):
         return None
     if "".join(texts) != content:
         return None
@@ -69,4 +74,7 @@ def label_confidence(content: str, tokens: Sequence[Any]) -> float | None:
             counted = True
     if not counted:
         return None
-    return min(1.0, max(0.0, math.exp(total)))
+    try:
+        return min(1.0, max(0.0, math.exp(total)))
+    except OverflowError:
+        return None

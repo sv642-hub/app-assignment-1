@@ -1,6 +1,6 @@
 -- Escalation fields (confidence.py), copied out of response->'trace' so
--- dashboards and analysis can filter on them. Numbered 007 because the open
--- PRs use 003 and 005.
+-- dashboards and analysis can filter on them. Numbered 008 because the open
+-- PRs use 003, 005 and 007.
 --
 -- escalation_score: the small model's intent confidence, when it answered and
 --   gave one. Null otherwise and for older rows.
