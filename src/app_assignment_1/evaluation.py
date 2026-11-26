@@ -276,22 +276,28 @@ def score(items: Sequence[dict[str, Any]], labels: LabelSet) -> dict[str, Any]:
     }
 
 
+def _direct(items: Sequence[dict[str, Any]]) -> bool:
+    """Results from a model called directly: some row carries `raw_intent`.
+    A failed call's row never does, and no gateway row does."""
+    return any("raw_intent" in item for item in items)
+
+
 def format_breakdown(items: Sequence[dict[str, Any]]) -> dict[str, Any]:
     """What the format check cost, for results from a model called directly.
 
     `raw_intent` is the model's own answer before the check (None if it was not
-    one of the labels, or the call failed). The gateway target has no
-    `raw_intent`, since the gateway only returns the checked intent, so these
-    are None there.
+    one of the labels). A failed call's row has none, and counts as wrong. The
+    gateway target has no `raw_intent` on any row, since the gateway only
+    returns the checked intent, so these are None there.
     """
     errors = Counter(e for item in items for e in item.get("format_errors") or [])
-    if not items or any("raw_intent" not in item for item in items):
+    if not _direct(items):
         return {
             "intent_accuracy_before_check": None,
             "lost_to_format_check": None,
             "format_errors_by_type": dict(errors),
         }
-    right = [item["raw_intent"] == item["gold"] for item in items]
+    right = [item.get("raw_intent") == item["gold"] for item in items]
     lost = sum(
         ok and item.get("format_ok") is False
         for ok, item in zip(right, items, strict=True)
@@ -315,11 +321,9 @@ def confusions(
     results have one, so a prompt change can target the real confusion; else
     the delivered intent. None means no valid label (a failed call, or a label
     outside the set)."""
-    key = (
-        "raw_intent" if items and all("raw_intent" in i for i in items) else "predicted"
-    )
+    key = "raw_intent" if _direct(items) else "predicted"
     pairs = Counter(
-        (item["gold"], item[key]) for item in items if item[key] != item["gold"]
+        (item["gold"], item.get(key)) for item in items if item.get(key) != item["gold"]
     )
     return [(gold, answer, n) for (gold, answer), n in pairs.most_common(top)]
 

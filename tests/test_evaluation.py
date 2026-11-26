@@ -559,7 +559,8 @@ DIRECT = [
     direct(1, "exchange_rate", "exchange_rate", ["unknown_policy_facts"]),
     direct(2, "exchange_rate", "top_up_failed", ["missing_policy_facts"]),
     direct(3, "top_up_failed", "unknown", ["unknown_policy_facts"]),
-    {**item(4, "top_up_failed", None), "raw_intent": None, "error": "X", "final": True},
+    # A failed call: the runner writes no raw_intent for it.
+    {**item(4, "top_up_failed", None), "error": "X", "final": True},
 ]
 
 
