@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from prometheus_client.parser import text_string_to_metric_families
+from pydantic import SecretStr
 
 from app_assignment_1.api import create_app
 from app_assignment_1.config import Settings
@@ -251,9 +252,15 @@ METRICS_PATHS = ["/metrics", "/metrics/", "/metrics/x", "/metric", "/METRICS"]
 
 def test_caddy_does_not_proxy_metrics():
     caddyfile = Path("Caddyfile").read_text()
-    # The only reverse_proxy is the @gateway handle, so its matcher decides
-    # what reaches the gateway.
-    assert caddyfile.count("reverse_proxy") == 1
+    # Two reverse proxies: the @gateway handle, whose matcher decides what
+    # reaches the gateway, and Grafana, which only /grafana reaches.
+    assert caddyfile.count("reverse_proxy") == 2
+    grafana = (
+        "@grafana path /grafana /grafana/*\n"
+        "    handle @grafana {\n"
+        "        reverse_proxy grafana:3000"
+    )
+    assert grafana in caddyfile
     matcher = re.search(r"@gateway path (.+)", caddyfile)
     assert matcher, "Caddyfile no longer has the @gateway matcher"
     patterns = matcher.group(1).split()
@@ -278,3 +285,68 @@ def test_caddy_check_catches_metrics_patterns(line):
         for path in METRICS_PATHS
         for pattern in patterns
     )
+
+
+def test_dashboard_latency_and_in_flight_metrics(settings):
+    with TestClient(create_app(settings)) as client:
+        client.post("/v1/chat", json={"message": "My card has not arrived"})
+        found = samples(client)
+        assert (
+            value(
+                found,
+                "gateway_chat_answer_latency_seconds_count",
+                route="standard",
+                model="qwen3-1.7b",
+            )
+            == 1
+        )
+        assert (
+            value(
+                found,
+                "gateway_backend_call_latency_seconds_count",
+                model="qwen3-1.7b",
+                outcome="ok",
+            )
+            == 1
+        )
+        assert value(found, "gateway_jev_call_latency_seconds_count", outcome="ok") == 1
+        # The request is finished, so nothing is in flight.
+        assert value(found, "gateway_chat_in_flight") == 0
+        # The 2 s and 4 s targets in the SLO panels need these exact buckets.
+        assert (
+            value(
+                found,
+                "gateway_chat_answer_latency_seconds_bucket",
+                route="standard",
+                model="qwen3-1.7b",
+                le="2.0",
+            )
+            == 1
+        )
+
+
+def test_operator_auth_failures_are_counted(settings):
+    off = TestClient(create_app(settings))
+    with off:
+        assert off.post("/v1/operator/models/qwen3-4b/disable").status_code == 403
+        found = samples(off)
+        assert (
+            value(
+                found,
+                "gateway_operator_auth_failures_total",
+                reason="operator_disabled",
+            )
+            == 1
+        )
+    on = settings.model_copy(update={"operator_token": SecretStr("secret-token")})
+    with TestClient(create_app(on)) as client:
+        assert client.post("/v1/operator/models/qwen3-4b/disable").status_code == 401
+        found = samples(client)
+        assert (
+            value(
+                found,
+                "gateway_operator_auth_failures_total",
+                reason="missing_or_wrong_token",
+            )
+            == 1
+        )
