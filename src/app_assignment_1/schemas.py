@@ -130,13 +130,16 @@ class BackendConfig(StrictModel):
     # purpose. The reply passes the format check; only the semantic monitor
     # sees it.
     label_swap_rate: float = Field(default=0, ge=0, le=1)
+    # Share of mock calls that never answer, to simulate a hung model. The call
+    # waits until the gateway cuts it off.
+    hang_rate: float = Field(default=0, ge=0, le=1)
 
 
-FaultKind = Literal["none", "outage", "bad_format", "label_swap"]
+FaultKind = Literal["none", "outage", "bad_format", "label_swap", "hang"]
 
 
 class FaultRequest(StrictModel):
-    """Set one simulated fault on one mock model. `none` clears all three."""
+    """Set one simulated fault on one mock model. `none` clears all four."""
 
     model: BackendName
     fault: FaultKind

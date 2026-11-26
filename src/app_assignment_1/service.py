@@ -184,6 +184,7 @@ class Gateway:
         self.request_deadline = settings.request_deadline_seconds
         self.alternate_reserve = settings.alternate_reserve_seconds
         self.jev_timeout = settings.jev_timeout_seconds
+        self.attempt_timeout = settings.attempt_timeout_seconds
         self.jev_input_price = settings.jev_input_price_per_million_usd
         # Answered Jev calls and their tokens since start; see jev_usage().
         self.jev_answered_calls = 0
@@ -254,6 +255,11 @@ class Gateway:
         # counter is unknown, so operator release changes are refused.
         self.releases_loaded = False
         self.metrics = GatewayMetrics(self)
+        self.controller.on_detect.append(
+            lambda name, reason, seconds: self.metrics.fault_detection.labels(
+                name, reason
+            ).observe(seconds)
+        )
 
     def _release_changed(self, event: ReleaseEvent) -> None:
         """A model now serves another version: its monitor windows describe
@@ -345,10 +351,13 @@ class Gateway:
         config = backend.config
         if request.fault == "none":
             config.error_rate = config.fault_rate = config.label_swap_rate = 0
+            config.hang_rate = 0
         elif request.fault == "outage":
             config.error_rate = request.rate
         elif request.fault == "bad_format":
             config.fault_rate = request.rate
+        elif request.fault == "hang":
+            config.hang_rate = request.rate
         else:
             config.label_swap_rate = request.rate
         self.settings_version = self._settings_version()
@@ -762,22 +771,27 @@ class Gateway:
         attempt: int,
         action: str | None,
         own_route: bool,
+        capped: bool = False,
     ) -> tuple[BackendReply | None, str | None, bool, int]:
         """Call one backend within `budget` seconds. Return its reply (None if
         the call failed), the latest controller action, whether the deadline
         cut short a later attempt, and the release generation the call
-        started on."""
+        started on. `capped`: another model could still answer, so the call
+        gets at most attempt_timeout seconds, and running out of that is the
+        model's failure, not the deadline's."""
         name = backend.config.name
         generation = self.releases.generation[name]
         usage = self.usage[name]
         usage.attempted_calls += 1
-        timer = asyncio.timeout(budget)
+        limit = min(budget, self.attempt_timeout) if capped else budget
+        deadline_bound = limit >= budget
+        timer = asyncio.timeout(limit)
         call_start = perf_counter()
         try:
             async with timer:
                 generated = BackendReply.model_validate(await backend.generate(message))
         except Exception as exc:
-            if timer.expired() and attempt > 1:
+            if timer.expired() and attempt > 1 and deadline_bound:
                 # A later attempt had a shortened opportunity. Do not score this
                 # as a model failure or a successful monitor sample.
                 usage.deadline_exceeded_calls += 1
@@ -808,6 +822,8 @@ class Gateway:
                     name,
                     can_disable=self.others_usable(backend),
                     own_route=own_route,
+                    timed_out=code == "timeout",
+                    call_seconds=perf_counter() - call_start,
                 )
                 or action
             )
@@ -926,7 +942,13 @@ class Gateway:
                 tried.append(backend)
                 attempted_latency = backend.config.latency_ms
                 generated, action, cut_short, generation = await self._attempt(
-                    backend, message, budget, len(tried), action, backend is selected
+                    backend,
+                    message,
+                    budget,
+                    len(tried),
+                    action,
+                    backend is selected,
+                    capped=self._fallback_left(order, backend),
                 )
                 if generated is not None:
                     break

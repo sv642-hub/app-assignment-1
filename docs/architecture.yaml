@@ -97,7 +97,7 @@ components:
     title: Fault injection hooks
     owner: Pavlos
     items:
-      - built: Outage, bad format and label swap, by Compose override
+      - built: Outage, bad format and label swap, by Compose override; hang by /v1/faults
       - todo: Bad prompt
       - built: "POST /v1/faults, and /faults/jev for mock Jev"
 

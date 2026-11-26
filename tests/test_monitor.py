@@ -1,6 +1,7 @@
 """Failure monitor and controller: rules, gateway wiring and health."""
 
 import json
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -313,3 +314,122 @@ def test_health_reports_the_controller_rules(tmp_path):
         "failure_threshold": 0.4,
         "cooldown_seconds": 30,
     }
+
+
+# --- hung models ---
+
+
+def test_timeout_streak_disables_before_the_minimum_samples(tmp_path):
+    clock = Clock()
+    c = Controller(
+        ["qwen3-1.7b", "qwen3-4b"],
+        make_settings(tmp_path, monitor_window=20, monitor_min_samples=5),
+        clock,
+    )
+    seen = []
+    c.on_detect.append(lambda *args: seen.append(args))
+    for _ in range(2):
+        assert (
+            c.record_error("qwen3-1.7b", True, timed_out=True, call_seconds=6) is None
+        )
+        clock.now += 6
+    action = c.record_error("qwen3-1.7b", True, timed_out=True, call_seconds=6)
+    assert action == (
+        "disabled qwen3-1.7b: 3 timeouts in a row; "
+        "call error rate 100% over last 3 calls"
+    )
+    # From when the first hung call started to the disable.
+    assert seen == [("qwen3-1.7b", "timeout", 18)]
+
+
+def test_an_answer_breaks_the_timeout_streak(tmp_path):
+    c = Controller(
+        ["qwen3-1.7b", "qwen3-4b"],
+        make_settings(tmp_path, monitor_window=20, monitor_min_samples=5),
+        Clock(),
+    )
+    for _ in range(2):
+        c.record_error("qwen3-1.7b", True, timed_out=True)
+    c.record("qwen3-1.7b", False, can_disable=True)
+    assert c.record_error("qwen3-1.7b", True, timed_out=True) is None
+    assert not c.is_disabled("qwen3-1.7b")
+
+
+def test_the_last_usable_model_is_kept_through_a_timeout_streak(tmp_path):
+    c = controller(tmp_path)
+    for _ in range(5):
+        c.record_error("qwen3-1.7b", False, timed_out=True)
+    assert [i.action for i in c.log] == ["kept_last_backend"]
+
+
+def test_detection_reports_the_onset_of_a_mixed_failure_run(tmp_path):
+    clock = Clock()
+    c = Controller(["qwen3-1.7b", "qwen3-4b"], make_settings(tmp_path), clock)
+    seen = []
+    c.on_detect.append(lambda *args: seen.append(args))
+    c.record("qwen3-1.7b", False, can_disable=True)
+    clock.now = 10
+    c.record("qwen3-1.7b", True, can_disable=True)
+    clock.now = 25
+    c.record("qwen3-1.7b", True, can_disable=True)
+    # Disabled on the third call: the first failure was 15 s earlier.
+    assert seen == [("qwen3-1.7b", "format_failure", 15)]
+
+
+def hang_settings(tmp_path, **overrides):
+    return make_settings(
+        tmp_path,
+        monitor_window=20,
+        monitor_min_samples=5,
+        attempt_timeout_seconds=0.2,
+        operator_token="t" * 20,
+        **overrides,
+    )
+
+
+def test_hung_model_is_disabled_within_the_streak_and_customers_get_answers(tmp_path):
+    auth = {"Authorization": "Bearer " + "t" * 20}
+    with TestClient(create_app(hang_settings(tmp_path))) as client:
+        resp = client.post(
+            "/v1/faults", json={"model": "qwen3-1.7b", "fault": "hang"}, headers=auth
+        )
+        assert resp.status_code == 200
+        assert resp.json()["hang_rate"] == 1
+        start = time.perf_counter()
+        responses = [
+            client.post("/v1/chat", json={"message": "card arrival"}) for _ in range(4)
+        ]
+        elapsed = time.perf_counter() - start
+        assert [r.status_code for r in responses] == [200] * 4
+        traces = [r.json()["trace"] for r in responses]
+        assert [t["model"] for t in traces] == ["qwen3-4b"] * 4
+        assert "3 timeouts in a row" in traces[2]["controller_action"]
+        assert traces[3]["fallback_reason"] == "selected_backend_disabled"
+        # Three capped waits, not three full first-attempt budgets.
+        assert elapsed < 2
+
+        text = client.get("/metrics").text
+        labels = '{model="qwen3-1.7b",reason="timeout"}'
+        assert f"gateway_fault_detection_seconds_count{labels} 1.0" in text
+        total = next(
+            line
+            for line in text.splitlines()
+            if line.startswith(
+                'gateway_fault_detection_seconds_sum{model="qwen3-1.7b",reason="timeout"}'
+            )
+        )
+        assert 0.5 < float(total.split()[-1]) < 1.5
+
+
+def test_slow_but_healthy_replies_under_the_cap_are_not_failures(tmp_path):
+    with TestClient(create_app(hang_settings(tmp_path))) as client:
+        gateway = client.app.state.gateway
+        small = next(b for b in gateway.backends if b.config.name == "qwen3-1.7b")
+        small.config.latency_ms = 100
+        responses = [
+            client.post("/v1/chat", json={"message": "card arrival"}) for _ in range(6)
+        ]
+        assert [r.json()["trace"]["model"] for r in responses] == ["qwen3-1.7b"] * 6
+        monitors = {m["name"]: m for m in client.get("/v1/health").json()["monitor"]}
+        assert monitors["qwen3-1.7b"]["call_errors"] == 0
+        assert monitors["qwen3-1.7b"]["disabled_by_controller"] is False
