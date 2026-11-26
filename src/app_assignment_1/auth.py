@@ -18,7 +18,9 @@ def require_operator(
     before the body is validated: without the token, a bad body gets 401 or
     403, not the schema's error messages."""
     token = request.app.state.operator_token
+    failures = request.app.state.gateway.metrics.operator_auth_failures
     if token is None:
+        failures.labels("operator_disabled").inc()
         raise HTTPException(
             403, "Operator routes are turned off; set APP_OPERATOR_TOKEN"
         )
@@ -26,6 +28,7 @@ def require_operator(
     if scheme.lower() != "bearer" or not secrets.compare_digest(
         value.strip().encode(), token.get_secret_value().encode()
     ):
+        failures.labels("missing_or_wrong_token").inc()
         raise HTTPException(
             401, "Missing or wrong operator token", {"WWW-Authenticate": "Bearer"}
         )

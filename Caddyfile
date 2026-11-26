@@ -6,6 +6,12 @@
         reverse_proxy gateway:8000
     }
 
+    # Grafana, viewer only (see compose.yml). The React app embeds it. Nothing
+    # else of Grafana is reachable: it has no published port.
+    handle /grafana /grafana/* {
+        reverse_proxy grafana:3000
+    }
+
     # The React app: static files, with unknown paths falling back to index.html.
     handle {
         # Build files have a content hash in their names, so they can be cached

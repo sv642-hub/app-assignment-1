@@ -134,10 +134,10 @@ components:
     owner: Sebastian
     items:
       - built: Scrapes the gateway; no published port
-      - built: Requests, latency, errors, Jev fallbacks, controller
-      - built: Semantic disagreement and coverage
-      - built: Jev tokens and estimated cost
+      - built: Request, error and controller metrics
+      - built: Semantic and Jev cost metrics
       - built: Alert rules, tested with promtool
+      - built: Grafana dashboard, viewer only
       - todo: vLLM targets; Qwen cost
 
   postgres:

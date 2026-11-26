@@ -212,11 +212,28 @@ The `prometheus` service (Prometheus 3.15.1, config in [`prometheus/prometheus.y
 | `gateway_monitor_failure_rate`, `gateway_monitor_window_samples` | `model` | Failure rate and number of calls in the monitor window (rate is 0 when the window is empty) |
 | `gateway_controller_interventions_total` | `action`, `model` | Controller and operator actions: `disabled`, `re-enabled`, `kept_last_backend`, `rolled_back`, `operator_disabled`, `operator_enabled` |
 | `gateway_model_release` | `model`, `version`, `status` | 1 for the version each model serves now, with `stable`, `watching` or `rolled_back`; versions come from the release catalog |
+| `gateway_chat_answer_latency_seconds` | `route`, `model` | Histogram of time per answered request (no 503s); buckets include 2 s and 4 s for the latency targets |
+| `gateway_backend_call_latency_seconds` | `model`, `outcome` (`ok`, `failed`) | Histogram of one Qwen call; a failed call that waited for a timeout shows its wait |
+| `gateway_jev_call_latency_seconds` | `outcome` (`ok`, `timeout`, `error`) | Histogram of one Jev call; calls skipped by the open breaker are not counted |
+| `gateway_chat_in_flight` | none | Chat requests being handled now; a hung call shows here before it shows in any histogram |
+| `gateway_operator_auth_failures_total` | `reason` (`operator_disabled`, `missing_or_wrong_token`) | Operator route calls refused with 403 or 401 |
 | `gateway_jev_answered_calls_total` | `mocked` | Jev calls that returned an answer; each call counts once, not once per question |
 | `gateway_jev_tokens_total` | `direction`, `mocked` | Input and output tokens of answered Jev calls |
 | `gateway_jev_estimated_cost_usd_total` | `mocked` | Input tokens times `APP_JEV_INPUT_PRICE_PER_MILLION_USD`; absent while the price is unset, so an unknown price never reads as $0 |
 
 Labels only take values from fixed lists. Message text, replies and request IDs are never labels; a test checks this. All values are in memory and reset when the gateway restarts. A re-enable is counted when the gateway next checks the model (a request, `/v1/health` or a scrape), not at the exact end of the cooldown. With the mock backends, latency includes the simulated delay and says nothing about real model speed. Jev tokens and estimated cost are counted since the gateway started; mock Jev reports 0 tokens. `/v1/health` has the same totals in `jev_usage`, and the Health screen shows them on the Jev card. There are no Qwen token or cost metrics yet, and Prometheus does not scrape vLLM or a separate monitor because neither runs with the gateway yet.
+
+### Grafana dashboard
+
+The `grafana` service (Grafana 12.3.0) shows the metrics as plots. Open the **Metrics** screen in the app, or `http://localhost:8080/grafana/` directly. Caddy proxies `/grafana` to it; it publishes no port. Anyone who reaches the proxy is an anonymous **viewer**: there is no login form and no admin account to use, and the dashboard cannot be edited in the browser. Dashboards and data sources are loaded from the repo's [`grafana/`](grafana/) folder at startup.
+
+- Data sources: Prometheus, and Postgres through a read-only role, `grafana_ro`, that the one-off `grafana-db-setup` service creates (SELECT on `requests`, `jev_assessments`, `interventions` and `model_releases`). Its password is `GRAFANA_DB_PASSWORD`; `env/compose.defaults.env` holds a public throwaway, so set your own in `env/grafana.env` (template `env/grafana.env.example`) for a deployment, before the first start.
+- Rows: overview; latency percentiles (p50, p90, p95, p99) per model, route and for Qwen calls alone; traffic, errors and saturation (in-flight requests); SLOs and error budget; reply quality (format checks, Qwen vs Jev intent agreement); self-healing and releases; Jev latency, tokens, cost and route choices, with the primacy-bias split by option order; security (operator auth failures).
+- Interventions from Postgres are drawn as annotations on every graph.
+- Prometheus keeps 30 days of data, so the SLO panels have a month to read. They use the dashboard's selected time range, not a fixed 30 days.
+- The latency targets (small under 2 s, large under 4 s at p95) are proposals chosen from the real-Qwen medians; p95 has not been measured. The availability target is 99% answered.
+- The gateway makes one Jev call per request, before the model answers. The agreement panels compare the model's intent label with Jev's intent answer; Jev does not score the model's reply. The standard-first vs complex-first panel shows one bar until requests are sent with both option orders (the order-swap run, PRs #89 and #90).
+- Edit panels in `scripts/build_grafana_dashboard.py` and run it; the JSON is generated and a test fails if it is stale.
 
 ### Alerts
 
