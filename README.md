@@ -11,7 +11,7 @@ A mocked banking-support gateway for DSAN 6700 Deliverable 2, with a React chat 
 1. The React app sends the message over HTTP to the FastAPI gateway.
 2. `MockJevRouter` stands in for Jev's combined call, which answers two questions: the route (`standard` or `complex`) and the intent. It uses the configured complexity and intent of the best keyword match; unmatched messages go to `standard` with intent `unknown`. The gateway uses only the route answer. Jev's intent is an assessment for the monitor and never replaces the backend's intent. The gateway builds a record for each answer and saves it with the request (see Storage).
 3. Standard selects mock `qwen3-1.7b`. Complex selects mock `qwen3-4b`. The selected mock backend waits for its simulated delay, detects the intent by matching complete keyword phrases (longer/more matches score higher; config order breaks ties), and fills the reply template with fictional policy facts. Both mock backends share this classifier.
-4. Reply checks reject blank text, replies over 4,000 characters, unfilled `{placeholder}` tokens and intent labels outside `config/labels.json`. Pydantic validates the result. The chat shows the reply and its route; **Show details** opens the intent, policy facts and trace.
+4. Reply checks reject intent labels outside `config/labels.json`, policy facts that are not on the intent's card, and a carded reply with no facts. The model's own text is never shown: the reply is built from the card. So blank text, text over 4,000 characters or an unfilled `{placeholder}` in the model's text does not fail the check; the gateway counts it in `gateway_discarded_text_problems_total`. The reply the gateway builds from the card must still pass those three text checks. Pydantic validates the result. The chat shows the reply and its route; **Show details** opens the intent, policy facts and trace.
 
 **Real Jev.** With `APP_JEV_MODE=real`, the gateway sends each message to TypeSafe in place of step 2, using `TypeSafeJevRouter` in `jev.py`: one `/v1/systemone` call with the route question and the intent question over the 78 labels. Every chat message then leaves the server, so use only made-up details, and update `USER_BRIEF.md` before testers use a gateway in this mode. It needs `APP_JEV_API_KEY` and an `https` `APP_JEV_BASE_URL`. The trace shows `router: "jev"` when real Jev chose the route, and `/v1/health` shows `jev_mode: "real"` and `router: "jev"`. Compose and CI run with the default, `mock`. No test calls TypeSafe; the tests use a fake TypeSafe server.
 
@@ -40,7 +40,7 @@ The failure monitor watches format failures and failed calls only. It does not k
 
 Do not run the overrides below on the deployment testers use. They use the default Compose project and port 8080, so they replace the running stack and reset its history. Use your own machine or a different host.
 
-To see the loop work, start the stack with the chaos override. In `config/backends.chaos.json`, the small model has `fault_rate: 1`, so it corrupts every reply:
+To see the loop work, start the stack with the chaos override. In `config/backends.chaos.json`, the small model has `fault_rate: 1`, so it adds an invented policy fact to every reply, and every reply fails the format check:
 
 ```bash
 docker compose -f compose.yml -f compose.chaos.yml up -d --build --wait
@@ -207,6 +207,7 @@ The `prometheus` service (Prometheus 3.15.1, config in [`prometheus/prometheus.y
 | `gateway_backend_calls_attempted_total`, `_completed_total`, `_failed_total` | `model` | Backend calls, the same numbers as `usage` in `/v1/health` |
 | `gateway_jev_fallbacks_total` | `reason` (`jev_timeout`, `jev_error`, `jev_invalid_route`) | Requests routed by the rule router because Jev failed or its route answer was invalid |
 | `gateway_empty_unknown_filled_total` | `model` | Replies with intent `unknown`, no text and no policy facts; the gateway sends the standard no-match text and the reply passes |
+| `gateway_discarded_text_problems_total` | `model`, `problem` (`empty_reply`, `reply_too_long`, `unfilled_placeholder`) | Problems in the model's own reply text, which the gateway discards; these replies still pass if the intent and facts are valid. One reply can count under more than one problem |
 | `gateway_uncarded_facts_dropped_total` | `model` | Replies for an intent with no policy card that listed policy facts anyway; the facts are dropped and the reply still passes |
 | `gateway_model_disabled` | `model` | 1 while the controller has the model disabled |
 | `gateway_monitor_failure_rate`, `gateway_monitor_window_samples` | `model` | Failure rate and number of calls in the monitor window (rate is 0 when the window is empty) |

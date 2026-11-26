@@ -61,7 +61,7 @@ UNCARDED_REPLY = (
 
 
 def check_reply(reply: str) -> list[str]:
-    """Check generated text before returning or storing it."""
+    """Return the problems found in a reply, from metrics.TEXT_PROBLEMS."""
     errors = []
     if not reply.strip():
         errors.append("empty_reply")
@@ -957,11 +957,16 @@ class Gateway:
             reply = UNKNOWN_REPLY
             format_errors = []
         else:
-            # The model's own text is still checked, so a malformed reply counts
-            # as a format failure. It is never shown or stored, though: it can
-            # repeat the customer's message or say things the card doesn't. The
-            # customer gets text built from approved content only.
-            format_errors = check_reply(reply)
+            # The model's own text is never shown or stored: it can repeat the
+            # customer's message or say things the card doesn't. The customer
+            # gets text built from approved content only. So only the intent
+            # and the facts decide the format check; problems in the discarded
+            # text are counted on their own, to keep the prompt visible (#126).
+            for problem in check_reply(reply):
+                self.metrics.discarded_text_problems.labels(
+                    backend.config.name, problem
+                ).inc()
+            format_errors = []
             if intent not in self.labels.names:
                 format_errors.append("unknown_label")
             elif intent == UNKNOWN:
@@ -978,6 +983,8 @@ class Gateway:
                 # The chosen facts, in the card's order, once each.
                 facts = [fact for fact in card.facts if fact in facts]
                 reply = card.reply_template.format(facts=" ".join(facts))
+                # A broken card can still build a bad reply, and that one is shown.
+                format_errors += check_reply(reply)
         if format_errors:
             # Keep malformed generated content out of the UI and stored response.
             intent = "unknown"

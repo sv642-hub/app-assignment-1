@@ -89,7 +89,7 @@ It clears 1 minute after the scrape works again.
 This alert covers the controller only. A model an operator holds shows `disabled_by_operator` on Health, but there is no metric or alert for holds.
 
 Check the newest `disabled` intervention for the model on Health. Its reason says what failed:
-- **`format failure rate ...`:** the replies were malformed. With a real model, look at its output. With the mocks, a fault is set: the chaos override, or `POST /v1/faults` with `bad_format`.
+- **`format failure rate ...`:** the replies were malformed: an unknown label, or policy facts missing or not on the card. Problems in the model's own text do not count here; they are in `gateway_discarded_text_problems_total`. With a real model, look at its output. With the mocks, a fault is set: the chaos override, or `POST /v1/faults` with `bad_format`.
 - **`call error rate ...`:** calls raised. With a real model, its server is down, unreachable or timing out. With the mocks: the outage override, or `/v1/faults` with `outage`.
 - **`failure rate ...`:** a mix of both.
 - **`intent differs from Jev's on ...`:** a semantic disable, only with `APP_SEMANTIC_ACTIONS_ENABLED=true`. `disabled_for` is `semantic`, and the model still answers as a last resort. See [PossibleWrongIntents](#possiblewrongintents).

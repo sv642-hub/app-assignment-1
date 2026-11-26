@@ -18,6 +18,9 @@ from app_assignment_1.semantic import SAMPLES
 if TYPE_CHECKING:
     from app_assignment_1.service import Gateway
 
+# The problems service.check_reply can return.
+TEXT_PROBLEMS = ("empty_reply", "reply_too_long", "unfilled_placeholder")
+
 ACTIONS = get_args(InterventionAction)
 JEV_FALLBACK_REASONS = (
     "jev_timeout",
@@ -87,6 +90,17 @@ class GatewayMetrics:
         )
         for backend in gateway.backends:
             self.empty_unknown_filled.labels(backend.config.name)
+        self.discarded_text_problems = Counter(
+            "gateway_discarded_text_problems",
+            "Problems in the model's own reply text, which the gateway discards: "
+            "the reply is built from the policy card. These do not fail the "
+            "format check. One reply can count under more than one problem.",
+            ["model", "problem"],
+            registry=self.registry,
+        )
+        for backend in gateway.backends:
+            for problem in TEXT_PROBLEMS:
+                self.discarded_text_problems.labels(backend.config.name, problem)
         self.semantic_not_compared = Counter(
             "gateway_semantic_not_compared",
             "Replies that passed the format check but were not scored against "
