@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 
 from pydantic import TypeAdapter, ValidationError
 
-from app_assignment_1.backends import Backend, MockBackend
+from app_assignment_1.backends import UNKNOWN_REPLY, Backend, MockBackend
 from app_assignment_1.breaker import CircuitBreaker
 from app_assignment_1.config import Settings, settings_version
 from app_assignment_1.intents import load_intents
@@ -937,17 +937,47 @@ class Gateway:
             and intent not in self.cards
         )
         if uncarded:
-            # The reply text is discarded, so it is not checked. Facts must be
-            # empty: there is no card to ground them.
-            format_errors = ["uncarded_policy_facts"] if facts else []
+            # Nothing the model wrote is shown: the reply becomes the fixed
+            # uncarded text and its facts are dropped, since no card grounds
+            # them. So leftover facts are not a format failure; in the #109
+            # test-set run they failed 36-39% of real replies, most with the
+            # right intent. They are counted on their own instead.
+            format_errors: list[str] = []
+            if facts:
+                self.metrics.uncarded_facts_dropped.labels(backend.config.name).inc()
+                facts = []
             reply = UNCARDED_REPLY
+        elif intent == UNKNOWN and not reply.strip() and not facts:
+            # No intent and no text: the customer gets the fixed no-match reply
+            # that asks them to describe their problem, so nothing generated is
+            # shown and this is not a format failure. In the #109 test-set run
+            # the small model did this on 304 of 3,080 messages. Counted on its
+            # own, so the prompt problem stays visible.
+            self.metrics.empty_unknown_filled.labels(backend.config.name).inc()
+            reply = UNKNOWN_REPLY
+            format_errors = []
         else:
+            # The model's own text is still checked, so a malformed reply counts
+            # as a format failure. It is never shown or stored, though: it can
+            # repeat the customer's message or say things the card doesn't. The
+            # customer gets text built from approved content only.
             format_errors = check_reply(reply)
             if intent not in self.labels.names:
                 format_errors.append("unknown_label")
-            elif intent == UNKNOWN and facts:
+            elif intent == UNKNOWN:
                 # No intent means no card, so there is nothing to ground facts.
-                format_errors.append("unknown_policy_facts")
+                if facts:
+                    format_errors.append("unknown_policy_facts")
+                reply = UNKNOWN_REPLY
+            else:
+                card = self.cards[intent]
+                if not set(facts) <= set(card.facts):
+                    format_errors.append("unknown_policy_facts")
+                elif not facts:
+                    format_errors.append("missing_policy_facts")
+                # The chosen facts, in the card's order, once each.
+                facts = [fact for fact in card.facts if fact in facts]
+                reply = card.reply_template.format(facts=" ".join(facts))
         if format_errors:
             # Keep malformed generated content out of the UI and stored response.
             intent = "unknown"
@@ -1024,8 +1054,6 @@ class Gateway:
                     else "unsupported_topic"
                     if uncarded
                     else "policy_template"
-                    if mocked
-                    else "generated"
                 ),
                 confidence=decision.confidence,
                 latency_ms=round((perf_counter() - start) * 1000, 2),

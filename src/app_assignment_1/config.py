@@ -192,7 +192,10 @@ class Settings(BaseSettings):
                 "provider_mode 'real' needs APP_VLLM_SMALL_BASE_URL and "
                 "APP_VLLM_LARGE_BASE_URL"
             )
-        if self.vllm_api_key is None or not self.vllm_api_key.get_secret_value():
+        if (
+            self.vllm_api_key is None
+            or not self.vllm_api_key.get_secret_value().strip()
+        ):
             raise ValueError("provider_mode 'real' needs APP_VLLM_API_KEY")
         return self
 

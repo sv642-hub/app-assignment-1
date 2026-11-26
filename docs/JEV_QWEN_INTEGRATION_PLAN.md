@@ -100,7 +100,8 @@ Yanzhen’s Qwen backends implement the existing `Backend` Protocol. Yanzhen and
 - An `unknown` reply has no policy facts and asks the customer to describe their banking problem, as the `Backend` Protocol docstring already requires (#24).
 - **Intents without a card:** the backend returns the intent, `reply=""` and `policy_facts=[]`, so it generates no text that would be thrown away.
   - The gateway first checks that the intent is one of the 67 recognized uncarded intents. It then inserts a fixed message that the demo does not cover that topic, so no reply invents policy. It discards any text a backend sends anyway.
-  - The gateway skips `check_reply` only in this case, because `check_reply` treats an empty reply as a format failure. Schema, label and policy-facts checks still run.
+  - The gateway skips `check_reply` only in this case, because `check_reply` treats an empty reply as a format failure. Schema and label checks still run.
+  - Policy facts sent anyway are dropped and counted in `gateway_uncarded_facts_dropped_total`, not failed. The first real test-set run (#109) showed that failing them disabled healthy models: 36–39% of replies failed this way, against the controller's 0.5 threshold.
 - **`reply_source`:** add separate values for a reply a real model generated and for the fixed uncarded-intent reply. Keep `policy_template` for the mock backends’ templates only.
 - `generate` raises a typed failure for a transport error, a timeout or invalid output (truncated or schema-invalid JSON), so the gateway can record distinct error codes. Exception messages must not contain provider message text, because the gateway logs the exception type.
 - Each call exposes the backend `version_id` and the token usage (`input_tokens`, `output_tokens`). `BackendReply` has neither field today, so agree where they go.
