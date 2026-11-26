@@ -233,8 +233,9 @@ components:
     items:
       - todo: Official test set primary; fresh set as a check
       - todo: Baselines and the oracle router
-      - todo: "Evaluation set: 300 messages, 150 grades; split not agreed"
-      - built: Banking77 development split (seeded, 20% per intent)
+      - todo: "Eval set: 300 messages, 150 grades; not agreed"
+      - built: Banking77 dev split (seeded, 20% per intent)
+      - built: "Jev route-order script; not run yet"
 
   reports:
     title: Reports and artifacts
