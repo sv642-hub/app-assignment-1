@@ -89,7 +89,11 @@ jobs:
       - name: Check the public proxy
         run: python3 scripts/smoke_compose.py http://localhost:8080
       - name: End-to-end check with Prometheus counters (mock backends)
-        run: python3 scripts/e2e_check.py --base-url http://localhost:8080
+        # An explicit --metrics-cmd, so a broken metrics command fails this
+        # step instead of turning the counter checks into a SKIP.
+        run: >-
+          python3 scripts/e2e_check.py --base-url http://localhost:8080
+          --metrics-cmd "docker compose exec -T gateway python -c 'import urllib.request as u; print(u.urlopen(\"http://127.0.0.1:8000/metrics\").read().decode())'"
       - name: Check Prometheus scrapes the gateway
         run: |
           for attempt in $(seq 1 20); do

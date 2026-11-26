@@ -382,13 +382,16 @@ def main(argv=None):
         "--no-metrics", action="store_true", help="skip the Prometheus checks"
     )
     args = parser.parse_args(argv)
-    metrics_cmd, auto = args.metrics_cmd, False
+    metrics_url, metrics_cmd, auto = args.metrics_url, args.metrics_cmd, False
+    if args.no_metrics:
+        # The skip flag wins over an explicit source.
+        metrics_url = metrics_cmd = None
     # With no source given, try the Compose command when docker is installed,
     # so the Prometheus checks run by default on the Compose host.
-    if not (args.metrics_url or metrics_cmd or args.no_metrics):
+    if not (metrics_url or metrics_cmd or args.no_metrics):
         if shutil.which("docker"):
             metrics_cmd, auto = COMPOSE_METRICS_CMD, True
-    results = run(args.base_url.rstrip("/"), args.metrics_url, metrics_cmd, auto)
+    results = run(args.base_url.rstrip("/"), metrics_url, metrics_cmd, auto)
     print(
         f"\n{results.passed} passed, {results.failed} failed, {results.skipped} skipped"
     )

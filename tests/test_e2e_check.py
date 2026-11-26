@@ -281,3 +281,62 @@ def test_compose_metrics_command_splits_into_a_valid_argv(e2e):
     argv = shlex.split(e2e.COMPOSE_METRICS_CMD)
     assert argv[:5] == ["docker", "compose", "exec", "-T", "gateway"]
     assert "/metrics" in argv[-1]
+
+
+def test_ci_passes_an_explicit_metrics_command_equal_to_the_default(e2e):
+    import shlex
+
+    import yaml
+
+    workflow = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())
+    steps = [
+        step
+        for job in workflow["jobs"].values()
+        for step in job["steps"]
+        if "e2e_check.py" in step.get("run", "")
+    ]
+    assert len(steps) == 1
+    argv = shlex.split(steps[0]["run"])
+    assert "--no-metrics" not in argv
+    # An explicit source, so a broken command fails instead of skipping.
+    command = argv[argv.index("--metrics-cmd") + 1]
+    assert shlex.split(command) == shlex.split(e2e.COMPOSE_METRICS_CMD)
+
+
+def test_a_broken_explicit_metrics_command_fails_but_the_default_skips(
+    e2e, monkeypatch, tmp_path, capsys
+):
+    def read_metrics(url, cmd):
+        raise OSError("no compose project")
+
+    with TestClient(create_app(settings_for(tmp_path))) as client:
+        serve(e2e, monkeypatch, client)
+        monkeypatch.setattr(e2e, "read_metrics", read_metrics)
+        assert e2e.main(["--base-url", "http://test", "--metrics-cmd", "broken"]) == 1
+        assert "FAIL: metrics source reachable" in capsys.readouterr().out
+        # No source given: the default Compose command failing is a skip.
+        monkeypatch.setattr(e2e.shutil, "which", lambda name: "/usr/bin/docker")
+        assert e2e.main(["--base-url", "http://test"]) == 0
+        assert "SKIP: Prometheus counters" in capsys.readouterr().out
+
+
+def test_no_metrics_ignores_an_explicit_source(e2e, monkeypatch, tmp_path, capsys):
+    def read_metrics(url, cmd):
+        raise AssertionError("metrics were read despite --no-metrics")
+
+    with TestClient(create_app(settings_for(tmp_path))) as client:
+        serve(e2e, monkeypatch, client)
+        monkeypatch.setattr(e2e, "read_metrics", read_metrics)
+        code = e2e.main(
+            [
+                "--base-url",
+                "http://test",
+                "--no-metrics",
+                "--metrics-cmd",
+                "broken",
+                "--metrics-url",
+                "http://nowhere/metrics",
+            ]
+        )
+    assert code == 0
+    assert "SKIP: Prometheus counters" in capsys.readouterr().out
