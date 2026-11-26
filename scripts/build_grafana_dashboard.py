@@ -305,7 +305,7 @@ def build() -> dict:
               "means the target is missed. Over the selected time range, not "
               "30 days.")  # fmt: skip
     stat("Jev calls", "sum(increase(gateway_jev_answered_calls_total[$__range]))",
-         w=2, desc="Answered Jev calls in the time range.")  # fmt: skip
+         w=2, decimals=0, desc="Answered Jev calls in the time range.")  # fmt: skip
 
     # --- Golden signals ---------------------------------------------------
     row("Latency (percentiles, per model)")
@@ -493,7 +493,7 @@ def build() -> dict:
                desc="Disabled, re-enabled, rolled back and operator actions. "
                     "The same events are marked on every graph.")  # fmt: skip
     stat("Rollbacks", 'sum(increase(gateway_controller_interventions_total{'
-         'action="rolled_back"}[$__range]))', w=3, h=7,
+         'action="rolled_back"}[$__range]))', w=3, h=7, decimals=0,
          thresholds=_steps(("green", None), ("orange", 1)))  # fmt: skip
     prom_table("Release now (per model)", "gateway_model_release == 1",
                w=9, h=7, desc="Version each model serves and whether the "
@@ -539,7 +539,7 @@ def build() -> dict:
                  "{{direction}}")], unit="short", stack=True, minimum=0,
                desc="Mock Jev reports 0 tokens.")  # fmt: skip
     stat("Jev tokens (range)",
-         "sum(increase(gateway_jev_tokens_total[$__range]))", w=4, h=4)  # fmt: skip
+         "sum(increase(gateway_jev_tokens_total[$__range]))", w=4, h=4, decimals=0)  # fmt: skip
     stat("Jev est. cost (range)",
          "sum(increase(gateway_jev_estimated_cost_usd_total[$__range]))",
          unit="currencyUSD", w=4, h=4, decimals=4,
