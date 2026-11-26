@@ -17,11 +17,11 @@ const RELEASE_STATUS = {
 
 const LOG_ROWS = 5;
 
-// The longer explanation of a tab, closed until asked for.
-function About({ children }) {
+// A longer explanation, closed until asked for.
+function About({ label = "About this table", children }) {
   return (
     <details className="about">
-      <summary>About this table</summary>
+      <summary>{label}</summary>
       {children}
     </details>
   );
@@ -232,13 +232,15 @@ export function SemanticCard({ semantic, rules }) {
   const baseline = rules.baseline_disagreement_rate;
   return (
     <section className="card" aria-label="Semantic monitor">
-      <h2>Semantic monitor</h2>
+      <div className="model-head">
+        <h2>Semantic monitor</h2>
+        <span className="pill pill-neutral">{rules.actions_enabled ? "Actions on" : "Report only"}</span>
+      </div>
       <p className="muted small">
-        A model can give a well-formed reply for the wrong intent, which the format check cannot see. For each reply that passed the format check, the
-        monitor compares the model&apos;s intent with Jev&apos;s, over the last {rules.window} replies per model.{" "}
-        {rules.actions_enabled
-          ? "Semantic actions are on: when a model is above the baseline, the controller takes it out of service, with the same cooldown and last-model rule as format failures."
-          : "Semantic actions are off, so it only reports and the controller takes no action."}
+        {baseline === null
+          ? "No healthy baseline is set yet, so rates are shown but never flagged."
+          : `Flagged above ${finePercent(baseline + rules.alert_margin)}: the ${finePercent(baseline)} baseline plus a ${finePercent(rules.alert_margin)} margin.`}{" "}
+        Agreement with Jev is a monitoring signal, not a measured accuracy score.
       </p>
       <div className="table-scroll">
         <table className="log" aria-label="Semantic monitor">
@@ -269,13 +271,6 @@ export function SemanticCard({ semantic, rules }) {
           </tbody>
         </table>
       </div>
-      <p className="muted small">
-        {baseline === null
-          ? "No healthy baseline is set yet, so rates are shown but never flagged. It should come from dev data."
-          : `Flagged above ${finePercent(baseline + rules.alert_margin)}: the ${finePercent(baseline)} baseline plus a ${finePercent(rules.alert_margin)} margin.`}{" "}
-        A model needs {rules.min_samples} scored replies first, and at least {percent(rules.min_coverage)} of its replies need a Jev answer, so a Jev outage
-        does not look like a healthy model. In mock mode, Jev and both models use the same keyword matcher, so a healthy model always agrees.
-      </p>
       {semantic.some((m) => m.not_compared) ? (
         <p className="muted small">
           Not compared since the gateway started:{" "}
@@ -286,6 +281,20 @@ export function SemanticCard({ semantic, rules }) {
           . One of Jev and the model is a mock and the other is real, so their intents differ by design and would say nothing about the model.
         </p>
       ) : null}
+      <About label="About this monitor">
+        <p>
+          A model can give a well-formed reply for the wrong intent, which the format check cannot see. For each reply that passed the format check, the
+          monitor compares the model&apos;s intent with Jev&apos;s, over the last {rules.window} replies per model.{" "}
+          {rules.actions_enabled
+            ? "Semantic actions are on: when a model is above the baseline, the controller takes it out of service, with the same cooldown and last-model rule as format failures."
+            : "Semantic actions are off, so it only reports and the controller takes no action."}
+        </p>
+        <p>
+          {baseline === null && "The baseline should come from dev data. "}
+          A model needs {rules.min_samples} scored replies first, and at least {percent(rules.min_coverage)} of its replies need a Jev answer, so a Jev
+          outage does not look like a healthy model. In mock mode, Jev and both models use the same keyword matcher, so a healthy model always agrees.
+        </p>
+      </About>
     </section>
   );
 }
@@ -318,11 +327,7 @@ export function JevCard({ breaker, usage }) {
         </div>
         <span className="muted small">Picks the route for each message</span>
       </div>
-      <p className="muted small">
-        After {breaker.failure_limit} failed Jev calls in a row, the gateway skips Jev for {breaker.cooldown_seconds} s and routes by keyword rules. Then one trial call
-        decides whether Jev comes back. A wrong answer from Jev does not count as a failed call.
-      </p>
-      <div className="stat-grid">
+      <div className="rules">
         <div className="stat">
           <div className="muted">Failed calls in a row</div>
           <strong>
@@ -333,7 +338,14 @@ export function JevCard({ breaker, usage }) {
           <div className="muted">Cool-off</div>
           <strong>{breaker.cooldown_seconds} s</strong>
         </div>
-        {usage && (
+        {/* Mock Jev reports no tokens and has no price, so only its calls show. */}
+        {usage?.mocked && (
+          <div className="stat">
+            <div className="muted">Calls answered since start</div>
+            <strong>{usage.answered_calls.toLocaleString()}</strong>
+          </div>
+        )}
+        {usage && !usage.mocked && (
           <>
             <div className="stat">
               <div className="muted">Tokens since start</div>
@@ -346,7 +358,20 @@ export function JevCard({ breaker, usage }) {
           </>
         )}
       </div>
-      {usage?.mocked && <p className="muted small">Mock Jev reports no tokens, so these stay at 0 until real Jev is on.</p>}
+      <About label="About the router">
+        <p>
+          After {breaker.failure_limit} failed Jev calls in a row, the gateway skips Jev for {breaker.cooldown_seconds} s and routes by keyword rules. Then one
+          trial call decides whether Jev comes back. A wrong answer from Jev does not count as a failed call.
+        </p>
+        <p>
+          If a call fails or Jev is skipped, keyword rules choose the route. Show details on a Chat reply names the router used for that request.
+        </p>
+        <p>
+          {usage?.mocked
+            ? "Mock Jev reports no tokens, so tokens and cost show once real Jev is on."
+            : "Usage counters restart with the gateway. Cost is an estimate when provider prices are configured."}
+        </p>
+      </About>
     </section>
   );
 }

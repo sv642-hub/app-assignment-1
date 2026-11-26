@@ -202,7 +202,11 @@ describe("Health", () => {
 
     const jev = await screen.findByRole("region", { name: "Jev router" });
     expect(within(jev).getByText("Calling Jev")).toBeInTheDocument();
-    expect(within(jev).getByText("price not set")).toBeInTheDocument();
+    // The mock has no tokens or price to show.
+    expect(within(jev).getByText("Calls answered since start")).toBeInTheDocument();
+    expect(within(jev).queryByText("price not set")).not.toBeInTheDocument();
+    expect(within(jev).queryByText("Tokens since start")).not.toBeInTheDocument();
+    expect(within(jev).getByText("About the router").closest("details")).not.toHaveAttribute("open");
     expect(within(jev).getByText("0 of 5")).toBeInTheDocument();
     expect(within(jev).getByText("30 s")).toBeInTheDocument();
   });
@@ -415,6 +419,8 @@ describe("Semantic monitor", () => {
 
     await openFromSettings(user, "Jev");
     expect(screen.getByText(/Semantic actions are off, so it only reports/)).toBeInTheDocument();
+    expect(screen.getByText("Report only")).toBeInTheDocument();
+    expect(screen.getByText("About this monitor").closest("details")).not.toHaveAttribute("open");
   });
 
   it("shows the controller disabling a model for its disagreement with Jev", async () => {
@@ -440,6 +446,7 @@ describe("Semantic monitor", () => {
 
     await openFromSettings(user, "Jev");
     expect(screen.getByText(/Semantic actions are on: when a model is above the baseline/)).toBeInTheDocument();
+    expect(screen.getByText("Actions on")).toBeInTheDocument();
   });
 
   it("says when the controller keeps the last working model in service", async () => {
@@ -496,6 +503,7 @@ describe("Semantic monitor", () => {
     expect(within(jev).getByText("6,000 in, 21 out (3 calls)")).toBeInTheDocument();
     expect(within(jev).getByText("$0.0003")).toBeInTheDocument();
     expect(within(jev).queryByText(/Mock Jev reports no tokens/)).not.toBeInTheDocument();
+    expect(within(jev).queryByText("Calls answered since start")).not.toBeInTheDocument();
   });
 
   it.each([

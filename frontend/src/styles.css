@@ -659,6 +659,11 @@ p {
   font-size: 14px;
 }
 
+.summary-line h2 {
+  margin-bottom: 0;
+  font-size: 15px;
+}
+
 .summary-line a {
   margin-left: auto;
   color: var(--accent);
@@ -705,6 +710,10 @@ p {
 .health-compact .model-card {
   gap: 10px;
   padding: 14px 20px;
+}
+
+.health-compact .card > .model-head + p {
+  margin: 2px 0 12px;
 }
 
 .tabs-card {
