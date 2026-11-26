@@ -8,7 +8,8 @@
 
     # Grafana, viewer only (see compose.yml). The React app embeds it. Nothing
     # else of Grafana is reachable: it has no published port.
-    handle /grafana /grafana/* {
+    @grafana path /grafana /grafana/*
+    handle @grafana {
         reverse_proxy grafana:3000
     }
 

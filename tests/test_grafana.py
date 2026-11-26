@@ -151,7 +151,10 @@ def test_grafana_is_viewer_only_and_not_published():
 
 def test_caddy_proxies_grafana_but_never_metrics():
     caddy = (ROOT / "Caddyfile").read_text()
-    assert "/grafana" in caddy and "reverse_proxy grafana:3000" in caddy
+    assert (
+        "@grafana path /grafana /grafana/*" in caddy
+        and "reverse_proxy grafana:3000" in caddy
+    )
     assert "prometheus" not in caddy
     for line in caddy.splitlines():
         if "reverse_proxy" in line or line.strip().startswith("@"):
