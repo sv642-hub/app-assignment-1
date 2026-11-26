@@ -23,7 +23,14 @@ LEGEND_LABEL = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
 
 def dashboard() -> dict:
-    return json.loads(DASHBOARD.read_text())
+    """The dashboard with panels inside collapsed rows moved to the top level."""
+    data = json.loads(DASHBOARD.read_text())
+    flat = []
+    for panel in data["panels"]:
+        flat.append(panel)
+        flat.extend(panel.get("panels", []))
+    data["panels"] = flat
+    return data
 
 
 def served() -> dict[str, set[str]]:
@@ -96,6 +103,17 @@ def test_panel_ids_are_unique_and_every_panel_has_a_source():
     for panel in panels:
         if panel["type"] not in ("row", "text"):
             assert panel["targets"], panel["title"]
+
+
+def test_only_the_first_rows_start_open():
+    raw = json.loads(DASHBOARD.read_text())
+    rows = [p for p in raw["panels"] if p["type"] == "row"]
+    assert [r["title"] for r in rows if not r["collapsed"]] == [
+        "Overview",
+        "Latency (percentiles, per model)",
+    ]
+    # Collapsed rows carry their panels; open rows leave them at the top level.
+    assert all(r["panels"] for r in rows if r["collapsed"])
 
 
 def test_dashboard_covers_what_was_asked_for():

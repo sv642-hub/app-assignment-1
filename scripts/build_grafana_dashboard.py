@@ -255,6 +255,26 @@ def quantiles(metric: str, by: str, selector: str = "") -> list[tuple[str, str]]
     return out
 
 
+OPEN_ROWS = ("Overview", "Latency (percentiles, per model)")
+
+
+def _fold(panels: list[dict]) -> list[dict]:
+    """Collapse every row except OPEN_ROWS: a collapsed row keeps its panels
+    inside it, and Grafana shows them when the row is clicked."""
+    out: list[dict] = []
+    current: dict | None = None
+    for panel in panels:
+        if panel["type"] == "row":
+            current = panel
+            current["collapsed"] = panel["title"] not in OPEN_ROWS
+            out.append(panel)
+        elif current is not None and current["collapsed"]:
+            current["panels"].append(panel)
+        else:
+            out.append(panel)
+    return out
+
+
 def build() -> dict:
     # --- Overview ---------------------------------------------------------
     unavailable = "sum(increase(gateway_chat_unavailable_total[$__range]))"
@@ -628,7 +648,7 @@ def build() -> dict:
                 }
             ]
         },
-        "panels": _panels,
+        "panels": _fold(_panels),
     }
 
 
