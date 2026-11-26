@@ -22,6 +22,7 @@ from psycopg_pool import AsyncConnectionPool
 from app_assignment_1.config import PUBLIC_DATABASE_PASSWORD, Settings
 from app_assignment_1.records import JevAssessment
 from app_assignment_1.schemas import (
+    KEPT_REASON_MARKER,
     ChatResponse,
     Intervention,
     MonitorSample,
@@ -92,6 +93,12 @@ class Store(Protocol):
         """The last `limit` release changes, oldest first."""
         ...
 
+    async def latest_release_changes(self) -> list[ReleaseEvent]:
+        """Each model's newest deploy or rollback, however old. A confirmation
+        is not a change, and neither is a kept record (its reason holds
+        KEPT_REASON_MARKER). Restore cuts the monitor windows at these."""
+        ...
+
     async def latest_release_events(self) -> list[ReleaseEvent]:
         """The release change with the highest revision for each model: what
         it served last."""
@@ -121,6 +128,7 @@ class MemoryStore:
         self.release_events: deque[ReleaseEvent] = deque(maxlen=RELEASE_EVENT_LIMIT)
         # Kept apart from the bounded history, so it never loses a model.
         self.latest_releases: dict[str, ReleaseEvent] = {}
+        self.latest_changes: dict[str, ReleaseEvent] = {}
         self.saved_revisions: dict[tuple[str, int], ReleaseEvent] = {}
 
     async def open(self) -> None:
@@ -187,6 +195,8 @@ class MemoryStore:
                 continue
             self.saved_revisions[key] = item
             self.release_events.append(item)
+            if item.action != "confirmed" and KEPT_REASON_MARKER not in item.reason:
+                self.latest_changes[item.backend] = item
             latest = self.latest_releases.get(item.backend)
             if latest is None or item.revision > latest.revision:
                 self.latest_releases[item.backend] = item
@@ -195,6 +205,9 @@ class MemoryStore:
 
     async def recent_release_events(self, limit: int) -> list[ReleaseEvent]:
         return list(self.release_events)[-limit:] if limit > 0 else []
+
+    async def latest_release_changes(self) -> list[ReleaseEvent]:
+        return list(self.latest_changes.values())
 
     async def latest_release_events(self) -> list[ReleaseEvent]:
         return list(self.latest_releases.values())
@@ -463,6 +476,20 @@ class PostgresStore:
                 ) AS latest ORDER BY seq
                 """,
                 (limit,),
+            )
+            rows = await cur.fetchall()
+        return [_release_event(row) for row in rows]
+
+    async def latest_release_changes(self) -> list[ReleaseEvent]:
+        async with self.pool.connection() as conn:
+            cur = await conn.execute(
+                f"""
+                SELECT DISTINCT ON (backend) {RELEASE_COLUMNS}
+                FROM model_releases
+                WHERE action <> 'confirmed' AND position(%s IN reason) = 0
+                ORDER BY backend, seq DESC
+                """,
+                (KEPT_REASON_MARKER,),
             )
             rows = await cur.fetchall()
         return [_release_event(row) for row in rows]

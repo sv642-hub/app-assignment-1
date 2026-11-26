@@ -29,6 +29,7 @@ from app_assignment_1.router import (
     RuleRouter,
 )
 from app_assignment_1.schemas import (
+    KEPT_REASON_MARKER,
     BackendConfig,
     BackendErrorCode,
     BackendName,
@@ -53,7 +54,6 @@ logger = logging.getLogger(__name__)
 QUESTIONS: tuple[Literal["route", "intent"], ...] = ("route", "intent")
 MAX_REPLY_LENGTH = 4000
 # Release changes read at startup to find each model's last deploy or rollback.
-RESTORE_RELEASE_EVENTS = 500
 # Enough of the intervention log to find each model's last disable and
 # re-enable when restoring after a restart.
 # For a recognized intent that has no policy card. The backend sends an empty
@@ -474,7 +474,7 @@ class Gateway:
         current = self.releases.state[event.backend].version
         self.releases.kept(
             event.backend,
-            f"change to {event.version} not confirmed as saved; kept {current}",
+            f"change to {event.version} {KEPT_REASON_MARKER}; kept {current}",
         )
 
     async def _skip_saved_revisions(self) -> None:
@@ -626,14 +626,9 @@ class Gateway:
         if not self.releases_loaded:
             return {}
         events = await asyncio.wait_for(
-            self.store.recent_release_events(RESTORE_RELEASE_EVENTS),
-            self.store_timeout,
+            self.store.latest_release_changes(), self.store_timeout
         )
-        resets: dict[BackendName, datetime] = {}
-        for event in events:
-            if event.action != "confirmed":
-                resets[event.backend] = event.at
-        return resets
+        return {event.backend: event.at for event in events}
 
     async def _save_interventions(self) -> None:
         if not self.controller.unsaved:

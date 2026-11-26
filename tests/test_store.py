@@ -28,6 +28,7 @@ from app_assignment_1.config import PUBLIC_DATABASE_PASSWORD, Settings
 from app_assignment_1.records import JevAssessment
 from app_assignment_1.router import MockJevRouter
 from app_assignment_1.schemas import (
+    KEPT_REASON_MARKER,
     ChatResponse,
     Intervention,
     MonitorSample,
@@ -593,6 +594,36 @@ def test_release_events_keep_order_and_the_latest_per_model(
         assert await store.recent_release_events(2) == events[1:]
         latest = await store.latest_release_events()
         assert sorted(latest, key=lambda e: e.backend) == [events[2], events[1]]
+
+    run(make_store(), body)
+
+
+def test_latest_release_changes_skip_confirmations_and_kept_records(
+    make_store: MakeStore,
+) -> None:
+    small, large = "qwen3-1.7b", "qwen3-4b"
+    deploy = release_event(0, small, "deployed", "v2-good")
+    kept = release_event(1, small, "deployed", "v2-good").model_copy(
+        update={"reason": f"change to v3 {KEPT_REASON_MARKER}; kept v2-good"}
+    )
+    confirm = release_event(2, small, "confirmed", "v2-good")
+    rollback = release_event(3, large, "rolled_back", "base")
+    filler = [
+        release_event(4 + i % 50, large, "deployed", "v2-good", 10 + i)
+        for i in range(250)
+    ]
+
+    async def body(store: Store) -> None:
+        assert await store.latest_release_changes() == []
+        await store.save_release_events([deploy, kept, confirm, rollback])
+        # The small model's newest change is the deploy: the kept record and
+        # the confirmation don't count.
+        changes = await store.latest_release_changes()
+        assert sorted(changes, key=lambda e: e.backend) == [deploy, rollback]
+        # However many newer events the other model has.
+        await store.save_release_events(filler)
+        changes = await store.latest_release_changes()
+        assert [e for e in changes if e.backend == small] == [deploy]
 
     run(make_store(), body)
 

@@ -10,7 +10,12 @@ import pytest
 from app_assignment_1.config import Settings
 from app_assignment_1.monitor import Controller
 from app_assignment_1.router import MockJevRouter
-from app_assignment_1.schemas import Intervention, MonitorSample, ReleaseEvent
+from app_assignment_1.schemas import (
+    KEPT_REASON_MARKER,
+    Intervention,
+    MonitorSample,
+    ReleaseEvent,
+)
 from app_assignment_1.service import Gateway
 from app_assignment_1.store import MemoryStore
 
@@ -527,3 +532,79 @@ def test_a_release_change_clears_the_restored_windows():
     # The cut is at the deploy, not the later confirmation.
     assert list(g.controller.windows[SMALL]) == ["ok"]
     assert list(g.semantic.windows[SMALL]) == ["agree"]
+
+
+def _release(at, backend, action, revision, reason="test", version="v2-faster"):
+    return ReleaseEvent(
+        at=at,
+        backend=backend,
+        action=action,
+        version=version,
+        from_version="base" if action == "deployed" else None,
+        rollback_target="base",
+        actor="operator",
+        reason=reason,
+        revision=revision,
+    )
+
+
+def test_a_release_change_behind_many_newer_release_events_still_cuts():
+    # Deploy to the small model, then 300 deploy and rollback pairs on the
+    # large one: more than any capped read of recent events would reach.
+    settings = Settings(_env_file=None)
+    store = MemoryStore(settings.request_store_limit)
+    large = "qwen3-4b"
+    events = [_release(NOW - timedelta(minutes=5), SMALL, "deployed", 1)]
+    for i in range(300):
+        at = NOW - timedelta(minutes=4)
+        events.append(_release(at, large, "deployed", 2 * i + 1))
+        events.append(_release(at, large, "rolled_back", 2 * i + 2))
+
+    async def go() -> Gateway:
+        await store.save_monitor_samples(
+            [
+                failure(NOW - timedelta(minutes=6), "format_failure"),
+                failure(NOW - timedelta(minutes=3), "ok"),
+            ]
+        )
+        await store.save_release_events(events)
+        g = gateway(settings, store)
+        await g.restore_releases()
+        await g.restore()
+        return g
+
+    g = asyncio.run(go())
+    assert list(g.controller.windows[SMALL]) == ["ok"]
+
+
+def test_a_kept_release_event_is_not_a_release_change_on_restart():
+    # A deploy whose save could not be confirmed leaves a kept record. It
+    # changes nothing while running, so it must not cut the window at restart.
+    settings = Settings(_env_file=None)
+    store = MemoryStore(settings.request_store_limit)
+    kept = _release(
+        NOW - timedelta(minutes=2),
+        SMALL,
+        "deployed",
+        2,
+        reason=f"change to v3 {KEPT_REASON_MARKER}; kept v2-faster",
+    )
+
+    async def go() -> Gateway:
+        await store.save_monitor_samples(
+            [
+                failure(NOW - timedelta(minutes=3), "format_failure"),
+                failure(NOW - timedelta(minutes=1), "format_failure"),
+            ]
+        )
+        await store.save_release_events(
+            [_release(NOW - timedelta(minutes=10), SMALL, "deployed", 1), kept]
+        )
+        g = gateway(settings, store)
+        await g.restore_releases()
+        await g.restore()
+        return g
+
+    g = asyncio.run(go())
+    # Cut at the real deploy (10 min ago), not the kept record.
+    assert list(g.controller.windows[SMALL]) == ["format_failure"] * 2

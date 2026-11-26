@@ -239,6 +239,10 @@ VERSION_PATTERN = r"^[a-z0-9][a-z0-9._-]{0,63}$"
 ReleaseStatus = Literal["stable", "watching", "rolled_back"]
 ReleaseAction = Literal["deployed", "confirmed", "rolled_back"]
 ReleaseActor = Literal["operator", "controller"]
+# A kept record (an operator change whose save was not confirmed) has this
+# phrase in its reason. It changes nothing, so restore does not count it as a
+# release change.
+KEPT_REASON_MARKER = "not confirmed as saved"
 
 
 class ReleaseChanges(StrictModel):
