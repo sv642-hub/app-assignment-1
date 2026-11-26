@@ -323,7 +323,6 @@ def _run_phases(
     timeout: float,
     clock: Callable[[], float],
 ) -> tuple[float, float | None]:
-
     for _ in range(normal_requests):
         tick("normal")
     fault_at = round(clock() - start, 3)
