@@ -30,11 +30,21 @@ dev = [
     "pre-commit>=3.7",
     "pyyaml>=6.0",
 ]
+# Offline probe extra: ModelLens (with torch and transformers) for reading
+# Qwen3-1.7B activations. Kept out of the gateway image; see docs/PROBE.md.
+# Install with `uv sync --extra dev --extra probe`.
+probe = [
+    "modellens @ git+https://github.com/SebastianVillalobosAlva/ModelLens@0d900a56f7766e494da5a2f5bf5a4dcbe76a29f5",
+]
 
 # Build backend
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# The probe extra pins ModelLens to a git commit, which needs this.
+[tool.hatch.metadata]
+allow-direct-references = true
 
 # Hatchling: where to find the package sources (src/ layout)
 [tool.hatch.build.targets.wheel]
