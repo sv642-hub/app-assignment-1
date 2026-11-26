@@ -255,10 +255,12 @@ def test_caddy_does_not_proxy_metrics():
     # Two reverse proxies: the @gateway handle, whose matcher decides what
     # reaches the gateway, and Grafana, which only /grafana reaches.
     assert caddyfile.count("reverse_proxy") == 2
-    assert (
-        "@grafana path /grafana /grafana/*\n    handle @grafana {\n        reverse_proxy grafana:3000"
-        in (caddyfile)
+    grafana = (
+        "@grafana path /grafana /grafana/*\n"
+        "    handle @grafana {\n"
+        "        reverse_proxy grafana:3000"
     )
+    assert grafana in caddyfile
     matcher = re.search(r"@gateway path (.+)", caddyfile)
     assert matcher, "Caddyfile no longer has the @gateway matcher"
     patterns = matcher.group(1).split()
