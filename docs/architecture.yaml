@@ -204,6 +204,7 @@ components:
     style: stretch
     items:
       - built: Skeleton and gate check
+      - built: ModelLens extractor, not yet run
       - todo: Load Qwen3-1.7B outside vLLM; real activations
       - todo: Gate run a week after the GPU host and dev split
 
