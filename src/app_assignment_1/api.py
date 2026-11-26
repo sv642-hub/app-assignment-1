@@ -17,6 +17,7 @@ from app_assignment_1.config import Settings, get_settings
 from app_assignment_1.jev import TypeSafeJevRouter, create_jev_http_client
 from app_assignment_1.labels import load_labels
 from app_assignment_1.real_backends import open_vllm_backends
+from app_assignment_1.releases import AlreadyServing, NoRollbackTarget, UnknownVersion
 from app_assignment_1.router import MockJevRouter, Router
 from app_assignment_1.schemas import (
     BackendConfig,
@@ -29,8 +30,10 @@ from app_assignment_1.schemas import (
     JevBreakerStatus,
     JevFaultConfig,
     JevFaultRequest,
+    ModelRelease,
     OperatorRequest,
     RecentRequest,
+    ReleaseRequest,
 )
 from app_assignment_1.service import (
     BackendUnavailable,
@@ -38,8 +41,21 @@ from app_assignment_1.service import (
     Gateway,
     LastUsableBackend,
     NotAMock,
+    ReleaseNotSaved,
+    ReleaseSaveUnknown,
+    ReleasesNotLoaded,
 )
 from app_assignment_1.store import Store, create_store
+
+UNKNOWN_SAVE = (
+    "Could not confirm the release change was saved, so it was not made. The "
+    "gateway saves the release it kept as a newer change once the store "
+    "answers. Until then, a restart may serve the change"
+)
+NOT_LOADED = (
+    "The saved releases could not be read, so no release change can be made "
+    "yet; nothing changed. Try again once the store answers"
+)
 
 
 def create_app(
@@ -71,6 +87,7 @@ def create_app(
             )
             gateway = Gateway(configured, chosen, backends, store=opened)
             await opened.open()
+            await gateway.restore_releases()
             app.state.gateway = gateway
             app.state.operator_token = configured.operator_token
             try:
@@ -80,11 +97,12 @@ def create_app(
                 await opened.close()
 
     app = FastAPI(
-        title="Smart AI Gateway (mock prototype)",
+        title="Smart AI Gateway",
         version="0.2.0",
         description=(
-            "Fictional policy replies from mock Qwen backends. Jev is a local "
-            "mock unless APP_JEV_MODE=real, which sends each message to TypeSafe."
+            "Fictional policy replies. The Qwen backends are mocks unless "
+            "APP_PROVIDER_MODE=real, which calls vLLM; Jev is a local mock unless "
+            "APP_JEV_MODE=real, which sends each message to TypeSafe."
         ),
         lifespan=lifespan,
     )
@@ -110,10 +128,14 @@ def create_app(
         try:
             return await gateway.chat(payload.message)
         except BackendUnavailable as exc:
+            # The mock wording stays as it was, for scripts and docs that match it.
+            mocks = all(getattr(b, "mocked", True) for b in gateway.backends)
             detail = (
                 "deadline_exceeded"
                 if isinstance(exc, DeadlineExceeded)
                 else "No mock backend is available"
+                if mocks
+                else "No model is available"
             )
             raise HTTPException(503, detail) from exc
 
@@ -153,6 +175,8 @@ def create_app(
                 )
                 for r in await gateway.store.recent_requests(20)
             ],
+            releases=gateway.releases.stats(),
+            release_history=await gateway.store.recent_release_events(20),
             usage=list(gateway.usage.values()),
             backends=[b.config for b in gateway.backends],
             monitor=monitor,
@@ -202,6 +226,78 @@ def create_app(
         gateway.operator_enable(name, (payload or OperatorRequest()).reason)
         await gateway.save_interventions()
         return gateway.controller.stats()
+
+    @app.post(
+        "/v1/operator/models/{name}/release",
+        response_model=ModelRelease,
+        dependencies=[Depends(require_operator)],
+        responses={
+            404: {"description": "The model has no such version"},
+            409: {"description": "The model already serves that version"},
+            503: {
+                "description": "The change was not made: it could not be saved,"
+                " or the saved releases could not be read"
+            },
+        },
+    )
+    async def deploy_release(
+        name: BackendName, payload: ReleaseRequest, request: Request
+    ) -> ModelRelease:
+        """Deploy a version to a model. The controller watches it, and rolls it
+        back if it fails before it is confirmed. Replaces any fault set with
+        /v1/faults."""
+        gateway: Gateway = request.app.state.gateway
+        try:
+            return await gateway.deploy_release(name, payload.version, payload.reason)
+        except UnknownVersion:
+            raise HTTPException(
+                404, f"{name} has no version {payload.version}"
+            ) from None
+        except AlreadyServing:
+            raise HTTPException(
+                409, f"{name} already serves {payload.version}"
+            ) from None
+        except ReleaseNotSaved:
+            raise HTTPException(
+                503, "The release change could not be saved; nothing changed"
+            ) from None
+        except ReleaseSaveUnknown:
+            raise HTTPException(503, UNKNOWN_SAVE) from None
+        except ReleasesNotLoaded:
+            raise HTTPException(503, NOT_LOADED) from None
+
+    @app.post(
+        "/v1/operator/models/{name}/rollback",
+        response_model=ModelRelease,
+        dependencies=[Depends(require_operator)],
+        responses={
+            409: {"description": "The model has no version to roll back to"},
+            503: {
+                "description": "The change was not made: it could not be saved,"
+                " or the saved releases could not be read"
+            },
+        },
+    )
+    async def rollback_release(
+        name: BackendName, request: Request, payload: OperatorRequest | None = None
+    ) -> ModelRelease:
+        """Put a model back on its rollback target, the last version known to
+        be good."""
+        gateway: Gateway = request.app.state.gateway
+        try:
+            return await gateway.rollback_release(
+                name, (payload or OperatorRequest()).reason
+            )
+        except NoRollbackTarget:
+            raise HTTPException(409, f"{name} has no version to roll back to") from None
+        except ReleaseNotSaved:
+            raise HTTPException(
+                503, "The release change could not be saved; nothing changed"
+            ) from None
+        except ReleaseSaveUnknown:
+            raise HTTPException(503, UNKNOWN_SAVE) from None
+        except ReleasesNotLoaded:
+            raise HTTPException(503, NOT_LOADED) from None
 
     @app.post(
         "/v1/faults",
