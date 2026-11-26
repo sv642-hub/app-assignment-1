@@ -4,7 +4,81 @@ const ACTION_LABELS = {
   kept_last_backend: "kept last backend",
   operator_disabled: "disabled by operator",
   operator_enabled: "enabled by operator",
+  rolled_back: "rolled back",
 };
+
+const RELEASE_STATUS = {
+  stable: { label: "Stable", tone: "good" },
+  watching: { label: "Watching", tone: "neutral" },
+  rolled_back: { label: "Rolled back", tone: "watch" },
+};
+
+function ReleasesCard({ releases, history }) {
+  const log = [...(history ?? [])].reverse();
+  return (
+    <section className="card">
+      <h2>Releases</h2>
+      <p className="muted small">The version each model serves. After a deploy the controller watches the model; if it crosses the failure threshold before the watch ends, the controller rolls it back to the last good version instead of disabling it. Versions change mock settings only.</p>
+      <div className="table-scroll">
+        <table className="log" aria-label="Releases">
+          <thead>
+            <tr>
+              <th scope="col">Model</th>
+              <th scope="col">Version</th>
+              <th scope="col">Status</th>
+              <th scope="col">Rollback target</th>
+            </tr>
+          </thead>
+          <tbody>
+            {releases.map((r) => {
+              const status = RELEASE_STATUS[r.status] ?? { label: r.status, tone: "neutral" };
+              return (
+                <tr key={r.name}>
+                  <td className="mono">{r.name}</td>
+                  <td className="mono">{r.version}</td>
+                  <td>
+                    <span className={`pill pill-${status.tone}`}>{status.label}</span>
+                    {r.status === "watching" && <span className="muted small"> {r.watched_samples} of {r.watch_samples} calls</span>}
+                  </td>
+                  <td className="mono">{r.rollback_target ?? "none"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {log.length > 0 && (
+        <div className="table-scroll">
+          <table className="log" aria-label="Release history">
+            <thead>
+              <tr>
+                <th scope="col">Time</th>
+                <th scope="col">Model</th>
+                <th scope="col">Change</th>
+                <th scope="col">By</th>
+                <th scope="col">Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {log.map((e) => (
+                <tr key={`${e.at}-${e.backend}-${e.action}`}>
+                  <td className="mono">{formatTime(e.at)}</td>
+                  <td className="mono">{e.backend}</td>
+                  <td>
+                    {e.action === "confirmed" ? `confirmed ${e.version}` : `${e.action === "deployed" ? "deployed" : "rolled back to"} ${e.version}`}
+                    {e.from_version && e.action !== "confirmed" && <span className="muted small"> (was {e.from_version})</span>}
+                  </td>
+                  <td>{e.actor}</td>
+                  <td>{e.reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
 
 function percent(value) {
   return `${Math.round(value * 100)}%`;
@@ -126,7 +200,7 @@ function bannerFor(health, models) {
   return { tone: "bad", title: "Degraded", text: parts.join(" ") };
 }
 
-function SemanticCard({ semantic, rules }) {
+export function SemanticCard({ semantic, rules }) {
   const baseline = rules.baseline_disagreement_rate;
   return (
     <section className="card" aria-label="Semantic monitor">
@@ -203,7 +277,7 @@ function costText(usage) {
   return "$" + cost.toFixed(4);
 }
 
-function JevCard({ breaker, usage }) {
+export function JevCard({ breaker, usage }) {
   const pill = BREAKER_PILLS[breaker.state];
   return (
     <section className="card model-card" aria-label="Jev router">
@@ -365,6 +439,8 @@ function HealthBody({ health }) {
       </div>
 
       {health.semantic && health.semantic_rules && <SemanticCard semantic={health.semantic} rules={health.semantic_rules} />}
+
+      {health.releases?.length > 0 && <ReleasesCard releases={health.releases} history={health.release_history} />}
 
       <section className="card">
         <h2>Recent completed requests</h2>

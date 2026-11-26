@@ -32,6 +32,11 @@ class Controller:
     Rules: a sliding window per backend, a minimum sample count before acting,
     a cooldown after which the backend is re-enabled with a fresh window, and an
     action limit that never disables the last usable backend.
+
+    A model whose release was just deployed is watched (see releases.py). While
+    it is, crossing the threshold rolls the release back instead: the model
+    keeps serving on its rollback target, with a fresh window, so a rollback
+    also works on the last usable model.
     """
 
     def __init__(
@@ -65,6 +70,22 @@ class Controller:
         # Models above the semantic baseline that could not be disabled, so
         # kept_last_backend is logged once per run, not on every reply.
         self.semantic_warned: set[BackendName] = set()
+        # Models with a release under watch: calls counted since the deploy.
+        # Never shorter than the evidence the checks need before they act:
+        # the failure minimum, and the semantic minimum when that acts too.
+        self.watch_samples = max(
+            settings.release_watch_samples,
+            settings.monitor_min_samples,
+            settings.semantic_min_samples if settings.semantic_actions_enabled else 0,
+        )
+        self.watching: dict[BackendName, int] = {}
+        # Roll a model back; return the version it serves now, or None if it
+        # has nowhere to go. Set by the gateway.
+        self.roll_back: Callable[[BackendName, str], str | None] | None = None
+        # Called with a model's name and its count while watching, and when
+        # the watch ends with the release confirmed.
+        self.on_watched: list[Callable[[BackendName, int], None]] = []
+        self.on_confirm: list[Callable[[BackendName], None]] = []
 
     def _note(
         self,
@@ -103,6 +124,57 @@ class Controller:
             reset(name)
         self._note(name, "operator_enabled", reason)
 
+    def watch(self, name: BackendName) -> None:
+        """Start watching a new release, with a fresh window: calls to the
+        version before it say nothing about this one."""
+        self.watching[name] = 0
+        self.windows[name].clear()
+        self.warned.discard(name)
+        self.semantic_warned.discard(name)
+
+    def unwatch(self, name: BackendName) -> None:
+        """End a watch after a rollback, with a fresh window for the version
+        the model serves now."""
+        self.watching.pop(name, None)
+        self.windows[name].clear()
+        self.warned.discard(name)
+        self.semantic_warned.discard(name)
+
+    def _count_watch(self, name: BackendName) -> None:
+        if name not in self.watching:
+            return
+        if self.watching[name] >= self.watch_samples:
+            return
+        self.watching[name] += 1
+        count = self.watching[name]
+        for hook in self.on_watched:
+            hook(name, count)
+
+    def finish_call(self, name: BackendName) -> None:
+        """After every check on one call, the semantic one included: confirm
+        a watched release that has served its watch below the threshold.
+        Confirming here, not in `record`, gives the semantic check on the
+        last call of the watch its chance to roll back."""
+        count = self.watching.get(name)
+        if count is None or count < self.watch_samples or self._failing(name):
+            return
+        del self.watching[name]
+        for confirm in self.on_confirm:
+            confirm(name)
+
+    def _roll_back(self, name: BackendName, reason: str) -> str | None:
+        """Roll back a watched release. None if there is nowhere to go, and
+        the usual disable rules apply."""
+        if self.roll_back is None:
+            return None
+        version = self.roll_back(name, reason)
+        if version is None:
+            return None
+        # The gateway's release hook has already called unwatch.
+        self.watching.pop(name, None)
+        self._note(name, "rolled_back", f"back to {version}; {reason}")
+        return f"rolled back {name} to {version}: {reason}"
+
     def is_disabled(self, name: BackendName) -> bool:
         # Check the cooldown first, so one that ended under a hold still logs.
         cooling = self._cooling_down(name)
@@ -124,17 +196,24 @@ class Controller:
         self._note(name, "re-enabled", "cooldown elapsed; window reset", now - until)
         return False
 
-    def record(self, name: BackendName, failed: bool, can_disable: bool) -> str | None:
-        """Record one reply's format check; return the action taken, if any."""
+    def record(
+        self, name: BackendName, failed: bool, can_disable: bool, own_route: bool = True
+    ) -> str | None:
+        """Record one reply's format check; return the action taken, if any.
+        Only calls on the model's own route count toward a release's watch:
+        the semantic check sees only those, so rerouted calls alone must not
+        confirm a release."""
         outcome: Outcome = "format_failure" if failed else "ok"
-        return self._record(name, outcome, can_disable)
+        return self._record(name, outcome, can_disable, own_route)
 
-    def record_error(self, name: BackendName, can_disable: bool) -> str | None:
+    def record_error(
+        self, name: BackendName, can_disable: bool, own_route: bool = True
+    ) -> str | None:
         """Record one call that raised; return the action taken, if any."""
-        return self._record(name, "call_error", can_disable)
+        return self._record(name, "call_error", can_disable, own_route)
 
     def _record(
-        self, name: BackendName, outcome: Outcome, can_disable: bool
+        self, name: BackendName, outcome: Outcome, can_disable: bool, own_route: bool
     ) -> str | None:
         window = self.windows[name]
         window.append(outcome)
@@ -142,8 +221,10 @@ class Controller:
         rate = failures / len(window)
         if len(window) < self.min_samples or rate < self.threshold:
             self.warned.discard(name)
+            if own_route:
+                self._count_watch(name)
             return None
-        if name in self.disabled_until:
+        if name in self.disabled_until and name not in self.watching:
             return None
         errors = window.count("call_error")
         kind = (
@@ -154,6 +235,13 @@ class Controller:
             else "failure"
         )
         reason = f"{kind} rate {rate:.0%} over last {len(window)} calls"
+        if name in self.watching:
+            action = self._roll_back(name, reason)
+            if action is not None:
+                return action
+            self.watching.pop(name, None)
+            if name in self.disabled_until:
+                return None
         return self._disable(name, reason, can_disable, self.warned, "failure")
 
     def _failing(self, name: BackendName) -> bool:
@@ -188,6 +276,11 @@ class Controller:
         if reason is None:
             self.semantic_warned.discard(name)
             return None
+        if name in self.watching:
+            action = self._roll_back(name, reason)
+            if action is not None:
+                return action
+            self.watching.pop(name, None)
         if name in self.disabled_until:
             return None
         return self._disable(
