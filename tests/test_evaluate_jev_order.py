@@ -91,8 +91,13 @@ def run(
     )
 
 
-def records(out: Path) -> list[dict[str, Any]]:
+def lines(out: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in out.read_text().splitlines()]
+
+
+def records(out: Path) -> list[dict[str, Any]]:
+    """The settings line and the answers, without the "start" lines."""
+    return [r for r in lines(out) if "start" not in r]
 
 
 def call(row: int, order: str, repeat: int, route: str | None, **extra: Any) -> dict:
@@ -306,15 +311,69 @@ def test_failed_calls_are_retried_on_a_rerun(tmp_path: Path) -> None:
     assert summary["flip_rate"]["mean"] == 1.0
 
 
+def started(out: Path) -> int:
+    return sum("start" in r for r in lines(out))
+
+
 def test_the_call_budget_holds_across_reruns(tmp_path: Path) -> None:
     out = tmp_path / "calls.jsonl"
     meta = {**META, "max_calls": 7}
     with pytest.raises(script.Stopped, match="budget"):
         run(out, lambda order: order[0], meta=meta)
-    assert len(records(out)) == 1 + 7
+    assert started(out) == 7
     with pytest.raises(script.Stopped, match="budget"):
         run(out, lambda order: order[0], meta=meta)
-    assert len(records(out)) == 1 + 7
+    assert started(out) == 7
+
+
+def test_a_spent_budget_can_be_raised_on_a_rerun(tmp_path: Path) -> None:
+    # Review on #90: raising --max-calls used to need a new --out.
+    out = tmp_path / "calls.jsonl"
+    with pytest.raises(script.Stopped, match="budget"):
+        run(out, lambda order: order[0], meta={**META, "max_calls": 18})
+    assert run(out, lambda order: order[0], meta={**META, "max_calls": 22}) == 2
+    summary = script.summarize(records(out))
+    assert summary["answered_calls"] == 20
+    assert started(out) == 20
+
+
+def test_calls_sent_but_not_saved_still_count(tmp_path: Path) -> None:
+    # Review on #90: a Ctrl-C with calls in flight left them uncharged.
+    out = tmp_path / "calls.jsonl"
+    out.write_text(
+        json.dumps({"meta": META})
+        + "\n"
+        + "".join(
+            json.dumps(
+                {"start": True, "row": r, "order": "standard_first", "repeat": 0}
+            )
+            + "\n"
+            for r in range(5)
+        )
+    )
+    with pytest.raises(script.Stopped, match="budget"):
+        run(out, lambda order: order[0], meta={**META, "max_calls": 5})
+    assert started(out) == 5
+
+
+def test_a_last_line_without_a_newline_does_not_break_the_file(
+    tmp_path: Path,
+) -> None:
+    out = tmp_path / "calls.jsonl"
+    run(out, lambda order: order[0])
+    saved = out.read_text().rstrip("\n").splitlines()
+    out.write_text("\n".join(saved[:-2]))  # complete JSON, no newline
+    assert run(out, lambda order: order[0]) >= 1
+    assert script.summarize(records(out))["answered_calls"] == 20
+
+
+def test_repeats_must_be_at_least_two(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="repeats"):
+        run(
+            tmp_path / "calls.jsonl",
+            lambda order: order[0],
+            meta={**META, "repeats": 1},
+        )
 
 
 def test_a_run_stops_after_errors_in_a_row(tmp_path: Path) -> None:
@@ -377,3 +436,53 @@ def test_sample_takes_a_fixed_number_per_intent() -> None:
         "card_arrival",
     ]
     assert script.sample(examples, 2) == chosen
+
+
+def test_the_headline_does_not_depend_on_which_order_lost_a_call() -> None:
+    # Review on #90: with P(complex) 0.4 in one order and 0.1 in the other
+    # (true excess 0.09), losing calls in one order changed the headline's sign.
+    n = 800
+
+    def headline(lost: str | None) -> float:
+        rng = random.Random(3)
+        calls = [{"meta": {**META, "messages": n}}]
+        for row in range(n):
+            for order, p_complex in (("standard_first", 0.4), ("complex_first", 0.1)):
+                for k in range(3):
+                    if order == lost and k == 2 and row % 2:
+                        continue
+                    route = "complex" if rng.random() < p_complex else "standard"
+                    calls.append(call(row, order, k, route))
+        return script.summarize(calls)["flip_minus_same_order"]["mean"]
+
+    for lost in (None, *script.ORDERS):
+        assert headline(lost) > 0.04, lost
+
+
+def test_same_order_disagreement_weights_the_orders_equally() -> None:
+    orders = {
+        "standard_first": [
+            call(0, "standard_first", k, route)
+            for k, route in enumerate(["standard", "complex", "standard"])
+        ],
+        "complex_first": [call(0, "complex_first", k, "standard") for k in range(2)],
+    }
+    # standard_first: 2 of 3 pairs differ; complex_first: 0 of 1. Mean 1/3,
+    # not the pooled 2/4.
+    assert script.same_order(orders) == pytest.approx(1 / 3)
+
+
+def test_the_verdict_gates_on_the_headlines_own_n() -> None:
+    # 150 messages answered in both orders, but only 20 keep two calls in each.
+    n = 150
+    meta = {**META, "messages": n}
+    calls: list[dict[str, Any]] = [{"meta": meta}]
+    for row in range(n):
+        for order in script.ORDERS:
+            for k in range(2 if row < 20 else 1):
+                calls.append(call(row, order, k, first_listed(order)))
+    summary = script.summarize(calls)
+
+    assert summary["messages_answered_in_both_orders"] == n
+    assert summary["flip_minus_same_order"]["n"] == 20
+    assert summary["verdict"].startswith("inconclusive: too few")

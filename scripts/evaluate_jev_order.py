@@ -2,7 +2,7 @@
 Jev's route? Run by hand with a real TypeSafe key.
 
     uv run python scripts/evaluate_jev_order.py run --out results/jev_order.jsonl \\
-        --max-calls 1200 [--per-intent 4] [--repeats 2] [--concurrency 4] \\
+        --max-calls 1300 [--per-intent 4] [--repeats 2] [--concurrency 4] \\
         [--timeout 15] [--max-errors-in-a-row 10]
     uv run python scripts/evaluate_jev_order.py summarize results/jev_order.jsonl
 
@@ -13,24 +13,35 @@ each. Only the order of the two route options differs. Calls run in a seeded
 random order, never one derived from message text. Each call attempt is one
 JSON line keyed by the message's `source_row`, without its text.
 
-The first line records the settings, including the timeout, the call budget
-and a hash of each order's questions. A rerun with the same settings resumes;
-other settings are refused. Only answered calls count as done, so a rerun
-retries calls that failed (timeouts, 429, 5xx, bad answers); there are no
-retries within a run. Every attempt, failed or not, counts toward
-`--max-calls`, across reruns. The run stops on a 401, or after
-`--max-errors-in-a-row` failures in a row. A line cut off by a kill is dropped
-and its call redone.
+Budget: `--per-intent 4 --repeats 2` is 308 messages, 1,232 calls, so 1,300
+leaves a little room for failed attempts; the full split is 1,989 messages,
+7,956 calls. `--repeats` must be at least 2, because the result compares calls
+in the same order.
+
+The first line records the settings, including the timeout and a hash of each
+order's questions. A rerun with the same settings resumes; other settings are
+refused. `--max-calls` and `--max-errors-in-a-row` are not part of that match,
+so a spent budget can be raised on a rerun (with the same --out). Only
+answered calls count as done, so a rerun retries calls that failed (timeouts,
+429, 5xx, bad answers); there are no retries within a run. A line saying a call
+was started is saved before the call is sent, and every started call, answered
+or not, counts toward `--max-calls` across reruns, so calls cut off by Ctrl-C
+are charged too. The run stops on a 401, or after `--max-errors-in-a-row`
+failures in a row. A line cut off by a kill is dropped and its call redone.
 
 `summarize` prints the measures from the position-bias proposal (#86), each
 as {mean, low, high, n} with a 95% bootstrap interval that resamples messages,
 keeping each message's calls together. Every measure uses only messages with
-answered calls in both orders and gives both orders equal weight, so calls
-lost in one order cannot fake a bias. The result is the flip rate minus the
+answered calls in both orders and gives both orders equal weight (the
+same-order disagreement is taken in each order, then averaged), so calls lost
+in one order cannot fake a bias. The result is the flip rate minus the
 same-order disagreement: a flip only points to order bias if it happens more
-often than two calls in the same order disagree. The verdict is
-"inconclusive" when that interval covers 0, fewer than MIN_MESSAGES messages
-have both orders, or under MIN_PAIRED_COVERAGE of the sampled messages do.
+often than two calls in the same order disagree. It needs two answered calls
+in each order, so the verdict is "inconclusive" when that interval covers 0,
+when fewer than MIN_MESSAGES messages have that many (the result's own n), or
+when under MIN_PAIRED_COVERAGE of the sampled messages are answered in both
+orders. For a model that ignores order, a conclusive verdict still comes up
+in about 8% of runs, not 5%.
 TypeSafe does not document that criteria order reaches the model, so a
 difference near 0 also fits order being ignored.
 
@@ -79,6 +90,9 @@ MAX_CONCURRENCY = 16
 # model fell outside it in 17 of 100 runs at 30 messages, 9 at 100).
 MIN_MESSAGES = 100
 MIN_PAIRED_COVERAGE = 0.9
+MAX_TIMEOUT = 29.9  # Settings needs the request deadline to exceed the timeout + 15
+# Settings that must match to resume. The budget and the error limit may change.
+RESUME_KEYS_NOT_PINNED = ("max_calls", "max_errors_in_a_row")
 
 Record = dict[str, Any]
 Orders = dict[str, list[Record]]  # a message's answered calls, by order
@@ -119,6 +133,10 @@ def sample(examples: Sequence[Example], per_intent: int | None) -> list[Example]
         rng.shuffle(rows)
         chosen += rows[:per_intent]
     return chosen
+
+
+def pinned(meta: Record) -> Record:
+    return {k: v for k, v in meta.items() if k not in RESUME_KEYS_NOT_PINNED}
 
 
 def read_records(path: Path, repair: bool = False) -> list[Record]:
@@ -177,19 +195,28 @@ async def run_experiment(
     """Make the calls not yet answered in `out`; returns how many were made.
 
     `meta` must hold `repeats`, `seed`, `max_calls` and `max_errors_in_a_row`.
+    Every call is saved as a "start" line before it is sent and counts toward
+    `max_calls`; the answer is a second line.
     """
+    if meta["repeats"] < 2:
+        raise ValueError("repeats must be at least 2")
     if not 1 <= concurrency <= MAX_CONCURRENCY:
         raise ValueError(f"concurrency must be 1 to {MAX_CONCURRENCY}")
     saved: list[Record] = []
     if out.exists() and out.stat().st_size:
         first, *saved = read_records(out, repair=True) or [{}]
-        if first.get("meta") != meta:
+        if pinned(first.get("meta", {})) != pinned(meta):
             raise ValueError(f"{out} was made with other settings; use a new --out")
     else:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps({"meta": meta}) + "\n")
-    done = {(r["row"], r["order"], r["repeat"]) for r in saved if r["error"] is None}
-    budget = meta["max_calls"] - len(saved)
+    done = {
+        (r["row"], r["order"], r["repeat"])
+        for r in saved
+        if "start" not in r and r["error"] is None
+    }
+    started = sum("start" in r for r in saved)
+    budget = meta["max_calls"] - started
 
     calls = [
         (example, order, repeat)
@@ -210,7 +237,16 @@ async def run_experiment(
             routers[order] = TypeSafeJevRouter(client, settings.jev_model, labels)
             routers[order].questions = questions_for(labels, order)
 
+        with out.open("ab+") as raw:
+            raw.seek(0, 2)
+            if raw.tell():
+                raw.seek(-1, 2)
+                needs_newline = raw.read(1) != b"\n"
+            else:
+                needs_newline = False
         with out.open("a") as handle:
+            if needs_newline:
+                handle.write("\n")
 
             async def one(example: Example, order: str, repeat: int) -> None:
                 nonlocal made, errors_in_a_row, stop_reason
@@ -224,10 +260,22 @@ async def run_experiment(
                         )
                         return
                     made += 1
+                    handle.write(
+                        json.dumps(
+                            {
+                                "start": True,
+                                "row": example.source_row,
+                                "order": order,
+                                "repeat": repeat,
+                            }
+                        )
+                        + "\n"
+                    )
+                    handle.flush()
                     record = await call_once(routers[order], example, order, repeat)
                     if record["error"] == "http_401":
                         stop_reason = "Jev answered 401: check APP_JEV_API_KEY"
-                        return
+                        return  # its start line stays and counts
                     handle.write(json.dumps(record) + "\n")
                     handle.flush()
                     if record["error"] is None:
@@ -287,13 +335,16 @@ def flip(orders: Orders) -> float:
 
 
 def same_order(orders: Orders) -> float | None:
-    """Share of same-order call pairs with different routes."""
-    pairs = [
-        a["route"] != b["route"]
-        for calls in orders.values()
-        for a, b in combinations(calls, 2)
-    ]
-    return statistics.fmean(pairs) if pairs else None
+    """Share of same-order call pairs with different routes: each order's
+    share on its own, then their mean, so which order lost a call cannot move
+    it. None unless both orders have at least two answered calls."""
+    shares = []
+    for calls in orders.values():
+        pairs = [a["route"] != b["route"] for a, b in combinations(calls, 2)]
+        if not pairs:
+            return None
+        shares.append(statistics.fmean(pairs))
+    return statistics.fmean(shares)
 
 
 def excess_flip(orders: Orders) -> float | None:
@@ -325,9 +376,11 @@ def p_standard_gap(orders: Orders) -> float | None:
     return first - second
 
 
-def verdict(result: dict[str, Any] | None, paired: int, coverage: float) -> str:
-    if paired < MIN_MESSAGES or coverage < MIN_PAIRED_COVERAGE or result is None:
-        return "inconclusive: too few messages answered in both orders"
+def verdict(result: dict[str, Any] | None, coverage: float) -> str:
+    """Gates on the result's own n: messages with two answered calls in each
+    order, not just one in each."""
+    if result is None or result["n"] < MIN_MESSAGES or coverage < MIN_PAIRED_COVERAGE:
+        return "inconclusive: too few messages with two answered calls per order"
     if result["low"] <= 0 <= result["high"]:
         return "inconclusive: the interval covers 0"
     if result["low"] > 0:
@@ -337,7 +390,7 @@ def verdict(result: dict[str, Any] | None, paired: int, coverage: float) -> str:
 
 def summarize(records: Sequence[Record]) -> dict[str, Any]:
     meta = records[0].get("meta", {}) if records else {}
-    attempts = [r for r in records if "meta" not in r]
+    attempts = [r for r in records if "meta" not in r and "start" not in r]
     answered = [r for r in attempts if r["error"] is None]
     planned = meta.get("messages", 0) * meta.get("repeats", 0)
 
@@ -375,7 +428,7 @@ def summarize(records: Sequence[Record]) -> dict[str, Any]:
         "messages_answered_in_one_order_only": one_order,
         "paired_coverage": coverage,
         "flip_minus_same_order": result,
-        "verdict": verdict(result, len(paired), coverage),
+        "verdict": verdict(result, coverage),
         "flip_rate": per_message(flip),
         "same_order_disagreement": per_message(same_order),
         "first_position_rate": per_message(first_position),
@@ -401,6 +454,16 @@ def bounded_int(low: int, high: int) -> Callable[[str], int]:
     return parse
 
 
+def bounded_float(low: float, high: float) -> Callable[[str], float]:
+    def parse(text: str) -> float:
+        value = float(text)
+        if not low < value <= high:
+            raise argparse.ArgumentTypeError(f"must be more than {low}, at most {high}")
+        return value
+
+    return parse
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -415,9 +478,14 @@ def main() -> None:
     run.add_argument(
         "--per-intent", type=bounded_int(1, 10_000), help="all messages if unset"
     )
-    run.add_argument("--repeats", type=bounded_int(1, 10), default=2)
+    run.add_argument("--repeats", type=bounded_int(2, 10), default=2)
     run.add_argument("--concurrency", type=bounded_int(1, MAX_CONCURRENCY), default=4)
-    run.add_argument("--timeout", type=float, default=15, help="seconds, at most 30")
+    run.add_argument(
+        "--timeout",
+        type=bounded_float(0, MAX_TIMEOUT),
+        default=15,
+        help=f"seconds, more than 0 and at most {MAX_TIMEOUT}",
+    )
     run.add_argument("--max-errors-in-a-row", type=bounded_int(1, 1000), default=10)
     show = sub.add_parser("summarize")
     show.add_argument("path", type=Path)
