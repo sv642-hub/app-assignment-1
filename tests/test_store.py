@@ -27,7 +27,13 @@ from app_assignment_1.api import create_app
 from app_assignment_1.config import PUBLIC_DATABASE_PASSWORD, Settings
 from app_assignment_1.records import JevAssessment
 from app_assignment_1.router import MockJevRouter
-from app_assignment_1.schemas import ChatResponse, Intervention, ReleaseEvent, Trace
+from app_assignment_1.schemas import (
+    ChatResponse,
+    Intervention,
+    MonitorSample,
+    ReleaseEvent,
+    Trace,
+)
 from app_assignment_1.service import Gateway
 from app_assignment_1.store import (
     MIGRATIONS,
@@ -514,6 +520,45 @@ def test_shutdown_saves_pending_interventions() -> None:
     assert list(store.interventions) == [intervention(0)]
 
 
+def test_monitor_samples_keep_the_newest_per_window(make_store: MakeStore) -> None:
+    start = datetime(2026, 11, 22, 12, tzinfo=UTC)
+    samples = [
+        MonitorSample(
+            at=start + timedelta(seconds=i),
+            model="qwen3-1.7b",
+            monitor="failure",
+            outcome="call_error" if i == 0 else "ok",
+        )
+        for i in range(4)
+    ] + [
+        MonitorSample(
+            at=start + timedelta(seconds=10),
+            model="qwen3-1.7b",
+            monitor="semantic",
+            outcome="disagree",
+            traffic="own",
+        ),
+        MonitorSample(
+            at=start + timedelta(seconds=11),
+            model="qwen3-4b",
+            monitor="semantic",
+            outcome="agree",
+            traffic="rerouted",
+        ),
+    ]
+
+    async def body(store: Store) -> None:
+        await store.save_monitor_samples(samples[:3])
+        await store.save_monitor_samples(samples[3:])
+        await store.save_monitor_samples(samples[3:4])  # a retried save
+        newest = await store.recent_monitor_samples(per_window=2)
+        # The oldest failure sample drops out; the rest come back oldest first,
+        # and the retried one only once.
+        assert newest == samples[2:]
+
+    run(make_store(), body)
+
+
 def release_event(
     minute: int, backend: str, action: str, version: str, revision: int = 0
 ) -> ReleaseEvent:
@@ -548,6 +593,57 @@ def test_release_events_keep_order_and_the_latest_per_model(
         assert await store.recent_release_events(2) == events[1:]
         latest = await store.latest_release_events()
         assert sorted(latest, key=lambda e: e.backend) == [events[2], events[1]]
+
+    run(make_store(), body)
+
+
+def test_a_restarted_app_resumes_from_postgres(postgres_url: str) -> None:
+    settings = Settings(
+        _env_file=None,
+        store="postgres",
+        database_url=postgres_url,
+        backends_path=Path("config/backends.chaos.json"),
+    )
+    with TestClient(create_app(settings)) as client:
+        for _ in range(5):
+            client.post("/v1/chat", json={"message": "my card has not arrived"})
+        before = client.get("/v1/health").json()
+    with TestClient(create_app(settings)) as client:
+        after = client.get("/v1/health").json()
+    small = {m["name"]: m for m in after["monitor"]}["qwen3-1.7b"]
+    assert small["disabled_by_controller"] is True
+    assert small["format_failures"] == 5
+    assert [m["samples"] for m in after["monitor"]] == [
+        m["samples"] for m in before["monitor"]
+    ]
+
+
+def test_latest_interventions_per_model_and_action(make_store: MakeStore) -> None:
+    start = datetime(2026, 11, 22, 12, tzinfo=UTC)
+
+    def item(seconds: int, backend: str, action: str) -> Intervention:
+        return Intervention(
+            at=start + timedelta(seconds=seconds),
+            backend=backend,
+            action=action,
+            reason="test",
+        )
+
+    items = [
+        item(0, "qwen3-1.7b", "operator_disabled"),
+        item(1, "qwen3-4b", "operator_disabled"),
+        item(2, "qwen3-4b", "operator_enabled"),
+        item(3, "qwen3-4b", "disabled"),
+        item(4, "qwen3-1.7b", "kept_last_backend"),
+        item(5, "qwen3-4b", "operator_disabled"),
+    ]
+
+    async def body(store: Store) -> None:
+        await store.save_interventions(items)
+        latest = await store.latest_interventions(
+            ["operator_disabled", "operator_enabled", "disabled"]
+        )
+        assert latest == [items[0], items[2], items[3], items[5]]
 
     run(make_store(), body)
 

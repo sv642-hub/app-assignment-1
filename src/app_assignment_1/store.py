@@ -9,7 +9,7 @@ Neither store keeps the customer's message: `ChatResponse` has no message field.
 """
 
 import logging
-from collections import OrderedDict, deque
+from collections import Counter, OrderedDict, deque
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
@@ -21,7 +21,12 @@ from psycopg_pool import AsyncConnectionPool
 
 from app_assignment_1.config import PUBLIC_DATABASE_PASSWORD, Settings
 from app_assignment_1.records import JevAssessment
-from app_assignment_1.schemas import ChatResponse, Intervention, ReleaseEvent
+from app_assignment_1.schemas import (
+    ChatResponse,
+    Intervention,
+    MonitorSample,
+    ReleaseEvent,
+)
 
 logger = logging.getLogger(__name__)
 MIGRATIONS = Path(__file__).parent / "migrations"
@@ -63,6 +68,19 @@ class Store(Protocol):
         """The last `limit` interventions, oldest first."""
         ...
 
+    async def latest_interventions(self, actions: Sequence[str]) -> list[Intervention]:
+        """Each model's newest intervention of each of `actions`, however old,
+        oldest first. Restore reads resets and holds from this, so a long run
+        of newer interventions on the other model can't hide them."""
+        ...
+
+    async def save_monitor_samples(self, items: Sequence[MonitorSample]) -> None: ...
+
+    async def recent_monitor_samples(self, per_window: int) -> list[MonitorSample]:
+        """The newest `per_window` samples of each model's window (per model,
+        monitor and traffic), oldest first."""
+        ...
+
     async def save_release_events(self, items: Sequence[ReleaseEvent]) -> None:
         """Save release changes. Saving a change already saved is a no-op. A
         different change saved under the same (backend, revision) is a
@@ -97,6 +115,9 @@ class MemoryStore:
         self.interventions: deque[Intervention] = deque(maxlen=intervention_limit)
         # Two per request, so this keeps about as many calls as requests.
         self.jev_assessments: deque[JevAssessment] = deque(maxlen=2 * limit)
+        # About two per request: a failure sample and a semantic one.
+        self.monitor_samples: deque[MonitorSample] = deque(maxlen=4 * limit)
+        self.monitor_sample_ids: set[UUID] = set()
         self.release_events: deque[ReleaseEvent] = deque(maxlen=RELEASE_EVENT_LIMIT)
         # Kept apart from the bounded history, so it never loses a model.
         self.latest_releases: dict[str, ReleaseEvent] = {}
@@ -127,6 +148,33 @@ class MemoryStore:
 
     async def recent_interventions(self, limit: int) -> list[Intervention]:
         return list(self.interventions)[-limit:] if limit > 0 else []
+
+    async def latest_interventions(self, actions: Sequence[str]) -> list[Intervention]:
+        latest: dict[tuple[str, str], int] = {}
+        items = list(self.interventions)
+        for index, item in enumerate(items):
+            if item.action in actions:
+                latest[(item.backend, item.action)] = index
+        return [items[index] for index in sorted(latest.values())]
+
+    async def save_monitor_samples(self, items: Sequence[MonitorSample]) -> None:
+        for item in items:
+            if item.id in self.monitor_sample_ids:
+                continue  # a retried save
+            if len(self.monitor_samples) == self.monitor_samples.maxlen:
+                self.monitor_sample_ids.discard(self.monitor_samples[0].id)
+            self.monitor_samples.append(item)
+            self.monitor_sample_ids.add(item.id)
+
+    async def recent_monitor_samples(self, per_window: int) -> list[MonitorSample]:
+        kept: list[MonitorSample] = []
+        counts: Counter[tuple[str, str, str | None]] = Counter()
+        for sample in reversed(self.monitor_samples):
+            key = (sample.model, sample.monitor, sample.traffic)
+            if counts[key] < per_window:
+                counts[key] += 1
+                kept.append(sample)
+        return kept[::-1]
 
     async def save_release_events(self, items: Sequence[ReleaseEvent]) -> None:
         taken = []
@@ -291,6 +339,68 @@ class PostgresStore:
         return [
             Intervention(at=at, backend=backend, action=action, reason=reason)
             for at, backend, action, reason in rows
+        ]
+
+    async def latest_interventions(self, actions: Sequence[str]) -> list[Intervention]:
+        async with self.pool.connection() as conn:
+            cur = await conn.execute(
+                """
+                SELECT at, backend, action, reason FROM (
+                    SELECT DISTINCT ON (backend, action)
+                        seq, at, backend, action, reason
+                    FROM interventions WHERE action = ANY(%s)
+                    ORDER BY backend, action, seq DESC
+                ) AS latest ORDER BY seq
+                """,
+                (list(actions),),
+            )
+            rows = await cur.fetchall()
+        return [
+            Intervention(at=at, backend=backend, action=action, reason=reason)
+            for at, backend, action, reason in rows
+        ]
+
+    async def save_monitor_samples(self, items: Sequence[MonitorSample]) -> None:
+        if not items:
+            return
+        async with self.pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.executemany(
+                    "INSERT INTO monitor_samples"
+                    " (id, at, model, monitor, outcome, traffic)"
+                    " VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
+                    [
+                        (s.id, s.at, s.model, s.monitor, s.outcome, s.traffic)
+                        for s in items
+                    ],
+                )
+
+    async def recent_monitor_samples(self, per_window: int) -> list[MonitorSample]:
+        async with self.pool.connection() as conn:
+            cur = await conn.execute(
+                """
+                SELECT id, at, model, monitor, outcome, traffic FROM (
+                    SELECT *, row_number() OVER (
+                        PARTITION BY model, monitor, traffic ORDER BY seq DESC
+                    ) AS newest
+                    FROM monitor_samples
+                ) AS ranked
+                WHERE newest <= %s
+                ORDER BY seq
+                """,
+                (per_window,),
+            )
+            rows = await cur.fetchall()
+        return [
+            MonitorSample(
+                id=id,
+                at=at,
+                model=model,
+                monitor=monitor,
+                outcome=outcome,
+                traffic=traffic,
+            )
+            for id, at, model, monitor, outcome, traffic in rows
         ]
 
     async def save_release_events(self, items: Sequence[ReleaseEvent]) -> None:
