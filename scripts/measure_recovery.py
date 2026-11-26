@@ -176,7 +176,7 @@ def summarize(
         after = fault[fault.index(detect) + 1 :]
         result.requests_to_detect = sum(r.route == "standard" for r in before)
     result.bad_replies_before_detect = sum(not r.good for r in before)
-    if cleared_at is not None:
+    if cleared_at is not None and result.detected:
         back = next((r for r in cleared if _small_serves(r)), None)
         if back is not None:
             result.restored = True
@@ -228,18 +228,24 @@ class Gateway:
         """Clear both models' monitor windows: an operator disable then enable
         of each, one at a time so one model always serves."""
         for model in (SMALL, LARGE):
-            for action in ("disable", "enable"):
-                status, body = self.send(
-                    "POST",
-                    f"/v1/operator/models/{model}/{action}",
-                    {"reason": "measure_recovery.py: clean windows for a run"},
-                    self._operator(),
-                )
-                if status != 200:
-                    raise RuntimeError(
-                        f"/v1/operator/models/{model}/{action} answered {status}:"
-                        f" {body}"
-                    )
+            # Enable again even if the script is stopped right after the
+            # disable, so no model is left on operator hold.
+            try:
+                self._operator_action(model, "disable")
+            finally:
+                self._operator_action(model, "enable")
+
+    def _operator_action(self, model: str, action: str) -> None:
+        status, body = self.send(
+            "POST",
+            f"/v1/operator/models/{model}/{action}",
+            {"reason": "measure_recovery.py: clean windows for a run"},
+            self._operator(),
+        )
+        if status != 200:
+            raise RuntimeError(
+                f"/v1/operator/models/{model}/{action} answered {status}: {body}"
+            )
 
     def chat(self, phase: str, start: float, clock: Callable[[], float]) -> Reply:
         message, route, intent = TRAFFIC[self.sent % len(TRAFFIC)]
@@ -277,15 +283,9 @@ def run_scenario(
     """Run one scenario and return its measurements. Clears every fault and
     both monitor windows before it starts, and the fault after it ends. An
     error partway returns what was measured so far, with `error` set."""
-    for model in (SMALL, LARGE):
-        gateway.fault(model, "none")
-    _wait_until_serving(gateway, interval, timeout, clock, sleep)
-    gateway.reset_windows()
-    gateway.sent = 0
     start = clock()
     replies: list[Reply] = []
-    fault_at: float = 0.0
-    cleared_at: float | None = None
+    marks: dict[str, float | None] = {"fault_at": None, "cleared_at": None}
 
     def tick(phase: str) -> Reply:
         sent = clock()
@@ -295,8 +295,17 @@ def run_scenario(
         sleep(max(0.0, interval - (clock() - sent)))
         return reply
 
+    error: str | None = None
     try:
-        fault_at, cleared_at = _run_phases(
+        # Setup is inside the try: a failure here is reported as a failed run
+        # and does not stop the runs after it.
+        for model in (SMALL, LARGE):
+            gateway.fault(model, "none")
+        _wait_until_serving(gateway, interval, timeout, clock, sleep)
+        gateway.reset_windows()
+        gateway.sent = 0
+        start = clock()
+        _run_phases(
             gateway,
             scenario,
             tick,
@@ -305,12 +314,22 @@ def run_scenario(
             normal_requests,
             timeout,
             clock,
+            marks,
         )
     except Exception as exc:
-        result = summarize(scenario, replies, fault_at, cleared_at)
-        result.error = f"{type(exc).__name__}: {exc}"
-        return result
-    return summarize(scenario, replies, fault_at, cleared_at)
+        error = f"{type(exc).__name__}: {exc}"
+    fault_at = marks["fault_at"]
+    result = summarize(
+        scenario,
+        replies,
+        fault_at if fault_at is not None else 0.0,
+        marks["cleared_at"],
+    )
+    if fault_at is None:
+        # The fault was never set: there is no detection time to report.
+        result.detect_seconds = None
+    result.error = error
+    return result
 
 
 def _run_phases(
@@ -322,12 +341,16 @@ def _run_phases(
     normal_requests: int,
     timeout: float,
     clock: Callable[[], float],
-) -> tuple[float, float | None]:
+    marks: dict[str, float | None],
+) -> None:
     for _ in range(normal_requests):
         tick("normal")
     fault_at = round(clock() - start, 3)
     try:
         gateway.fault(SMALL, scenario)
+        # Recorded as soon as the fault is set, so a run that fails later
+        # still reports the right detection time.
+        marks["fault_at"] = fault_at
         while clock() - start - fault_at < timeout:
             if tick("fault").disabled_small:
                 break
@@ -336,10 +359,10 @@ def _run_phases(
     finally:
         gateway.fault(SMALL, "none")
     cleared_at = round(clock() - start, 3)
+    marks["cleared_at"] = cleared_at
     while clock() - start - cleared_at < timeout:
         if _small_serves(tick("cleared")):
             break
-    return fault_at, cleared_at
 
 
 def _wait_until_serving(

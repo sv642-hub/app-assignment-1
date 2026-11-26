@@ -152,12 +152,13 @@ def test_the_next_scenario_waits_out_a_cooldown(tmp_path):
     assert second.false_interventions == 0
 
 
-def test_without_the_token_it_stops_with_a_clear_error(tmp_path):
+def test_without_the_token_the_run_fails_with_a_clear_error(tmp_path):
     app = create_app(settings(tmp_path))
     with TestClient(app) as client:
         gateway = mr.Gateway(transport(client), None)
-        with pytest.raises(RuntimeError, match="APP_OPERATOR_TOKEN"):
-            mr.run_scenario(gateway, "outage", interval=0, timeout=10)
+        result = mr.run_scenario(gateway, "outage", interval=0, timeout=10)
+    assert result.error and "APP_OPERATOR_TOKEN" in result.error
+    assert result.detect_seconds is None
 
 
 def test_label_swap_needs_semantic_actions_and_a_baseline(tmp_path):
@@ -304,8 +305,11 @@ def test_a_wrong_token_prints_the_message_without_a_traceback(
         monkeypatch.setattr(mr, "http_transport", lambda base: transport(client))
         monkeypatch.setenv("APP_OPERATOR_TOKEN", "wrong")
         assert mr.main(["--scenario", "outage", "--interval", "0"]) == 1
-    err = capsys.readouterr().err
-    assert err.startswith("Stopped:") and "APP_OPERATOR_TOKEN" in err
+    captured = capsys.readouterr()
+    assert "Run failed:" in captured.out and "APP_OPERATOR_TOKEN" in captured.out
+    assert "Traceback" not in captured.err
+    # The report is still printed.
+    assert "scenario" in captured.out and "FAILED" in captured.out
 
 
 def test_sigterm_stops_like_ctrl_c():
@@ -348,3 +352,115 @@ def test_messages_go_out_once_per_interval():
         gateway, "outage", interval=0.5, timeout=10, clock=lambda: now[0], sleep=sleep
     )
     assert sleeps and set(sleeps) == {0.2}
+
+
+def _failing_gateway(fail_on, calls):
+    """A gateway whose send raises on the call `fail_on` names."""
+
+    def send(method, path, payload, headers):
+        calls.append((method, path))
+        if fail_on(method, path, len(calls)):
+            raise OSError("network blip")
+        if path == "/v1/health":
+            return 200, {"status": "ok"}
+        if path == "/v1/chat":
+            return 200, {
+                "intent": "card_arrival",
+                "trace": {
+                    "model": mr.SMALL,
+                    "format_check": "passed",
+                    "fallback_reason": None,
+                    "controller_action": None,
+                    "latency_ms": 1.0,
+                },
+            }
+        return 200, {}
+
+    return mr.Gateway(send, TOKEN)
+
+
+def test_a_stop_between_disable_and_enable_still_enables_the_model():
+    calls = []
+    gateway = _failing_gateway(lambda m, p, n: False, calls)
+    real_send = gateway.send
+    seen = []
+
+    def send(method, path, payload, headers):
+        out = real_send(method, path, payload, headers)
+        seen.append(path)
+        if path.endswith(f"{mr.SMALL}/disable"):
+            raise KeyboardInterrupt  # SIGTERM right after the disable
+        return out
+
+    gateway.send = send
+    with pytest.raises(KeyboardInterrupt):
+        gateway.reset_windows()
+    assert seen[-1].endswith(f"{mr.SMALL}/enable")
+
+
+def test_a_failed_run_keeps_the_detection_time_from_when_the_fault_was_set():
+    now = [0.0]
+    calls = []
+    chats = {"n": 0}
+
+    def fail_on(method, path, n):
+        if path == "/v1/chat":
+            chats["n"] += 1
+            return chats["n"] == 12  # a few replies into the fault phase
+        return False
+
+    gateway = _failing_gateway(fail_on, calls)
+    real_send = gateway.send
+
+    def send(method, path, payload, headers):
+        now[0] += 0.5
+        return real_send(method, path, payload, headers)
+
+    gateway.send = send
+    result = mr.run_scenario(
+        gateway,
+        "outage",
+        interval=0,
+        timeout=10,
+        clock=lambda: now[0],
+        sleep=lambda s: None,
+    )
+    assert result.error and "network blip" in result.error
+    assert result.fault_at > 0  # not the 0.0 default
+
+
+def test_a_setup_failure_is_reported_and_later_runs_still_happen(
+    tmp_path, monkeypatch, capsys
+):
+    app = create_app(settings(tmp_path))
+    with TestClient(app) as client:
+        good = transport(client)
+        state = {"fail": True}
+
+        def send(method, path, payload, headers):
+            if state["fail"] and path.startswith("/v1/faults"):
+                state["fail"] = False
+                raise OSError("connection reset")
+            return good(method, path, payload, headers)
+
+        monkeypatch.setattr(mr, "http_transport", lambda base: send)
+        monkeypatch.setenv("APP_OPERATOR_TOKEN", TOKEN)
+        out = tmp_path / "out.json"
+        code = mr.main(
+            [
+                "--scenario",
+                "outage",
+                "--runs",
+                "2",
+                "--interval",
+                "0",
+                "--out",
+                str(out),
+            ]
+        )
+    assert code == 1
+    results = json.loads(out.read_text())["results"]
+    assert len(results) == 2
+    assert results[0]["error"] == "OSError: connection reset"
+    assert results[1]["ok"]
+    assert "scenario" in capsys.readouterr().out  # the table was printed
