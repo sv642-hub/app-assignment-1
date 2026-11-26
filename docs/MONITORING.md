@@ -219,3 +219,11 @@ curl -fsS -X POST -H "$H" -H 'Content-Type: application/json' \
 ## Dashboard
 
 The Metrics screen (Grafana, at `/grafana`) plots the same series the alerts use, plus per-model latency percentiles, in-flight requests, Jev call latency and auth failures. Its rows and targets are listed in the README under Grafana dashboard. A hung model call shows first in *In-flight requests*, because a latency histogram only counts calls that have finished. The latency targets there (small under 2 s, large under 4 s at p95) are proposals, not measured values.
+
+## The second Jev call (reply check)
+
+Off by default. With `APP_JEV_REPLY_CHECK_ENABLED=true`, after the reply is built the gateway sends the customer's message and the reply to Jev once more, in the background. Jev answers the route and intent questions again and says whether the reply fits. The gateway compares those answers with the first call, which saw only the message. The customer never waits for it, a failure of it never opens the Jev circuit breaker, and neither the message nor the reply is stored.
+
+It costs one extra Jev call per checked request. Read the cost on the dashboard (row *1st vs 2nd Jev*) or in `gateway_reply_check_estimated_cost_usd_total` before leaving it on.
+
+Metrics: `gateway_reply_check_agreement_total{question,result}` (agree, disagree, no_signal), `gateway_reply_check_fit_total{result}`, `gateway_reply_check_latency_seconds{outcome}`, `gateway_reply_check_skipped_total{reason}` (no first answer, format fallback, breaker not closed, too many running), `gateway_reply_check_tokens_total` and `gateway_reply_check_enabled`. Rows are in `jev_reply_checks`. No alert is defined yet, because there is no measured baseline for how often the two calls agree.

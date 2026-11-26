@@ -570,14 +570,87 @@ def build() -> dict:
         "question = 'route' AND status = 'ok' AND option_order IS NOT NULL "
         "GROUP BY 1, 2 ORDER BY 1, 2", w=8,
     )  # fmt: skip
+    # --- 1st vs 2nd Jev -----------------------------------------------------
+    row("1st vs 2nd Jev (reply check)")
+    stat("2nd Jev check", "max(gateway_reply_check_enabled)", w=4, h=4,
+         mappings=[{"type": "value", "options": {
+             "0": {"text": "OFF", "color": "gray"},
+             "1": {"text": "ON", "color": "green"}}}],
+         desc="Off by default: APP_JEV_REPLY_CHECK_ENABLED. When on, each "
+              "answered request costs one extra Jev call, made after the reply "
+              "is built, so customers never wait for it.")  # fmt: skip
+    stat("2nd Jev calls (range)",
+         "sum(increase(gateway_reply_check_latency_seconds_count[$__range]))",
+         w=4, h=4, decimals=0)  # fmt: skip
+    stat("2nd Jev tokens (range)",
+         "sum(increase(gateway_reply_check_tokens_total[$__range]))",
+         w=4, h=4, decimals=0, desc="Mock Jev reports 0 tokens.")  # fmt: skip
+    stat("2nd Jev est. cost (range)",
+         "sum(increase(gateway_reply_check_estimated_cost_usd_total[$__range]))",
+         unit="currencyUSD", w=4, h=4, decimals=4,
+         desc="Empty while APP_JEV_INPUT_PRICE_PER_MILLION_USD is unset. This "
+              "is the extra cost of turning the check on.")  # fmt: skip
+    timeseries("1st vs 2nd Jev agreement",
+               [(f'sum by (question) (rate(gateway_reply_check_agreement_total{{'
+                 f'result="agree"}}[{R}])) / '
+                 f'sum by (question) (rate(gateway_reply_check_agreement_total{{'
+                 f'result=~"agree|disagree"}}[{R}]))', "{{question}}")],
+               unit="percentunit", minimum=0, maximum=1,
+               desc="The first Jev call sees only the customer's message. The "
+                    "second sees the message and the reply. Share of requests "
+                    "where both picked the same route or intent. Requests "
+                    "where either call gave no valid answer are left out "
+                    "(see no signal below).")  # fmt: skip
+    timeseries("Reply fit rate",
+               [(f'sum(rate(gateway_reply_check_fit_total{{result="fits"}}'
+                 f'[{R}])) / sum(rate(gateway_reply_check_fit_total{{'
+                 f'result=~"fits|does_not_fit"}}[{R}]))', "fits")],
+               unit="percentunit", minimum=0, maximum=1,
+               desc="Share of checked replies the second Jev call judged to "
+                    "answer the customer's message.")  # fmt: skip
+    timeseries("Agreement results (route and intent)",
+               [(f"sum by (question, result) (rate("
+                 f"gateway_reply_check_agreement_total[{R}]))",
+                 "{{question}} {{result}}")], unit="ops", stack=True,
+               minimum=0)  # fmt: skip
+    timeseries("2nd Jev call latency percentiles",
+               [(f'histogram_quantile({q}, sum by (le) (rate('
+                 f'gateway_reply_check_latency_seconds_bucket{{outcome="ok"}}'
+                 f'[{R}])))', name)
+                for q, name in ((0.5, "p50"), (0.95, "p95"))],
+               unit="s", minimum=0,
+               desc="Not on the customer's path: the check runs after the "
+                    "reply is built.")  # fmt: skip
+    timeseries("2nd Jev calls by outcome and skips",
+               [(f"sum by (outcome) (rate("
+                 f"gateway_reply_check_latency_seconds_count[{R}]))",
+                 "{{outcome}}"),
+                (f"sum by (reason) (rate(gateway_reply_check_skipped_total[{R}]))",
+                 "skipped: {{reason}}")], unit="ops", stack=True, minimum=0,
+               desc="Skipped: no first Jev answer, the reply was the format "
+                    "fallback, the Jev circuit breaker was not closed, or too "
+                    "many checks were already running.")  # fmt: skip
+    sql_table(
+        "Where the 1st and 2nd Jev intent disagree",
+        "SELECT intent_first AS \"first (message only)\", intent_second AS "
+        "\"second (message + reply)\", count(*) AS requests FROM jev_reply_checks "
+        "WHERE $__timeFilter(finished_at) AND intent_agrees = false "
+        "GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 20",
+        w=12,
+        desc="Most common intent pairs where the second call picked something "
+             "else. Empty while the check is off.",
+    )  # fmt: skip
     text("1st vs 2nd Jev",
-         "The gateway makes **one** Jev call per request, before the model "
-         "answers. It returns the route and the intent together. There is no "
-         "second Jev call that scores the model's reply.\n\n"
-         "What is compared today is the model's intent label against Jev's "
-         "intent answer: see *Qwen vs Jev intent agreement* above. The "
-         "standard-first vs complex-first comparison needs the order-swap run "
-         "(PRs #89, #90).", w=24, h=4)  # fmt: skip
+         "The **first** Jev call runs before the model and sees only the "
+         "customer's message. The **second** call is optional and off by "
+         "default. It runs after the reply is built, sees the message and the "
+         "reply, answers the route and intent questions again, and says "
+         "whether the reply fits. It costs one extra Jev call per checked "
+         "request and never delays the customer.\n\n"
+         "*Qwen vs Jev intent agreement* (Reply quality) is a different "
+         "measure: the model's own label against the first call. The "
+         "standard-first vs complex-first comparison needs the order-swap "
+         "run (PRs #89, #90).", w=24, h=5)  # fmt: skip
 
     # --- Security -----------------------------------------------------------
     row("Security")

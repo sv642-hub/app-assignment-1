@@ -20,7 +20,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 from app_assignment_1.config import PUBLIC_DATABASE_PASSWORD, Settings
-from app_assignment_1.records import JevAssessment
+from app_assignment_1.records import JevAssessment, ReplyCheck
 from app_assignment_1.schemas import ChatResponse, Intervention, ReleaseEvent
 
 logger = logging.getLogger(__name__)
@@ -49,6 +49,11 @@ class Store(Protocol):
         """Keep a completed request and its Jev assessments in one write; drop
         the oldest request beyond the retention limit. Assessments are kept
         for the monitor even after their request is dropped."""
+        ...
+
+    async def save_reply_check(self, check: ReplyCheck) -> None:
+        """Keep the second Jev call's record. Saved after the request, on its
+        own, so a failure here never touches the request."""
         ...
 
     async def get_request(self, request_id: UUID) -> ChatResponse | None: ...
@@ -97,6 +102,7 @@ class MemoryStore:
         self.interventions: deque[Intervention] = deque(maxlen=intervention_limit)
         # Two per request, so this keeps about as many calls as requests.
         self.jev_assessments: deque[JevAssessment] = deque(maxlen=2 * limit)
+        self.reply_checks: deque[ReplyCheck] = deque(maxlen=limit)
         self.release_events: deque[ReleaseEvent] = deque(maxlen=RELEASE_EVENT_LIMIT)
         # Kept apart from the bounded history, so it never loses a model.
         self.latest_releases: dict[str, ReleaseEvent] = {}
@@ -115,6 +121,9 @@ class MemoryStore:
         self.jev_assessments.extend(jev)
         while len(self.requests) > self.limit:
             self.requests.popitem(last=False)
+
+    async def save_reply_check(self, check: ReplyCheck) -> None:
+        self.reply_checks.append(check)
 
     async def get_request(self, request_id: UUID) -> ChatResponse | None:
         return self.requests.get(request_id)
@@ -249,6 +258,38 @@ class PostgresStore:
                     """,
                     (self.limit,),
                 )
+
+    async def save_reply_check(self, check: ReplyCheck) -> None:
+        async with self.pool.connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO jev_reply_checks
+                    (request_id, call_id, status, finished_at, mocked,
+                     option_set_version, latency_ms, error_type, route_first,
+                     route_second, intent_first, intent_second, reply_fit,
+                     route_agrees, intent_agrees, record)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s)
+                """,
+                (
+                    check.request_id,
+                    check.call_id,
+                    check.status,
+                    check.finished_at,
+                    check.mocked,
+                    check.option_set_version,
+                    check.latency_ms,
+                    check.error_type,
+                    check.route_first,
+                    check.route_second,
+                    check.intent_first,
+                    check.intent_second,
+                    check.reply_fit,
+                    check.route_agrees,
+                    check.intent_agrees,
+                    Jsonb(check.model_dump(mode="json")),
+                ),
+            )
 
     async def get_request(self, request_id: UUID) -> ChatResponse | None:
         async with self.pool.connection() as conn:

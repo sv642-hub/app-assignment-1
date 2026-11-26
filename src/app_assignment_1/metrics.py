@@ -36,6 +36,14 @@ JEV_FALLBACK_REASONS = (
 LATENCY_BUCKETS = (0.05, 0.1, 0.25, 0.5, 1, 2, 4, 8, 15, 30, 60)
 JEV_OUTCOMES = ("ok", "timeout", "error")
 CALL_OUTCOMES = ("ok", "failed")
+REPLY_CHECK_SKIP_REASONS = (
+    "no_first_answer",
+    "format_fallback",
+    "breaker_not_closed",
+    "busy",
+)
+AGREEMENT_RESULTS = ("agree", "disagree", "no_signal")
+FIT_RESULTS = ("fits", "does_not_fit", "no_signal")
 AUTH_FAILURE_REASONS = ("operator_disabled", "missing_or_wrong_token")
 
 
@@ -106,6 +114,45 @@ class GatewayMetrics:
         for backend in gateway.backends:
             for outcome in CALL_OUTCOMES:
                 self.backend_call_latency.labels(backend.config.name, outcome)
+        self.reply_check_latency = Histogram(
+            "gateway_reply_check_latency_seconds",
+            "Time of one second Jev call (the reply check), by outcome: ok, "
+            "timeout or error. It runs after the reply, so customers never wait "
+            "for it.",
+            ["outcome"],
+            buckets=LATENCY_BUCKETS,
+            registry=self.registry,
+        )
+        for outcome in JEV_OUTCOMES:
+            self.reply_check_latency.labels(outcome)
+        self.reply_check_skipped = Counter(
+            "gateway_reply_check_skipped",
+            "Requests the second Jev call was not made for, by reason.",
+            ["reason"],
+            registry=self.registry,
+        )
+        for reason in REPLY_CHECK_SKIP_REASONS:
+            self.reply_check_skipped.labels(reason)
+        self.reply_check_agreement = Counter(
+            "gateway_reply_check_agreement",
+            "First Jev call (before the model) against the second (after it), "
+            "by question: agree, disagree, or no_signal when either call gave "
+            "no valid answer.",
+            ["question", "result"],
+            registry=self.registry,
+        )
+        for question in ("route", "intent"):
+            for result in AGREEMENT_RESULTS:
+                self.reply_check_agreement.labels(question, result)
+        self.reply_check_fit = Counter(
+            "gateway_reply_check_fit",
+            "Whether the second Jev call judged the reply to fit the customer's "
+            "message: fits, does_not_fit, or no_signal.",
+            ["result"],
+            registry=self.registry,
+        )
+        for result in FIT_RESULTS:
+            self.reply_check_fit.labels(result)
         self.jev_fallbacks = Counter(
             "gateway_jev_fallbacks",
             "Requests routed by the rule router: the Jev call failed, its route "
@@ -268,6 +315,38 @@ class _GatewayStateCollector(Collector):
             )
             cost.add_metric([mocked], jev.estimated_cost_usd)
             yield cost
+
+        # The second Jev call. Its tokens and cost are kept apart from the first
+        # call's, so the price of turning the check on is visible.
+        check = gateway.reply_check_usage()
+        enabled = GaugeMetricFamily(
+            "gateway_reply_check_enabled",
+            "1 when the second Jev call (reply check) is switched on.",
+        )
+        enabled.add_metric([], int(check.enabled))
+        check_calls = CounterMetricFamily(
+            "gateway_reply_check_answered_calls",
+            "Second Jev calls that returned an answer.",
+            labels=["mocked"],
+        )
+        check_calls.add_metric([mocked], check.answered_calls)
+        check_tokens = CounterMetricFamily(
+            "gateway_reply_check_tokens",
+            "Tokens of answered second Jev calls, by direction.",
+            labels=["direction", "mocked"],
+        )
+        check_tokens.add_metric(["input", mocked], check.input_tokens)
+        check_tokens.add_metric(["output", mocked], check.output_tokens)
+        yield from (enabled, check_calls, check_tokens)
+        if check.estimated_cost_usd is not None:
+            check_cost = CounterMetricFamily(
+                "gateway_reply_check_estimated_cost_usd",
+                "Estimated cost of second Jev calls: input tokens times the "
+                "configured price.",
+                labels=["mocked"],
+            )
+            check_cost.add_metric([mocked], check.estimated_cost_usd)
+            yield check_cost
 
         # Only models with data get a value: an empty window is not 0%.
         disagreement = GaugeMetricFamily(

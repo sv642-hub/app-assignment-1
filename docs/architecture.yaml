@@ -196,6 +196,7 @@ components:
       - simulated: "Default: routing call is a local JSON mock"
       - built: "TypeSafe client, used when APP_JEV_MODE=real: httpx, jev-1.14.0"
       - built: "B6 live check script: 300 of 300 calls answered on Jetstream2"
+      - built: Optional 2nd call on the reply, off by default
       - todo: First live run in the app
 
   probe:
@@ -273,7 +274,7 @@ layout:
     vllm_small: [1420, 225, 370, 145]
     vllm_large: [1420, 385, 370, 145]
     model_volume: [1420, 545, 370, 105]
-    jev_api: [1420, 840, 370, 190]
+    jev_api: [1420, 840, 370, 230]
     probe: [1420, 1080, 370, 190]
     ci: [45, 1395, 465, 205]
     chaos: [530, 1395, 465, 200]

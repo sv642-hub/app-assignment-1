@@ -8,4 +8,4 @@ SELECT format('ALTER ROLE grafana_ro PASSWORD %L', :'pw') \gexec
 ALTER ROLE grafana_ro SET default_transaction_read_only = on;
 SELECT format('GRANT CONNECT ON DATABASE %I TO grafana_ro', current_database()) \gexec
 GRANT USAGE ON SCHEMA public TO grafana_ro;
-GRANT SELECT ON requests, jev_assessments, interventions, model_releases TO grafana_ro;
+GRANT SELECT ON requests, jev_assessments, jev_reply_checks, interventions, model_releases TO grafana_ro;

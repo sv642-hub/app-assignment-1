@@ -25,7 +25,7 @@ from pydantic import ValidationError
 
 from app_assignment_1.api import create_app
 from app_assignment_1.config import PUBLIC_DATABASE_PASSWORD, Settings
-from app_assignment_1.records import JevAssessment
+from app_assignment_1.records import JevAssessment, ReplyCheck
 from app_assignment_1.router import MockJevRouter
 from app_assignment_1.schemas import ChatResponse, Intervention, ReleaseEvent, Trace
 from app_assignment_1.service import Gateway
@@ -284,6 +284,50 @@ def test_postgres_keeps_no_message_text(postgres_url: str) -> None:
     assert "zebra-quartz" not in dumped[0]
     assert len(jev) == 2
     assert not any("zebra-quartz" in row for row in jev)
+
+
+def test_reply_check_is_saved_without_text(
+    make_store: MakeStore, request: pytest.FixtureRequest
+) -> None:
+    check = ReplyCheck(
+        request_id=uuid4(),
+        call_id=uuid4(),
+        status="ok",
+        finished_at=datetime(2026, 11, 26, 8, 0, tzinfo=UTC),
+        mocked=True,
+        option_set_version="mock-intents-0123456789ab",
+        latency_ms=12.5,
+        jev_model="mock-jev",
+        input_tokens=0,
+        output_tokens=0,
+        intent_first="card_arrival",
+        intent_second="lost_or_stolen_card",
+        intent_agrees=False,
+        reply_fit="does_not_fit",
+        reply_fit_confidence=0.8,
+    )
+
+    async def body(store: Store) -> None:
+        await store.save_reply_check(check)
+
+    store = make_store()
+    run(store, body)
+    if isinstance(store, MemoryStore):
+        assert list(store.reply_checks) == [check]
+        return
+    with psycopg.connect(request.getfixturevalue("postgres_url")) as conn:
+        row = conn.execute(
+            "SELECT status, mocked, latency_ms, intent_first, intent_second,"
+            " intent_agrees, route_agrees, reply_fit, record"
+            " FROM jev_reply_checks WHERE call_id = %s",
+            (check.call_id,),
+        ).fetchone()
+    assert row is not None
+    assert row[:8] == (
+        "ok", True, 12.5, "card_arrival", "lost_or_stolen_card", False, None,
+        "does_not_fit",
+    )  # fmt: skip
+    assert ReplyCheck.model_validate(row[8]) == check
 
 
 def test_migrations_run_once(postgres_url: str) -> None:

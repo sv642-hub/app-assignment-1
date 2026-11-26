@@ -17,6 +17,7 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 - `src/app_assignment_1/jev.py`: the real Jev client (`TypeSafeJevRouter`), one TypeSafe call with the route and intent questions; the app uses it when `APP_JEV_MODE=real` (default `mock`).
 - `src/app_assignment_1/vllm.py`: `VLLMBackend`, the real Qwen client (one OpenAI-style chat call to vLLM with a JSON schema), and its typed failures.
 - `src/app_assignment_1/real_backends.py`: builds the two `VLLMBackend`s and their HTTP clients when `APP_PROVIDER_MODE=real`.
+- Second Jev call (reply check): after the reply is built, `Gateway` can send the message and reply to Jev (`check_reply` on the router; `ReplyCheck` record; `jev_reply_checks` table; `gateway_reply_check_*` metrics) and compare with the first call. Off unless `APP_JEV_REPLY_CHECK_ENABLED`; it never delays the customer and never touches the Jev breaker.
 - `src/app_assignment_1/breaker.py`: the Jev circuit breaker; while it is open the gateway skips Jev and uses the rule router.
 - `src/app_assignment_1/backends.py`: `Backend` interface and `MockBackend` (the mock Qwen backends).
 - `src/app_assignment_1/intents.py`: keyword matching over the configured intents, shared by the mocks.
