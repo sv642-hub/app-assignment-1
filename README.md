@@ -4,7 +4,7 @@ Who owns what: [docs/TEAM_PLAN.md](docs/TEAM_PLAN.md) · What is built: [docs/ar
 
 A mocked banking-support gateway for DSAN 6700 Deliverable 2, with a React chat app in front of it. Send a customer message and get a reply from a fictional policy card, tagged `standard` or `complex`, with the intent and routing trace one click away. A Health screen shows the models and the self-healing controller.
 
-**By default everything is simulated.** Jev and both Qwen models are mocks, and the app needs no Qwen weights, GPU, torch or Transformers. A real Jev client exists, but it is off unless `APP_JEV_MODE=real` (see Real Jev below); the Qwen backends are always mocks. This prototype demonstrates the user journey in our planned architecture. It does not implement the full monitoring, self-healing, canary-release or linear-probe design.
+**By default everything is simulated.** Jev and both Qwen models are mocks, and the app needs no Qwen weights, GPU, torch or Transformers. A real Jev client exists, but it is off unless `APP_JEV_MODE=real` (see Real Jev below); the Qwen backends are always mocks. This prototype demonstrates the user journey in our planned architecture. It does not implement the full monitoring, self-healing, canary-release or linear-probe design. A canary splitter can send a share of requests to another mock config version ([docs/CANARY.md](docs/CANARY.md)), but nothing rolls a canary back automatically yet.
 
 ## What happens to a message
 

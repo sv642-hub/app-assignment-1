@@ -20,6 +20,15 @@ from app_assignment_1.labels import UNKNOWN, load_labels
 from app_assignment_1.metrics import GatewayMetrics
 from app_assignment_1.monitor import RESTORE_ACTIONS, SEMANTIC_REASON, Controller
 from app_assignment_1.records import JevAssessment, check_call
+from app_assignment_1.release import (
+    CanaryGuard,
+    Release,
+    ReleaseChange,
+    ReleaseSource,
+    VersionConfig,
+    load_versions,
+    pick_version,
+)
 from app_assignment_1.releases import Releases, load_catalog
 from app_assignment_1.router import (
     JevAnswer,
@@ -78,6 +87,15 @@ def check_reply(reply: str) -> list[str]:
 
 class BackendUnavailable(Exception):
     """No configured backend is available or able to answer."""
+
+
+class CanaryNotSaved(Exception):
+    """The store did not save a release change, so it was not applied."""
+
+
+class CanaryOutcomeUnknown(Exception):
+    """A release save failed and the store could not be read to check it. The
+    change may have been saved; the gateway reloads on the next chance."""
 
 
 class DeadlineExceeded(BackendUnavailable):
@@ -211,28 +229,56 @@ class Gateway:
         self.labels = load_labels(settings.labels_path)
         if not set(self.cards) <= self.labels.names:
             raise ValueError("Every intent with a policy card must be a label")
+        # One backend pair per config version (release.py).
+        self.version_backends: dict[str, list[Backend]] = {}
         if backends is None:
-            configs = TypeAdapter(list[BackendConfig]).validate_json(
-                settings.backends_path.read_text()
-            )
-            backends = [MockBackend(c, intents, self.cards) for c in configs]
-        self.backends = list(backends)
+            self.versions = load_versions(settings.versions_path)
+            for version in self.versions:
+                path = version.backends_path or settings.backends_path
+                configs = TypeAdapter(list[BackendConfig]).validate_json(
+                    path.read_text()
+                )
+                self.version_backends[version.id] = [
+                    MockBackend(c, intents, self.cards) for c in configs
+                ]
+        else:
+            # Backends passed in (tests) are the only version.
+            self.versions = [
+                VersionConfig(
+                    id=settings.stable_version,
+                    description="Backends passed to the gateway.",
+                )
+            ]
+            self.version_backends[settings.stable_version] = list(backends)
+        expected = {("standard", "qwen3-1.7b"), ("complex", "qwen3-4b")}
+        for pair in self.version_backends.values():
+            if (
+                len(pair) != 2
+                or {(b.config.route, b.config.name) for b in pair} != expected
+            ):
+                raise ValueError(
+                    "Configure exactly one standard 1.7b and one complex 4b backend"
+                )
+        # Usage, the monitor and the controller count per model name, so they
+        # only see stable traffic: canary requests are left out (see
+        # `canary_guard`). A bad canary cannot disable or roll back the model
+        # that stable traffic depends on. Every version has the same two model
+        # names (checked above).
+        pair = next(iter(self.version_backends.values()))
         self.usage = {
             b.config.name: ModelUsage(
                 name=b.config.name, attempted_calls=0, completed_calls=0, failed_calls=0
             )
-            for b in self.backends
+            for b in pair
         }
-        expected = {("standard", "qwen3-1.7b"), ("complex", "qwen3-4b")}
-        if (
-            len(self.backends) != 2
-            or {(b.config.route, b.config.name) for b in self.backends} != expected
-        ):
-            raise ValueError(
-                "Configure exactly one standard 1.7b and one complex 4b backend"
+        self.controller = Controller((b.config.name for b in pair), settings, clock)
+        self.release = self.check_release(
+            ReleaseChange(
+                stable=settings.stable_version,
+                canary=settings.canary_version,
+                canary_percent=settings.canary_percent,
+                reason="Initial release from settings",
             )
-        self.controller = Controller(
-            (b.config.name for b in self.backends), settings, clock
         )
         self.semantic = SemanticMonitor(
             (b.config.name for b in self.backends), settings
@@ -258,7 +304,123 @@ class Gateway:
         # Whether the saved releases have been read. Until then the revision
         # counter is unknown, so operator release changes are refused.
         self.releases_loaded = False
+        self.release_source: ReleaseSource = "settings"
+        self.canary_lock = asyncio.Lock()
+        # The canary's own failure window. When it trips, only the canary is
+        # rolled back; the controller never sees these requests.
+        self.canary_guard = CanaryGuard(
+            settings.monitor_window,
+            settings.monitor_min_samples,
+            settings.monitor_failure_threshold,
+        )
+
         self.metrics = GatewayMetrics(self)
+
+    @property
+    def backends(self) -> list[Backend]:
+        """The stable version's backends: what /v1/health reports."""
+        return self.version_backends[self.release.stable]
+
+    def check_versions(self, change: ReleaseChange) -> None:
+        """Raise ValueError if the change names a version not configured."""
+        for version in (change.stable, change.canary):
+            if version is not None and version not in self.version_backends:
+                raise ValueError(f"Unknown version: {version}")
+
+    def check_release(self, change: ReleaseChange) -> Release:
+        """A release for `change`, in effect from now."""
+        self.check_versions(change)
+        return Release(**change.model_dump(), changed_at=datetime.now(UTC))
+
+    async def _latest_saved_release(self) -> list[Release]:
+        return await asyncio.wait_for(self.store.recent_releases(1), self.store_timeout)
+
+    async def load_release(self) -> None:
+        """Use the store's latest release, if it has one this gateway can run.
+
+        Call after the store is open. If the store cannot be read, the release
+        from settings stays in effect and `release_source` says so, so the
+        operator can see that a saved release (a rollback, say) may be
+        waiting. `ensure_release_loaded` retries.
+        """
+        try:
+            saved = await self._latest_saved_release()
+        except Exception as exc:
+            logger.warning("Could not load the release (%s)", type(exc).__name__)
+            self.release_source = "settings_store_unreadable"
+            return
+        if not saved:
+            self.release_source = "settings"
+            return
+        try:
+            self.check_versions(saved[0])
+        except ValueError:
+            logger.warning(
+                "The saved release names a version that is not configured; "
+                "using the release from settings"
+            )
+            self.release_source = "settings"
+            return
+        self.release = saved[0]
+        self.release_source = "store"
+
+    async def ensure_release_loaded(self) -> None:
+        """Retry the load if the store could not be read before."""
+        if self.release_source != "settings_store_unreadable":
+            return
+        async with self.canary_lock:
+            if self.release_source == "settings_store_unreadable":
+                await self.load_release()
+
+    async def set_release(self, change: ReleaseChange) -> Release:
+        """Save a release change, then apply it. A change that is not saved
+        is not applied, so a restart cannot undo it silently.
+
+        A failed save may still have been committed (a timeout after the
+        database wrote the row), so the latest saved release is read back
+        before reporting failure.
+
+        A cancel, such as a client disconnect, waits for the save and the
+        apply to finish, then passes on. Otherwise a cancel after the store
+        wrote the row would leave this gateway on the old release while a
+        restart loads the new one.
+        """
+        async with self.canary_lock:
+            return await self._set_release_locked(change)
+
+    async def _set_release_locked(self, change: ReleaseChange) -> Release:
+        """set_release, for a caller that holds canary_lock."""
+        # Stamped inside the lock, so saved order matches changed_at.
+        release = self.check_release(change)
+        await self._finish(self._save_and_apply(release), hold=True)
+        return release
+
+    async def _save_and_apply(self, release: Release) -> None:
+        try:
+            await asyncio.wait_for(self.store.save_release(release), self.store_timeout)
+        except Exception as exc:
+            logger.warning("Could not save release (%s)", type(exc).__name__)
+            try:
+                latest = await self._latest_saved_release()
+            except Exception as read_exc:
+                logger.warning(
+                    "Could not check the release save (%s)",
+                    type(read_exc).__name__,
+                )
+                self.release_source = "settings_store_unreadable"
+                raise CanaryOutcomeUnknown from None
+            if latest != [release]:
+                raise CanaryNotSaved from None
+            logger.info("The release was saved despite the error")
+        self.release = release
+        self.release_source = "store"
+        self.canary_guard.reset()
+        logger.info(
+            "Release changed: stable %s, canary %s at %s%%",
+            release.stable,
+            release.canary,
+            release.canary_percent,
+        )
 
     def _release_changed(self, event: ReleaseEvent) -> None:
         """A model now serves another version: its monitor windows describe
@@ -858,14 +1020,22 @@ class Gateway:
         attempt: int,
         action: str | None,
         own_route: bool,
+        canary: bool = False,
     ) -> tuple[BackendReply | None, str | None, bool, int]:
         """Call one backend within `budget` seconds. Return its reply (None if
         the call failed), the latest controller action, whether the deadline
         cut short a later attempt, and the release generation the call
-        started on."""
+        started on.
+
+        A canary call is not counted in the usage /v1/health reports, which
+        describes stable traffic, nor by the controller (see _canary_outcome)."""
         name = backend.config.name
         generation = self.releases.generation[name]
-        usage = self.usage[name]
+        usage = (
+            ModelUsage(name=name, attempted_calls=0, completed_calls=0, failed_calls=0)
+            if canary
+            else self.usage[name]
+        )
         usage.attempted_calls += 1
         timer = asyncio.timeout(budget)
         call_start = perf_counter()
@@ -893,6 +1063,10 @@ class Gateway:
                 code,
                 type(exc).__name__,
             )
+            if canary:
+                # Not the controller's business: only the canary is judged.
+                self._canary_outcome(failed=True)
+                return None, action, False, generation
             # No await from here to the return: the check and the record see
             # one release state, without holding a lock on the reply path.
             if self.releases.generation[name] != generation:
@@ -915,6 +1089,36 @@ class Gateway:
         )
         return generated, action, False, generation
 
+    def _canary_outcome(self, failed: bool) -> None:
+        """Count one canary call. If the canary is failing, roll it back (the
+        stable version keeps serving). No await: the check and the trip see one
+        release state."""
+        canary = self.release.canary
+        if canary is None or not self.canary_guard.record(canary, failed):
+            return
+        change = ReleaseChange(
+            stable=self.release.stable,
+            canary=None,
+            canary_percent=0,
+            reason=f"Automatic rollback: canary {canary} kept failing",
+        )
+        logger.warning("Canary %s kept failing; rolling it back", canary)
+        task = asyncio.create_task(self._roll_back_canary(canary, change))
+        self.pending_saves.add(task)
+        task.add_done_callback(self.pending_saves.discard)
+
+    async def _roll_back_canary(self, canary: str, change: ReleaseChange) -> None:
+        try:
+            async with self.canary_lock:
+                # Checked under the lock: an operator change saved while this
+                # waited (a new canary, say) must not be rolled back.
+                if self.release.canary != canary:
+                    return
+                await self._set_release_locked(change)
+        except Exception as exc:
+            logger.warning("Canary rollback failed (%s)", type(exc).__name__)
+            self.canary_guard.reset()  # judge the canary again from scratch
+
     def _finish_release_watch(self, backend: Backend) -> None:
         name = backend.config.name
         count = self.controller.watching.get(name)
@@ -935,6 +1139,8 @@ class Gateway:
         # Created before any provider call, so later records can share it.
         request_id = uuid4()
         start = perf_counter()
+        version_id, canary = pick_version(self.release, request_id)
+        backends = self.version_backends[version_id]
         reasons: list[str] = []
         router_name: Literal["mock_jev", "jev", "rule_router"] = (
             "mock_jev" if self.jev_mocked else "jev"
@@ -964,8 +1170,8 @@ class Gateway:
             jev_choice = None
         else:
             jev_choice = decision.route
-        selected = next(b for b in self.backends if b.config.route == decision.route)
-        order = (selected, *(b for b in self.backends if b is not selected))
+        selected = next(b for b in backends if b.config.route == decision.route)
+        order = (selected, *(b for b in backends if b is not selected))
         action = None
         generated: BackendReply | None = None
         attempted_latency = 0
@@ -1022,7 +1228,13 @@ class Gateway:
                 tried.append(backend)
                 attempted_latency = backend.config.latency_ms
                 generated, action, cut_short, generation = await self._attempt(
-                    backend, message, budget, len(tried), action, backend is selected
+                    backend,
+                    message,
+                    budget,
+                    len(tried),
+                    action,
+                    backend is selected,
+                    canary,
                 )
                 if generated is not None:
                     break
@@ -1107,7 +1319,13 @@ class Gateway:
         # A reply from a call that started on a version the model no longer
         # serves goes to the customer, but the monitors skip it: it says
         # nothing about the new version.
-        current = self.releases.generation[backend.config.name] == generation
+        # A canary reply never reaches the monitors or the controller: it says
+        # nothing about the model stable traffic uses.
+        current = (
+            not canary and self.releases.generation[backend.config.name] == generation
+        )
+        if canary:
+            self._canary_outcome(failed=bool(format_errors))
         # The trace reports validation of the original generated reply.
         if current:
             action = (
@@ -1180,6 +1398,8 @@ class Gateway:
                 format_errors=format_errors,
                 fallback_reason=", ".join(reasons) or None,
                 controller_action=action,
+                version_id=version_id,
+                canary=canary,
                 mocked=mocked,
                 settings_version=self.settings_version,
             ),
@@ -1187,6 +1407,12 @@ class Gateway:
         trace = response.trace
         self.metrics.chat_requests.labels(
             trace.route, trace.model, trace.reply_source, trace.format_check
+        ).inc()
+        self.metrics.version_requests.labels(
+            version_id,
+            "canary" if canary else "stable",
+            trace.model,
+            trace.format_check,
         ).inc()
         elapsed = perf_counter() - start
         self.metrics.chat_latency.observe(elapsed)

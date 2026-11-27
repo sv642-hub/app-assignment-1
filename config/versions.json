@@ -1,0 +1,12 @@
+[
+  {
+    "id": "v1",
+    "description": "Baseline: the mock backends from APP_BACKENDS_PATH.",
+    "backends_path": null
+  },
+  {
+    "id": "v2-chaos",
+    "description": "Demo of a bad release: the small model corrupts every reply.",
+    "backends_path": "config/backends.chaos.json"
+  }
+]

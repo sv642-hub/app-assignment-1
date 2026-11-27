@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     labels_path: Path = Path("config/labels.json")
     policy_cards_path: Path = Path("config/policy_cards.json")
     backends_path: Path = Path("config/backends.json")
+    # Canary releases (release.py). This release applies until one is saved
+    # through PUT /v1/release; after that the store's latest release wins.
+    versions_path: Path = Path("config/versions.json")
+    stable_version: str = "v1"
+    canary_version: str | None = None
+    canary_percent: int = Field(default=0, ge=0, le=100)
+
     # Versions an operator can deploy to each model (releases.py).
     releases_path: Path = Path("config/releases.json")
     request_store_limit: int = Field(default=1000, ge=1, le=100000)
@@ -139,6 +146,13 @@ class Settings(BaseSettings):
                     "env/compose.defaults.env; set your own in env/.env and "
                     "env/postgres.env (README, Storage)"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def release_settings(self) -> "Settings":
+        # An empty value in an env file means unset.
+        if self.canary_version == "":
+            self.canary_version = None
         return self
 
     @model_validator(mode="after")

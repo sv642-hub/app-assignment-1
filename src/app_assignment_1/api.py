@@ -1,5 +1,7 @@
 """Smart AI Gateway mocked midpoint API."""
 
+import asyncio
+import logging
 import math
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -17,6 +19,12 @@ from app_assignment_1.config import Settings, get_settings
 from app_assignment_1.jev import TypeSafeJevRouter, create_jev_http_client
 from app_assignment_1.labels import load_labels
 from app_assignment_1.real_backends import open_vllm_backends
+from app_assignment_1.release import (
+    Release,
+    ReleaseChange,
+    ReleaseStatus,
+    VersionInfo,
+)
 from app_assignment_1.releases import AlreadyServing, NoRollbackTarget, UnknownVersion
 from app_assignment_1.router import MockJevRouter, Router
 from app_assignment_1.schemas import (
@@ -37,6 +45,8 @@ from app_assignment_1.schemas import (
 )
 from app_assignment_1.service import (
     BackendUnavailable,
+    CanaryNotSaved,
+    CanaryOutcomeUnknown,
     DeadlineExceeded,
     Gateway,
     LastUsableBackend,
@@ -56,6 +66,8 @@ NOT_LOADED = (
     "The saved releases could not be read, so no release change can be made "
     "yet; nothing changed. Try again once the store answers"
 )
+
+logger = logging.getLogger(__name__)
 
 
 def create_app(
@@ -88,6 +100,7 @@ def create_app(
             gateway = Gateway(configured, chosen, backends, store=opened)
             await opened.open()
             await gateway.restore_releases()
+            await gateway.load_release()
             await gateway.restore()
             app.state.gateway = gateway
             app.state.operator_token = configured.operator_token
@@ -155,6 +168,9 @@ def create_app(
         # Only the backends decide the status. While the Jev breaker is open the
         # rule router routes, and customers still get answers from the right
         # models; `jev_breaker` shows it.
+        # Docker polls this route, so an unreadable release store recovers
+        # without anyone opening /v1/release.
+        await gateway.ensure_release_loaded()
         healthy = all(gateway.usable(b) for b in gateway.backends)
         monitor = gateway.controller.stats()
         # stats() may log a re-enable; save it before reading the log back.
@@ -173,6 +189,8 @@ def create_app(
                     model=r.trace.model,
                     fallback_reason=r.trace.fallback_reason,
                     format_check=r.trace.format_check,
+                    version_id=r.trace.version_id,
+                    canary=r.trace.canary,
                 )
                 for r in await gateway.store.recent_requests(20)
             ],
@@ -331,6 +349,56 @@ def create_app(
             return gateway.set_jev_fault(payload)
         except NotAMock:
             raise HTTPException(409, "Jev is real, not the mock") from None
+
+    @app.get("/v1/release", response_model=ReleaseStatus)
+    async def get_release(request: Request) -> ReleaseStatus:
+        gateway: Gateway = request.app.state.gateway
+        await gateway.ensure_release_loaded()
+        try:
+            history = await asyncio.wait_for(
+                gateway.store.recent_releases(20), gateway.store_timeout
+            )
+        except Exception as exc:
+            logger.warning("Could not read release history (%s)", type(exc).__name__)
+            history = []
+        return ReleaseStatus(
+            current=gateway.release,
+            source=gateway.release_source,
+            versions=[
+                VersionInfo(id=v.id, description=v.description)
+                for v in gateway.versions
+            ],
+            history=history,
+        )
+
+    @app.put(
+        "/v1/release",
+        response_model=Release,
+        responses={
+            401: {"description": "Missing or wrong operator token"},
+            403: {"description": "Release changes are turned off"},
+            422: {"description": "Invalid release or unknown version"},
+            503: {"description": "Not saved, or the outcome is unknown"},
+        },
+        # /v1 is public through Caddy, so a change needs the operator token.
+        dependencies=[Depends(require_operator)],
+    )
+    async def put_release(change: ReleaseChange, request: Request) -> Release:
+        gateway: Gateway = request.app.state.gateway
+        await gateway.ensure_release_loaded()
+        try:
+            return await gateway.set_release(change)
+        except ValueError as exc:
+            # Only "Unknown version: <id>", which names a version, not a secret.
+            raise HTTPException(422, str(exc)) from None
+        except CanaryNotSaved:
+            raise HTTPException(503, "The release could not be saved") from None
+        except CanaryOutcomeUnknown:
+            raise HTTPException(
+                503,
+                "The release may or may not have been saved; "
+                "check GET /v1/release before trying again",
+            ) from None
 
     # Internal only: Caddy does not proxy /metrics, and it stays out of /v1 and
     # the OpenAPI docs. Prometheus scrapes it on the Compose network.

@@ -8,7 +8,7 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 
 ## Layout
 
-- `src/app_assignment_1/api.py`: FastAPI app, the `/v1/chat`, `/v1/requests/{id}` and `/v1/health` routes, the operator routes (`/v1/operator/models/{name}/disable`, `/enable`, `/release` and `/rollback`, `/v1/faults` and `/v1/faults/jev`, behind `APP_OPERATOR_TOKEN`), and the internal `/metrics` route.
+- `src/app_assignment_1/api.py`: FastAPI app, the `/v1/chat`, `/v1/requests/{id}` and `/v1/health` routes, `GET`/`PUT /v1/release` (canary), the operator routes (`/v1/operator/models/{name}/disable`, `/enable`, `/release` and `/rollback`, `/v1/faults` and `/v1/faults/jev`, behind `APP_OPERATOR_TOKEN`), and the internal `/metrics` route.
 - `src/app_assignment_1/auth.py`: `require_operator`, the operator token check every operator route uses (403 while `APP_OPERATOR_TOKEN` is unset, 401 for a missing or wrong token).
 - `src/app_assignment_1/service.py`: gateway flow and reply format checks; saves requests and interventions to the store.
 - `src/app_assignment_1/store.py`: `Store` interface, `MemoryStore` (default) and `PostgresStore` (psycopg 3, plain SQL), plus the migration runner.
@@ -29,11 +29,12 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 - `src/app_assignment_1/records.py`: `JevAssessment` records for the semantic monitor and the checks on them. The gateway builds two records per request and saves them with the request through `Store`.
 - `src/app_assignment_1/semantic.py`: in-memory semantic monitor; scores each model's intent against Jev's intent answer, per model, with coverage and a baseline; only when Jev and the model are both mocks or both real (`Backend.mocked`). The controller acts on it only with `APP_SEMANTIC_ACTIONS_ENABLED` (off by default).
 - `src/app_assignment_1/metrics.py`: Prometheus metrics for the gateway, served at the internal `/metrics` path (not proxied by Caddy).
+- `src/app_assignment_1/release.py`: canary releases: config versions, the release (stable, canary, share) and the per-request split. See `docs/CANARY.md`.
 - `src/app_assignment_1/schemas.py`: Pydantic API contracts and config models.
 - `src/app_assignment_1/config.py`: cached Pydantic Settings.
 - `src/app_assignment_1/__init__.py`: package version.
 - `frontend/`: React (Vite) app with Chat, Health and Jev screens; `frontend/Dockerfile` builds it into the Caddy image.
-- `config/`: `labels.json` (the 78 labels Jev and Qwen classify into), `intents.json`, `policy_cards.json`, `backends.json`, `releases.json` (versions an operator can deploy to each model), plus `backends.chaos.json`, `backends.outage.json` and `backends.labelswap.json` for simulated faults.
+- `config/`: `labels.json` (the 78 labels Jev and Qwen classify into), `intents.json`, `policy_cards.json`, `backends.json`, `releases.json` (versions an operator can deploy to each model), `versions.json` (config versions for canary releases), plus `backends.chaos.json`, `backends.outage.json` and `backends.labelswap.json` for simulated faults.
 - `tests/`: pytest suite. Frontend tests are in `frontend/src/App.test.jsx` and `frontend/src/JevView.test.jsx`.
 - `scripts/smoke_compose.py`: smoke test against the public proxy.
 - `scripts/measure_recovery.py`: sets each simulated fault on the small model through `/v1/faults`, then measures how long the controller takes to act, what customers got meanwhile, false interventions, and how long until the model serves again. Needs `APP_OPERATOR_TOKEN`; refuses any host but localhost unless told otherwise. `compose.measure.yml` turns semantic actions on with the mock baseline so the label-swap scenario can run.

@@ -58,7 +58,7 @@ components:
     items:
       - built: "POST /v1/chat, GET /v1/requests/{id}, GET /v1/health (recent requests, usage), /docs"
       - built: GET /metrics, internal (not via Caddy)
-      - built: Operator token; disable or enable a model; deploy or roll back a release
+      - built: Operator token; disable or enable a model; model and canary releases
 
   router_client:
     title: Router client
@@ -71,10 +71,11 @@ components:
 
   canary_splitter:
     title: Canary splitter
-    owner: null
+    owner: Jackson
     items:
-      - todo: Prompt and config version by traffic share
-      - todo: Release state from Postgres
+      - built: Config version by traffic share
+      - built: Release history in Postgres
+      - todo: Prompt version, with real Qwen
 
   backend_client:
     title: Backend client
