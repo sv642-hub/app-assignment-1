@@ -301,6 +301,26 @@ async def run_items(
     await asyncio.gather(*(one(message) for message in messages))
 
 
+def vllm_key() -> str:
+    """The vLLM key from the environment, stripped as the gateway stores it (#132).
+
+    vLLM compares "Bearer <key>" exactly, and a CRLF key file read with
+    $(cat file) keeps its "\\r". Never put the key in an error message.
+    """
+    key = os.environ.get("VLLM_API_KEY", "").strip()
+    if not key:
+        raise SystemExit(
+            "Set VLLM_API_KEY (on the CPU instance: "
+            "export VLLM_API_KEY=$(cat ~/.vllm_api_key))"
+        )
+    if not all("!" <= char <= "~" for char in key):
+        raise SystemExit(
+            "VLLM_API_KEY must be printable ASCII with no spaces or control "
+            "characters inside it"
+        )
+    return key
+
+
 async def run(args: argparse.Namespace) -> int:
     labels, cards, backends = load_config()
     dataset = (
@@ -348,12 +368,7 @@ async def run(args: argparse.Namespace) -> int:
         else:
             if not args.base_url:
                 raise SystemExit("--base-url is required for a real model")
-            key = os.environ.get("VLLM_API_KEY")
-            if not key:
-                raise SystemExit(
-                    "Set VLLM_API_KEY (on the CPU instance: "
-                    "export VLLM_API_KEY=$(cat ~/.vllm_api_key))"
-                )
+            key = vllm_key()
             client = httpx.AsyncClient(
                 base_url=args.base_url,
                 timeout=60,
