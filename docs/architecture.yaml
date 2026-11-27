@@ -204,6 +204,7 @@ components:
     style: stretch
     items:
       - built: Skeleton and gate check
+      - built: ModelLens extractor, not yet run
       - todo: Load Qwen3-1.7B outside vLLM; real activations
       - todo: Gate run a week after the GPU host and dev split
 
@@ -223,8 +224,8 @@ components:
     items:
       - built: "Three faults by hand: outage, bad format, label swap"
       - built: Tester walkthrough for outage and bad format
-      - built: "Live demo script: all three faults in one run, times printed per run (docs/CHAOS_DEMO.md)"
-      - todo: About 20 scenarios; detection and recovery times over many runs; false interventions
+      - built: "Demo script (docs/CHAOS_DEMO.md); recovery times over many runs (mocks)"
+      - todo: About 20 scenarios
 
   evaluation:
     title: Offline evaluation harness
@@ -232,8 +233,8 @@ components:
     items:
       - todo: Official test set primary; fresh set as a check
       - todo: Baselines and the oracle router
-      - todo: 300 messages, 150 grades; split not agreed
-      - todo: Banking77 development split
+      - todo: "Evaluation set: 300 messages, 150 grades; split not agreed"
+      - built: Banking77 development split (seeded, 20% per intent)
 
   reports:
     title: Reports and artifacts

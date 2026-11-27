@@ -322,9 +322,26 @@ def _fold(panels: list[dict]) -> list[dict]:
     return out
 
 
-UNAVAILABLE = "sum(increase(gateway_chat_unavailable_total[$__range]))"
-ANSWERED = "sum(increase(gateway_chat_requests_total[$__range]))"
-BAD_SHARE = f"({UNAVAILABLE} / ({ANSWERED} + {UNAVAILABLE}))"
+def _zero(expr: str) -> str:
+    """Count a missing series as 0. The gateway exposes a counter only after its
+    first increment, so in an all-503 outage there is no answered series."""
+    return f"(({expr}) or vector(0))"
+
+
+def _answered(w: str, fn: str = "rate") -> str:
+    return _zero(f"sum({fn}(gateway_chat_requests_total[{w}]))")
+
+
+def _unavailable(w: str, fn: str = "rate") -> str:
+    return _zero(f"sum({fn}(gateway_chat_unavailable_total[{w}]))")
+
+
+def _bad_share(w: str, fn: str = "rate") -> str:
+    """503s over all traffic (answered plus 503). No traffic gives no data."""
+    return f"({_unavailable(w, fn)} / ({_answered(w, fn)} + {_unavailable(w, fn)}))"
+
+
+BAD_SHARE = _bad_share("$__range", "increase")
 FORMAT_PASS = (
     f'sum by (model) (rate(gateway_chat_requests_total{{format_check="passed"}}[{R}]))'
     f" / sum by (model) (rate(gateway_chat_requests_total[{R}]))"
@@ -350,8 +367,9 @@ def disabled_stat(w: int) -> None:
 
 
 def traffic_stat(w: int) -> None:
-    stat("Requests per second", f"sum(rate(gateway_chat_requests_total[{R}]))",
-         unit="reqps", w=w, decimals=2)  # fmt: skip
+    stat("Requests per second", f"{_answered(R)} + {_unavailable(R)}",
+         unit="reqps", w=w, decimals=2,
+         desc="Answered requests plus 503s.")  # fmt: skip
 
 
 def answered_stat(w: int) -> None:
@@ -365,18 +383,14 @@ def answered_stat(w: int) -> None:
 def traffic_by_model(w: int, h: int) -> None:
     timeseries("Requests per second by model",
                [(f"sum by (model) (rate(gateway_chat_requests_total[{R}]))",
-                 "{{model}}")], unit="reqps", stack=True, minimum=0,
-               w=w, h=h)  # fmt: skip
+                 "{{model}}"),
+                (_unavailable(R), "503")], unit="reqps", stack=True,
+               minimum=0, w=w, h=h)  # fmt: skip
 
 
 def burn(window: str) -> str:
     """How fast `window` spends the availability error budget."""
-    return (
-        f"(sum(rate(gateway_chat_unavailable_total[{window}])) / "
-        f"(sum(rate(gateway_chat_requests_total[{window}])) + "
-        f"sum(rate(gateway_chat_unavailable_total[{window}])))) "
-        f"/ {1 - SLO_AVAILABILITY}"
-    )
+    return f"{_bad_share(window)} / {1 - SLO_AVAILABILITY}"
 
 
 def build_summary() -> dict:
@@ -473,7 +487,9 @@ def build() -> dict:
     traffic_by_model(8, 8)
     timeseries("Requests per second by route",
                [(f"sum by (route) (rate(gateway_chat_requests_total[{R}]))",
-                 "{{route}}")], unit="reqps", stack=True, minimum=0)  # fmt: skip
+                 "{{route}}"),
+                (_unavailable(R), "503")], unit="reqps", stack=True,
+               minimum=0)  # fmt: skip
     timeseries("503 rate (no backend could answer)",
                [(f"sum(rate(gateway_chat_unavailable_total[{R}]))", "503s")],
                unit="reqps", minimum=0)  # fmt: skip
