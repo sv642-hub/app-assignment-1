@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 
 from pydantic import TypeAdapter, ValidationError
 
-from app_assignment_1.backends import Backend, MockBackend
+from app_assignment_1.backends import UNKNOWN_REPLY, Backend, MockBackend
 from app_assignment_1.breaker import CircuitBreaker
 from app_assignment_1.config import Settings, settings_version
 from app_assignment_1.intents import load_intents
@@ -654,12 +654,16 @@ class Gateway:
                 logger.warning("Could not save interventions (%s)", type(exc).__name__)
 
     async def chat(self, message: str) -> ChatResponse:
+        # Counted until the reply is ready; saving it afterwards is not in flight.
+        self.metrics.chat_in_flight.inc()
         try:
             response, jev = await self._chat(message)
         except BaseException:
+            self.metrics.chat_in_flight.dec()
             # Interventions also happen on requests that end in a 503.
             await self._finish(self.save_interventions())
             raise
+        self.metrics.chat_in_flight.dec()
         # By now the failure monitor and the metrics have counted this reply,
         # so a cancel must not stop the saves: the saved requests would no
         # longer match the counts, and the controller has already handed its
@@ -749,6 +753,9 @@ class Gateway:
             error_type = _jev_error_type(exc)
             logger.warning("Jev routing failed; using rule router (%s)", error_type)
             timed_out = isinstance(exc, TimeoutError)
+            self.metrics.jev_call_latency.labels(
+                "timeout" if timed_out else "error"
+            ).observe(perf_counter() - start)
             reason = "jev_timeout" if timed_out else "jev_error"
             reasons.append(reason)
             self.metrics.jev_fallbacks.labels(reason).inc()
@@ -760,6 +767,7 @@ class Gateway:
                 error_type=error_type,
                 start=start,
             )
+        self.metrics.jev_call_latency.labels("ok").observe(perf_counter() - start)
         self.jev_breaker.succeeded()
         self.jev_answered_calls += 1
         self.jev_input_tokens += result.input_tokens
@@ -854,6 +862,7 @@ class Gateway:
         usage = self.usage[name]
         usage.attempted_calls += 1
         timer = asyncio.timeout(budget)
+        call_start = perf_counter()
         try:
             async with timer:
                 generated = BackendReply.model_validate(await backend.generate(message))
@@ -864,6 +873,9 @@ class Gateway:
                 usage.deadline_exceeded_calls += 1
                 return None, action, True, generation
             usage.failed_calls += 1
+            self.metrics.backend_call_latency.labels(name, "failed").observe(
+                perf_counter() - call_start
+            )
             code = backend_error_code(exc)
             usage.failed_by_error[code] = usage.failed_by_error.get(code, 0) + 1
             # A reply that fails BackendReply validation also counts as a call
@@ -892,6 +904,9 @@ class Gateway:
             self._finish_release_watch(backend)
             return None, action, False, generation
         usage.completed_calls += 1
+        self.metrics.backend_call_latency.labels(name, "ok").observe(
+            perf_counter() - call_start
+        )
         return generated, action, False, generation
 
     def _finish_release_watch(self, backend: Backend) -> None:
@@ -1027,17 +1042,47 @@ class Gateway:
             and intent not in self.cards
         )
         if uncarded:
-            # The reply text is discarded, so it is not checked. Facts must be
-            # empty: there is no card to ground them.
-            format_errors = ["uncarded_policy_facts"] if facts else []
+            # Nothing the model wrote is shown: the reply becomes the fixed
+            # uncarded text and its facts are dropped, since no card grounds
+            # them. So leftover facts are not a format failure; in the #109
+            # test-set run they failed 36-39% of real replies, most with the
+            # right intent. They are counted on their own instead.
+            format_errors: list[str] = []
+            if facts:
+                self.metrics.uncarded_facts_dropped.labels(backend.config.name).inc()
+                facts = []
             reply = UNCARDED_REPLY
+        elif intent == UNKNOWN and not reply.strip() and not facts:
+            # No intent and no text: the customer gets the fixed no-match reply
+            # that asks them to describe their problem, so nothing generated is
+            # shown and this is not a format failure. In the #109 test-set run
+            # the small model did this on 304 of 3,080 messages. Counted on its
+            # own, so the prompt problem stays visible.
+            self.metrics.empty_unknown_filled.labels(backend.config.name).inc()
+            reply = UNKNOWN_REPLY
+            format_errors = []
         else:
+            # The model's own text is still checked, so a malformed reply counts
+            # as a format failure. It is never shown or stored, though: it can
+            # repeat the customer's message or say things the card doesn't. The
+            # customer gets text built from approved content only.
             format_errors = check_reply(reply)
             if intent not in self.labels.names:
                 format_errors.append("unknown_label")
-            elif intent == UNKNOWN and facts:
+            elif intent == UNKNOWN:
                 # No intent means no card, so there is nothing to ground facts.
-                format_errors.append("unknown_policy_facts")
+                if facts:
+                    format_errors.append("unknown_policy_facts")
+                reply = UNKNOWN_REPLY
+            else:
+                card = self.cards[intent]
+                if not set(facts) <= set(card.facts):
+                    format_errors.append("unknown_policy_facts")
+                elif not facts:
+                    format_errors.append("missing_policy_facts")
+                # The chosen facts, in the card's order, once each.
+                facts = [fact for fact in card.facts if fact in facts]
+                reply = card.reply_template.format(facts=" ".join(facts))
         if format_errors:
             # Keep malformed generated content out of the UI and stored response.
             intent = "unknown"
@@ -1114,8 +1159,6 @@ class Gateway:
                     else "unsupported_topic"
                     if uncarded
                     else "policy_template"
-                    if mocked
-                    else "generated"
                 ),
                 confidence=decision.confidence,
                 latency_ms=round((perf_counter() - start) * 1000, 2),
@@ -1132,5 +1175,9 @@ class Gateway:
         self.metrics.chat_requests.labels(
             trace.route, trace.model, trace.reply_source, trace.format_check
         ).inc()
-        self.metrics.chat_latency.observe(perf_counter() - start)
+        elapsed = perf_counter() - start
+        self.metrics.chat_latency.observe(elapsed)
+        self.metrics.chat_latency_by_model.labels(trace.route, trace.model).observe(
+            elapsed
+        )
         return response, jev

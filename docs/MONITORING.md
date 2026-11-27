@@ -215,3 +215,7 @@ curl -fsS -X POST -H "$H" -H 'Content-Type: application/json' \
 - **Holds survive a restart with Postgres:** the gateway reads each model's last operator action at startup. With the memory store, re-apply a hold after restarting.
 - **Overrides replace the stack:** don't run the Compose fault overrides on the deployment testers use. They take over port 8080 and the default project. Use `/v1/faults`, or another machine.
 - **No new ports:** never publish the gateway, Postgres or Prometheus ports to debug. Use `docker compose exec`, as above.
+
+## Dashboard
+
+The Metrics screen (Grafana, at `/grafana`) plots the same series the alerts use, plus per-model latency percentiles, in-flight requests, Jev call latency and auth failures. Its rows and targets are listed in the README under Grafana dashboard. A hung model call shows first in *In-flight requests*, because a latency histogram only counts calls that have finished. The latency targets there (small under 2 s, large under 4 s at p95) are proposals, not measured values.
