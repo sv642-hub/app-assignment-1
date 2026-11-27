@@ -540,7 +540,9 @@ def _release(at, backend, action, revision, reason="test", version="v2-faster"):
         backend=backend,
         action=action,
         version=version,
-        from_version="base" if action == "deployed" else None,
+        from_version=(
+            None if action == "confirmed" or KEPT_REASON_MARKER in reason else "base"
+        ),
         rollback_target="base",
         actor="operator",
         reason=reason,
@@ -608,3 +610,70 @@ def test_a_kept_release_event_is_not_a_release_change_on_restart():
     g = asyncio.run(go())
     # Cut at the real deploy (10 min ago), not the kept record.
     assert list(g.controller.windows[SMALL]) == ["format_failure"] * 2
+
+
+def test_an_operators_reason_cannot_hide_a_real_deploy_on_restart():
+    # The operator writes a deploy's reason, so a reason that holds the kept
+    # phrase must still cut the window like any deploy.
+    settings = Settings(_env_file=None)
+    store = MemoryStore(settings.request_store_limit)
+    deploy = _release(
+        NOW - timedelta(minutes=2),
+        SMALL,
+        "deployed",
+        2,
+        reason=f"retry of the change {KEPT_REASON_MARKER}",
+    ).model_copy(update={"from_version": "base"})
+
+    async def go() -> Gateway:
+        await store.save_monitor_samples(
+            [failure(NOW - timedelta(minutes=3), "format_failure")]
+        )
+        await store.save_release_events([deploy])
+        g = gateway(settings, store)
+        await g.restore_releases()
+        await g.restore()
+        return g
+
+    g = asyncio.run(go())
+    assert list(g.controller.windows[SMALL]) == []
+
+
+def test_the_newest_release_change_is_by_revision_not_save_order():
+    # A rollback (revision 2) saved after a deploy (revision 3): the deploy is
+    # what the model serves, so it is where the window is cut.
+    settings = Settings(_env_file=None)
+    store = MemoryStore(settings.request_store_limit)
+    events = [
+        _release(NOW - timedelta(minutes=9), SMALL, "deployed", 1),
+        _release(NOW - timedelta(minutes=1), SMALL, "deployed", 3),
+        _release(NOW - timedelta(minutes=5), SMALL, "rolled_back", 2),
+    ]
+
+    async def go() -> list[ReleaseEvent]:
+        await store.save_release_events(events)
+        return await store.latest_release_changes()
+
+    assert [e.revision for e in asyncio.run(go())] == [3]
+
+
+def test_a_saved_but_not_applied_deploy_does_not_cut_the_window():
+    # The save landed but raised, the read-back failed, and the gateway kept
+    # base and saved a kept record (revision 2). Restore must not cut at the
+    # deploy (revision 1), as the status does not.
+    settings = Settings(_env_file=None)
+    store = MemoryStore(settings.request_store_limit)
+    kept = _release(
+        NOW - timedelta(minutes=2),
+        SMALL,
+        "confirmed",
+        2,
+        reason=f"change to v2-faster {KEPT_REASON_MARKER}; kept base",
+    )
+    events = [_release(NOW - timedelta(minutes=3), SMALL, "deployed", 1), kept]
+
+    async def go() -> list[ReleaseEvent]:
+        await store.save_release_events(events)
+        return await store.latest_release_changes()
+
+    assert asyncio.run(go()) == []

@@ -603,8 +603,11 @@ def test_latest_release_changes_skip_confirmations_and_kept_records(
 ) -> None:
     small, large = "qwen3-1.7b", "qwen3-4b"
     deploy = release_event(0, small, "deployed", "v2-good")
-    kept = release_event(1, small, "deployed", "v2-good").model_copy(
-        update={"reason": f"change to v3 {KEPT_REASON_MARKER}; kept v2-good"}
+    kept = release_event(1, small, "deployed", "v2-good", 9).model_copy(
+        update={
+            "reason": f"change to v3 {KEPT_REASON_MARKER}; kept v2-good",
+            "from_version": None,
+        }
     )
     confirm = release_event(2, small, "confirmed", "v2-good")
     rollback = release_event(3, large, "rolled_back", "base")
@@ -743,3 +746,34 @@ def test_postgres_release_survives_a_restart(postgres_url: str, tmp_path) -> Non
         small = {r["name"]: r for r in health["releases"]}["qwen3-1.7b"]
         assert (small["version"], small["status"]) == ("v2-bad-format", "watching")
         assert [e["action"] for e in health["release_history"]] == ["deployed"]
+
+
+def test_latest_release_changes_use_revision_and_skip_voided_deploys(
+    make_store: MakeStore,
+) -> None:
+    small = "qwen3-1.7b"
+    # An operator's reason may hold the kept phrase and is still a deploy.
+    first = release_event(0, small, "deployed", "v2-good", 1).model_copy(
+        update={"reason": f"retry, {KEPT_REASON_MARKER}"}
+    )
+    # Saved before revision 2, which a retried save lands after revision 3.
+    third = release_event(1, small, "deployed", "v2-faster", 3)
+    second = release_event(2, small, "rolled_back", "base", 2)
+
+    async def body(store: Store) -> None:
+        await store.save_release_events([first])
+        assert await store.latest_release_changes() == [first]
+        await store.save_release_events([third, second])
+        assert await store.latest_release_changes() == [third]
+        # A kept record right after a change says that change was not made.
+        kept = release_event(3, small, "confirmed", "v2-faster", 4).model_copy(
+            update={"reason": f"change to v3 {KEPT_REASON_MARKER}; kept v2-faster"}
+        )
+        await store.save_release_events([kept])
+        assert await store.latest_release_changes() == [second]
+        voided = release_event(4, small, "deployed", "v3", 5)
+        kept2 = kept.model_copy(update={"revision": 6})
+        await store.save_release_events([voided, kept2])
+        assert await store.latest_release_changes() == [second]
+
+    run(make_store(), body)

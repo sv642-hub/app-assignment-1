@@ -94,9 +94,11 @@ class Store(Protocol):
         ...
 
     async def latest_release_changes(self) -> list[ReleaseEvent]:
-        """Each model's newest deploy or rollback, however old. A confirmation
-        is not a change, and neither is a kept record (its reason holds
-        KEPT_REASON_MARKER). Restore cuts the monitor windows at these."""
+        """Each model's newest deploy or rollback by revision, however old. A
+        confirmation is not a change. Neither is a kept record, which has no
+        from_version, so an operator's reason can't pass for one, nor the
+        change a kept record follows: it was not made. Restore cuts the
+        monitor windows at these."""
         ...
 
     async def latest_release_events(self) -> list[ReleaseEvent]:
@@ -128,8 +130,11 @@ class MemoryStore:
         self.release_events: deque[ReleaseEvent] = deque(maxlen=RELEASE_EVENT_LIMIT)
         # Kept apart from the bounded history, so it never loses a model.
         self.latest_releases: dict[str, ReleaseEvent] = {}
-        self.latest_changes: dict[str, ReleaseEvent] = {}
         self.saved_revisions: dict[tuple[str, int], ReleaseEvent] = {}
+        # Every deploy and rollback, and the revisions a kept record voided,
+        # kept apart for the same reason (a handful per model).
+        self.changes: dict[str, dict[int, ReleaseEvent]] = {}
+        self.voided: set[tuple[str, int]] = set()
 
     async def open(self) -> None:
         pass
@@ -195,8 +200,10 @@ class MemoryStore:
                 continue
             self.saved_revisions[key] = item
             self.release_events.append(item)
-            if item.action != "confirmed" and KEPT_REASON_MARKER not in item.reason:
-                self.latest_changes[item.backend] = item
+            if _is_kept(item):
+                self.voided.add((item.backend, item.revision - 1))
+            elif item.action != "confirmed" and item.from_version is not None:
+                self.changes.setdefault(item.backend, {})[item.revision] = item
             latest = self.latest_releases.get(item.backend)
             if latest is None or item.revision > latest.revision:
                 self.latest_releases[item.backend] = item
@@ -207,7 +214,14 @@ class MemoryStore:
         return list(self.release_events)[-limit:] if limit > 0 else []
 
     async def latest_release_changes(self) -> list[ReleaseEvent]:
-        return list(self.latest_changes.values())
+        newest = []
+        for backend, by_revision in self.changes.items():
+            live = [
+                e for r, e in by_revision.items() if (backend, r) not in self.voided
+            ]
+            if live:
+                newest.append(max(live, key=lambda e: e.revision))
+        return newest
 
     async def latest_release_events(self) -> list[ReleaseEvent]:
         return list(self.latest_releases.values())
@@ -484,10 +498,15 @@ class PostgresStore:
         async with self.pool.connection() as conn:
             cur = await conn.execute(
                 f"""
-                SELECT DISTINCT ON (backend) {RELEASE_COLUMNS}
-                FROM model_releases
-                WHERE action <> 'confirmed' AND position(%s IN reason) = 0
-                ORDER BY backend, seq DESC
+                SELECT DISTINCT ON (m.backend) {RELEASE_COLUMNS}
+                FROM model_releases AS m
+                WHERE m.action <> 'confirmed' AND m.from_version IS NOT NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM model_releases AS k
+                    WHERE k.backend = m.backend AND k.revision = m.revision + 1
+                      AND k.from_version IS NULL AND position(%s IN k.reason) > 0
+                  )
+                ORDER BY m.backend, m.revision DESC
                 """,
                 (KEPT_REASON_MARKER,),
             )
@@ -504,6 +523,13 @@ class PostgresStore:
             )
             rows = await cur.fetchall()
         return [_release_event(row) for row in rows]
+
+
+def _is_kept(event: ReleaseEvent) -> bool:
+    """A record of a model keeping its release after an operator change that
+    was not confirmed as saved. It has no from_version, which no deploy or
+    rollback lacks, and the operator does not write its reason."""
+    return event.from_version is None and KEPT_REASON_MARKER in event.reason
 
 
 RELEASE_COLUMNS = (
