@@ -8,6 +8,13 @@ from fastapi.testclient import TestClient
 
 from app_assignment_1.api import create_app
 from app_assignment_1.config import Settings
+from app_assignment_1.no_match import (
+    GOODBYE_REPLY,
+    GREETING_REPLY,
+    THANKS_REPLY,
+    UNKNOWN_REPLY,
+    no_match_reply,
+)
 
 
 @pytest.fixture
@@ -77,3 +84,40 @@ def test_documented_chat_endpoint_returns_reply_and_trace(client):
     assert response.status_code == 200
     assert response.json()["reply"]
     assert response.json()["trace"]["format_check"] == "passed"
+
+
+@pytest.mark.parametrize(
+    "message, expected",
+    [
+        ("hi", GREETING_REPLY),
+        ("Hello there!", GREETING_REPLY),
+        ("Good morning", GREETING_REPLY),
+        ("thanks", THANKS_REPLY),
+        ("Thank you so much!", THANKS_REPLY),
+        ("bye", GOODBYE_REPLY),
+        ("Goodbye :)", GOODBYE_REPLY),
+    ],
+)
+def test_greeting_thanks_and_bye_get_a_short_fixed_reply(client, message, expected):
+    result = client.post("/v1/chat", json={"message": message}).json()
+    assert result["intent"] == "unknown"
+    assert result["policy_facts"] == []
+    assert result["reply"] == expected
+    assert result["trace"]["reply_source"] == "no_match"
+
+
+def test_other_no_match_messages_list_topics(client):
+    result = client.post(
+        "/v1/chat", json={"message": "tell me a joke about penguins"}
+    ).json()
+    assert result["reply"] == UNKNOWN_REPLY
+    assert "exchange rates" in result["reply"]
+    assert "penguins" not in result["reply"]
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["hi, where is my card", "thanks but what is the weather", "bye and tell a joke"],
+)
+def test_a_greeting_with_more_in_it_is_not_a_pure_greeting(message):
+    assert no_match_reply(message) == UNKNOWN_REPLY

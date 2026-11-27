@@ -12,13 +12,14 @@ from uuid import UUID, uuid4
 
 from pydantic import TypeAdapter, ValidationError
 
-from app_assignment_1.backends import UNKNOWN_REPLY, Backend, MockBackend
+from app_assignment_1.backends import Backend, MockBackend
 from app_assignment_1.breaker import CircuitBreaker
 from app_assignment_1.config import Settings, settings_version
 from app_assignment_1.intents import load_intents
 from app_assignment_1.labels import UNKNOWN, load_labels
 from app_assignment_1.metrics import GatewayMetrics
 from app_assignment_1.monitor import Controller
+from app_assignment_1.no_match import no_match_reply
 from app_assignment_1.records import JevAssessment, check_call
 from app_assignment_1.releases import Releases, load_catalog
 from app_assignment_1.router import (
@@ -969,7 +970,7 @@ class Gateway:
             # the small model did this on 304 of 3,080 messages. Counted on its
             # own, so the prompt problem stays visible.
             self.metrics.empty_unknown_filled.labels(backend.config.name).inc()
-            reply = UNKNOWN_REPLY
+            reply = no_match_reply(message)
             format_errors = []
         else:
             # The model's own text is still checked, so a malformed reply counts
@@ -983,7 +984,7 @@ class Gateway:
                 # No intent means no card, so there is nothing to ground facts.
                 if facts:
                     format_errors.append("unknown_policy_facts")
-                reply = UNKNOWN_REPLY
+                reply = no_match_reply(message)
             else:
                 card = self.cards[intent]
                 if not set(facts) <= set(card.facts):
