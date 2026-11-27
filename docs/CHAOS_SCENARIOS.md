@@ -2,7 +2,7 @@
 
 The list of faults the gateway should survive, what it should do in each, and what to measure. It turns the diagram's "About 20 scenarios; detection and recovery times over many runs; false interventions" into a plan.
 
-**Status: a plan. Nothing below has been measured unless it says so.** The three faults built so far are in `scripts/chaos_demo.py` (one run each, for the demo) and #104's `scripts/measure_recovery.py` (several runs each). Scenarios here are meant to run through #104's script once it merges, so the measurements come from one place.
+**Status: groups A to E are built; none is measured on a stack yet, except B1–B3 (README, "Measure detection and recovery").** `scripts/measure_recovery.py` runs each of A1–E4 by name (`--scenario D4`, or `--group C`); `scripts/chaos_demo.py` still runs the three original faults once each, for the demo. F, G and H are still a plan. The notes under [What building A–E showed](#what-building-ae-showed) come from the script's tests, which run the gateway in process with mocks and a 1 s cooldown. They show how the controller's rules play out, not timings.
 
 Owner: Pavlos (scenarios and fault hooks). The other owners are named where a scenario touches their area.
 
@@ -123,10 +123,19 @@ That's 33 scenarios. 23 need only what exists today, 5 need a new fault hook, an
 
 ## Order
 
-1. **After #104 merges:** add A, B4–B5, C, D and E to its script as named scenarios. Every hook already exists, so they only need new traffic patterns and fault settings.
+1. ~~After #104 merges: add A, B4–B5, C, D and E to its script as named scenarios.~~ Done. Next, run them on a local stack: groups A, B, D and E once each, and C with `--runs 10`.
 2. **F1–F3** are Docker commands around the same measurement loop.
 3. **New hooks for G1–G3**, in `MockBackend` and `/v1/faults`. These are Pavlos's. F4–F5 need a fault in the Jev mock, so check with Verness first.
 4. **H**, once Verness has the gateway calling vLLM.
+
+## What building A–E showed
+
+From the tests in `tests/test_measure_recovery.py`, with the default window, 5-sample minimum and 50% threshold. Not measured on a stack.
+
+- **"Disabled after 5 calls" holds only from an empty window.** Each run sends 8 healthy messages first. That leaves 6 good calls on the faulted model's route (B1, B2, B4, B5 and E4), so it takes 6 failures to reach 50%. The README's B1–B3 numbers already show 6.
+- **E1: the second disable takes 4 failures.** The reply that showed the model was back is a good call in the fresh window. 1 good call plus 4 failures reaches the 5-call minimum at 80%.
+- **D1: the disable is not on any reply.** With both models down, the request that disables one still ends in a 503, which has no trace. The script finds the disable in the intervention log instead.
+- **D4: releasing the hold disables the small model.** While the large model is held, the small one is kept as the last usable model (`kept_last_backend`), and every request gets a 503, as expected. But the hold is released after the fault clears, and the small model's window is still full of outage failures. A call soon after disables it, with the fault already gone, and it stays out for the cooldown. Customers are answered by the large model meanwhile. Whether the window should be cleared when the other model comes back is the monitor's call (Sebastian).
 
 ## Open questions
 

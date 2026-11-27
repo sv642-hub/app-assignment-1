@@ -464,3 +464,149 @@ def test_a_setup_failure_is_reported_and_later_runs_still_happen(
     assert results[0]["error"] == "OSError: connection reset"
     assert results[1]["ok"]
     assert "scenario" in capsys.readouterr().out  # the table was printed
+
+
+# Groups A-E of docs/CHAOS_SCENARIOS.md, each run end to end in process with a
+# 1-second cooldown. The long ones are shortened; the rules they check are not.
+SHORT = {
+    "A1": {"fault_seconds": 1.0},
+    "E3": {"flap": (0.4, 0.4, 3.0)},
+    "E4": {"quiet_seconds": 0.5},
+}
+
+
+def run_named(tmp_path, name, **overrides):
+    from dataclasses import replace
+
+    spec = replace(mr.CATALOG[name], **(SHORT.get(name, {}) | overrides))
+    with TestClient(create_app(settings(tmp_path))) as client:
+        gateway = mr.Gateway(transport(client), TOKEN)
+        result = mr.run_scenario(gateway, spec, interval=0, timeout=10)
+        health = client.get("/v1/health").json()
+    # Every fault is cleared and no model is left on hold.
+    assert all(
+        b["error_rate"] == b["fault_rate"] == b["label_swap_rate"] == 0
+        and b["available"]
+        for b in health["backends"]
+    )
+    assert result.error is None, result.error
+    assert result.false_interventions == 0
+    return result
+
+
+def test_the_catalog_has_groups_a_to_e():
+    assert mr.GROUPS == ["A", "B", "C", "D", "E"]
+    assert len(mr.CATALOG) == 20
+    assert mr.chosen(None, None) == ["B1", "B2", "B3"]
+    assert mr.chosen(["outage", "D4"], ["E"]) == ["B1", "D4", "E1", "E2", "E3", "E4"]
+
+
+def test_a1_healthy_traffic_has_no_intervention(tmp_path):
+    result = run_named(tmp_path, "A1")
+    assert result.ok and not result.detected
+    assert not [i for i in result.interventions if i["action"] == "disabled"]
+
+
+def test_a2_no_intervention_after_the_recovery(tmp_path):
+    result = run_named(tmp_path, "A2")
+    assert result.ok and result.detected and result.restored
+    assert any(r.phase == "after" for r in result.replies)
+
+
+@pytest.mark.parametrize("name", ["B4", "B5"])
+def test_b4_b5_the_large_model_is_disabled_and_recovers(tmp_path, name):
+    result = run_named(tmp_path, name)
+    assert result.ok
+    assert result.disabled_model == mr.LARGE
+    # 6 complex requests: the normal phase left 6 good calls in the window,
+    # so it takes 6 failures to reach 50%, not the 5 an empty window needs.
+    assert result.requests_to_detect == 6
+    if name == "B4":
+        # The small model answers the complex messages the large one fails.
+        assert result.bad_replies_before_detect == 0
+
+
+@pytest.mark.parametrize("name", ["C1", "C2", "C3", "C4", "C5"])
+def test_partial_faults_run_and_report_an_outcome(tmp_path, name):
+    result = run_named(tmp_path, name)
+    assert result.ok  # measure only: the outcome is random
+    faulted = [r for r in result.replies if r.phase == "fault"]
+    assert len(faulted) == 60
+    if result.detected:
+        assert result.disabled_model == mr.SMALL and result.restored
+
+
+@pytest.mark.parametrize("name", ["D1", "D2", "D3"])
+def test_both_faulted_disables_one_and_keeps_the_other(tmp_path, name):
+    result = run_named(tmp_path, name)
+    assert result.ok, result.problems
+    other = mr.LARGE if result.disabled_model == mr.SMALL else mr.SMALL
+    assert result.kept_last == [other]
+    assert result.restored  # both serve again once the faults clear
+    if name == "D1":
+        assert result.unavailable > 0  # neither model answers
+    if name == "D2":
+        assert result.unavailable == 0  # apologies, not 503s
+
+
+def test_d4_an_operator_hold_makes_the_faulted_model_the_last_one(tmp_path):
+    result = run_named(tmp_path, "D4")
+    assert result.ok, result.problems
+    assert not result.detected
+    assert result.kept_last == [mr.SMALL]
+    # The large model is held and the small one fails: every request a 503.
+    faulted = [r for r in result.replies if r.phase == "fault"]
+    assert all(r.status == 503 for r in faulted)
+    # Found by this scenario: once the hold is released, the small model is
+    # disabled on the outage failures still in its window, although the fault
+    # is gone. Reported, not counted as a problem.
+    late = result.extra["disabled_after_clear"]
+    assert [x["model"] for x in late] == [mr.SMALL]
+
+
+def test_e1_the_fault_returns_and_is_detected_again(tmp_path):
+    result = run_named(tmp_path, "E1")
+    assert result.ok, result.problems
+    second = result.extra["second_cycle"]
+    # 4, not 5: the reply that showed the model back is a good call in the
+    # fresh window, and 1 good + 4 failures reaches the 5-call minimum at 80%.
+    assert second["detected"] and second["requests_to_detect"] == 4
+
+
+def test_e2_clearing_during_the_cooldown_does_not_end_it_early(tmp_path):
+    result = run_named(tmp_path, "E2")
+    assert result.ok
+    # Cleared 1/6 of the 1 s cooldown after the disable: back only when the
+    # cooldown ends, so most of a second later, not at once.
+    assert 0.5 < result.restore_seconds < 1.5
+
+
+def test_e3_flapping_reports_disables_and_time_out(tmp_path):
+    result = run_named(tmp_path, "E3")
+    assert result.ok
+    small = result.extra["flapping"][mr.SMALL]
+    assert small["disables"] >= 1 and small["seconds_out"] > 0
+
+
+def test_e4_no_disable_while_no_traffic_reaches_the_model(tmp_path):
+    result = run_named(tmp_path, "E4")
+    assert result.ok, result.problems
+    assert not any(r.route == "standard" for r in result.replies if r.phase == "quiet")
+    assert result.requests_to_detect == 6  # 6 good calls from the normal phase
+    assert result.extra["detect_seconds_after_quiet"] >= 0
+
+
+def test_a_disable_under_an_operator_hold_is_a_problem():
+    disabled = f"disabled {mr.SMALL}: ..."
+    replies = [reply(0.0, "normal"), reply(1.0, "fault", controller_action=disabled)]
+    result = mr.summarize("D4", replies, 0.5, target=mr.SMALL, expect="kept_last")
+    assert result.detected  # summarize reports it; run_scenario adds the problem
+    assert result.problems == []
+
+
+def test_a_disable_of_a_model_with_no_fault_is_false():
+    disabled = f"disabled {mr.LARGE}: ..."
+    replies = [reply(0.0, "normal"), reply(1.0, "fault", controller_action=disabled)]
+    result = mr.summarize("B2", replies, 0.5)
+    assert result.false_interventions == 1
+    assert not result.ok
