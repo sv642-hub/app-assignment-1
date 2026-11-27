@@ -18,7 +18,7 @@ from app_assignment_1.config import Settings, settings_version
 from app_assignment_1.intents import load_intents
 from app_assignment_1.labels import UNKNOWN, load_labels
 from app_assignment_1.metrics import GatewayMetrics
-from app_assignment_1.monitor import Controller
+from app_assignment_1.monitor import RESTORE_ACTIONS, SEMANTIC_REASON, Controller
 from app_assignment_1.records import JevAssessment, check_call
 from app_assignment_1.releases import Releases, load_catalog
 from app_assignment_1.router import (
@@ -29,6 +29,7 @@ from app_assignment_1.router import (
     RuleRouter,
 )
 from app_assignment_1.schemas import (
+    KEPT_REASON_MARKER,
     BackendConfig,
     BackendErrorCode,
     BackendName,
@@ -52,6 +53,9 @@ from app_assignment_1.vllm import BackendCallError, BackendOutputError
 logger = logging.getLogger(__name__)
 QUESTIONS: tuple[Literal["route", "intent"], ...] = ("route", "intent")
 MAX_REPLY_LENGTH = 4000
+# Release changes read at startup to find each model's last deploy or rollback.
+# Enough of the intervention log to find each model's last disable and
+# re-enable when restoring after a restart.
 # For a recognized intent that has no policy card. The backend sends an empty
 # reply for these; the gateway never shows generated text for them.
 UNCARDED_REPLY = (
@@ -194,6 +198,7 @@ class Gateway:
         # delays a reply by seconds, not by the pool's 30-second default.
         self.store_timeout = settings.store_timeout_seconds
         self.save_lock = asyncio.Lock()
+        self.sample_lock = asyncio.Lock()
         # Request saves still running after their request was cancelled. The
         # event loop keeps only weak references to tasks, so these keep them.
         self.pending_saves: set[asyncio.Task[None]] = set()
@@ -295,7 +300,7 @@ class Gateway:
             return None
         scored = status.agreements + status.disagreements
         return (
-            f"intent differs from Jev's on {status.disagreement_rate:.0%} of last "
+            f"{SEMANTIC_REASON} on {status.disagreement_rate:.0%} of last "
             f"{scored} scored replies (baseline {baseline:.0%})"
         )
 
@@ -475,7 +480,7 @@ class Gateway:
         current = self.releases.state[event.backend].version
         self.releases.kept(
             event.backend,
-            f"change to {event.version} not confirmed as saved; kept {current}",
+            f"change to {event.version} {KEPT_REASON_MARKER}; kept {current}",
         )
 
     async def _skip_saved_revisions(self) -> None:
@@ -527,8 +532,12 @@ class Gateway:
 
     async def save_interventions(self) -> None:
         """Move the controller's new interventions, then the release changes
-        it made, to the store, in order."""
+        it made, then the new monitor samples, to the store, in order."""
         await self._save_interventions()
+        await self._save_release_events()
+        await self._save_samples()
+
+    async def _save_release_events(self) -> None:
         if not self.releases.unsaved:
             return
         async with self.save_lock:
@@ -551,6 +560,82 @@ class Gateway:
                     "Could not save release changes (%s)", type(exc).__name__
                 )
 
+    async def _save_samples(self) -> None:
+        """Save new window samples, one batch at a time so the store keeps
+        their order. If the store fails they are dropped, not retried: the
+        live windows are unaffected, and a later restart just rebuilds from
+        fewer samples. A cancel, such as a /v1/health call whose client left,
+        keeps them for the next save, then passes on."""
+        if not (self.controller.unsaved_samples or self.semantic.unsaved):
+            return
+        async with self.sample_lock:
+            samples = self.controller.unsaved_samples + self.semantic.unsaved
+            if not samples:
+                return
+            self.controller.unsaved_samples, self.semantic.unsaved = [], []
+            samples.sort(key=lambda s: s.at)
+            try:
+                await asyncio.wait_for(
+                    self.store.save_monitor_samples(samples), self.store_timeout
+                )
+            except BaseException as exc:
+                if not isinstance(exc, Exception):
+                    # Both lists are merged and sorted on the next save, so
+                    # putting the batch back in one of them is enough.
+                    self.controller.unsaved_samples = (
+                        samples + self.controller.unsaved_samples
+                    )
+                    raise
+                logger.warning(
+                    "Could not save monitor samples (%s)", type(exc).__name__
+                )
+
+    async def restore(self) -> None:
+        """Rebuild the monitor windows and running cooldowns from the store,
+        at startup, after `restore_releases`. A store problem is logged, and
+        the windows start empty."""
+        per_window = max(self.controller.window, self.semantic.rules.window)
+        try:
+            # Each model's newest reset and hold, however old, so a long run
+            # of newer interventions on the other model can't hide them.
+            interventions = await asyncio.wait_for(
+                self.store.latest_interventions(RESTORE_ACTIONS),
+                self.store_timeout,
+            )
+            samples = await asyncio.wait_for(
+                self.store.recent_monitor_samples(per_window), self.store_timeout
+            )
+            resets = await self._release_resets()
+        except Exception as exc:
+            logger.warning("Could not restore monitor state (%s)", type(exc).__name__)
+            return
+        cutoffs = self.controller.restore(
+            interventions, samples, datetime.now(UTC), resets
+        )
+        # With actions off, a re-enable never resets the semantic window, but
+        # a release change does (_release_changed).
+        actions = self.semantic.rules.actions_enabled
+        self.semantic.restore(samples, cutoffs if actions else resets)
+        if samples or self.controller.disabled_until or self.controller.held:
+            logger.info(
+                "Restored %d monitor samples; %d model(s) still cooling down, "
+                "%d held by an operator",
+                len(samples),
+                len(self.controller.disabled_until),
+                len(self.controller.held),
+            )
+
+    async def _release_resets(self) -> dict[BackendName, datetime]:
+        """When each model's windows were last cleared by a release change: a
+        deploy or a rollback, not a confirmation. Samples from before it
+        describe the version the model served then."""
+        if not self.releases_loaded:
+            return {}
+        events = await asyncio.wait_for(
+            self.store.latest_release_changes(), self.store_timeout
+        )
+        return {event.backend: event.at for event in events}
+
     async def _save_interventions(self) -> None:
         if not self.controller.unsaved:
             return
@@ -564,9 +649,14 @@ class Gateway:
                 await asyncio.wait_for(
                     self.store.save_interventions(items), self.store_timeout
                 )
-            except Exception as exc:
+            except BaseException as exc:
                 # Keep them for the next attempt; the controller is unaffected.
+                # A cancel, such as a /v1/health call whose client left, keeps
+                # them too, then passes on. (Chat saves run in a shielded task
+                # and are never cancelled here.)
                 self.controller.unsaved = items + self.controller.unsaved
+                if not isinstance(exc, Exception):
+                    raise
                 logger.warning("Could not save interventions (%s)", type(exc).__name__)
 
     async def chat(self, message: str) -> ChatResponse:
