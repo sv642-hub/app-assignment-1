@@ -1,5 +1,6 @@
 """Escalation: the large model answers when the small model looks unsure."""
 
+import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -189,3 +190,27 @@ def test_mock_models_escalate_a_message_they_cannot_match() -> None:
         assert body["trace"]["escalation_score"] == 0.3
         assert body["trace"]["escalated"] is True
         assert body["trace"]["model"] == LARGE
+
+
+def test_a_large_call_cut_short_by_the_deadline_is_no_time() -> None:
+    config = settings(
+        escalation_enabled=True,
+        request_deadline_seconds=3,
+        jev_timeout_seconds=1,
+        alternate_reserve_seconds=0.5,
+    )
+    with TestClient(create_app(config, ImmediateRouter())) as client:
+
+        async def small(message):
+            return unknown(0.2)
+
+        async def big(message):
+            await asyncio.sleep(10)
+            return unknown(None)
+
+        client.app.state.gateway.backends[0].generate = small
+        client.app.state.gateway.backends[1].generate = big
+        body = client.post("/v1/chat", json={"message": "card"}).json()
+        assert body["trace"]["model"] == SMALL
+        assert outcome(client, "no_time") == 1
+        assert outcome(client, "large_failed") == 0

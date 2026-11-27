@@ -1114,11 +1114,12 @@ class Gateway:
                 outcome = "no_time"
             else:
                 tried.append(large)
-                big, action, _, big_generation = await self._attempt(
+                big, action, big_cut_short, big_generation = await self._attempt(
                     large, message, remaining, len(tried), action, large is selected
                 )
                 if big is None:
-                    outcome = "large_failed"
+                    # Cut short by the deadline is no fault of the large model.
+                    outcome = "no_time" if big_cut_short else "large_failed"
                 else:
                     big_shaped = self._shape(large, big)
                     action = self._monitor(

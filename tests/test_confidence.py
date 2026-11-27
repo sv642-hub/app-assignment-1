@@ -73,3 +73,27 @@ def test_positive_logprob_gives_no_score() -> None:
         {"token": content[start + 12 :], "logprob": -0.1},
     ]
     assert label_confidence(content, tokens) is None
+
+
+def test_a_huge_integer_logprob_gives_no_score() -> None:
+    start = CONTENT.index("card_arrival")
+    pieces = split(CONTENT, [start, start + 12])
+    for huge in (-(10**400), 10**400):
+        block = tokens(pieces, [-0.1, -0.1, -0.1])
+        block[1]["logprob"] = huge
+        assert label_confidence(CONTENT, block) is None
+
+
+@pytest.mark.parametrize("flag", [True, False])
+def test_a_boolean_logprob_gives_no_score(flag: bool) -> None:
+    start = CONTENT.index("card_arrival")
+    pieces = split(CONTENT, [start, start + 12])
+    block = tokens(pieces, [-0.1, -0.1, -0.1])
+    block[1]["logprob"] = flag
+    assert label_confidence(CONTENT, block) is None
+
+
+def test_an_intent_key_that_appears_twice_gives_no_score() -> None:
+    twice = '{"intent":"card_arrival","intent":"lost_or_stolen_card","reply":""}'
+    block = [{"token": twice[i], "logprob": -0.1} for i in range(len(twice))]
+    assert label_confidence(twice, block) is None

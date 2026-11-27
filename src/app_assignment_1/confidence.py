@@ -39,8 +39,14 @@ def label_confidence(content: str, tokens: Sequence[Any]) -> float | None:
     """
     try:
         texts = [str(item["token"]) for item in tokens]
-        logprobs = [float(item["logprob"]) for item in tokens]
-    except (KeyError, TypeError, ValueError):
+        raw = [item["logprob"] for item in tokens]
+        # A JSON true or false is not a log probability (float(False) is 0.0,
+        # a score of 1.0).
+        if any(isinstance(value, bool) for value in raw):
+            return None
+        logprobs = [float(value) for value in raw]
+    except (KeyError, TypeError, ValueError, OverflowError):
+        # OverflowError: a JSON integer too large for a float.
         return None
     # A log probability is never above 0. A larger value is a malformed block,
     # and exp() of it can overflow; better no score than a wrong one.
@@ -48,9 +54,13 @@ def label_confidence(content: str, tokens: Sequence[Any]) -> float | None:
         return None
     if "".join(texts) != content:
         return None
-    match = _INTENT_VALUE.search(content)
-    if match is None:
+    matches = _INTENT_VALUE.findall(content)
+    if len(matches) != 1:
+        # None, or the key twice: the gateway keeps the last one, so the first
+        # one's tokens would score a label it drops.
         return None
+    match = _INTENT_VALUE.search(content)
+    assert match is not None
     start = match.end()
     try:
         # Find where the JSON string ends, escapes included; start - 1 is the
