@@ -1,0 +1,620 @@
+"""Probe skeleton: AUROC, training, the mock extractor and the gate decision."""
+
+import math
+import random
+import unicodedata
+
+import pytest
+from pydantic import ValidationError
+
+from app_assignment_1.probe import (
+    MIN_DEV_CLASS_SIZE,
+    GateReport,
+    GateRunInfo,
+    LinearProbe,
+    MockActivationExtractor,
+    ProbeExample,
+    auroc,
+    auroc_difference_interval,
+    normalize_prompt,
+    run_gate,
+    train_probe,
+)
+
+RUN_INFO = GateRunInfo(
+    model="test-model",
+    layer=0,
+    pooling="last-token",
+    token_confidence_method="test-method",
+    dataset_version="test-data",
+)
+
+
+class LabelLeakExtractor:
+    """Test double: real-looking activations that reveal the label."""
+
+    mocked = False
+
+    def extract(self, prompt: str, reply: str) -> list[float]:
+        return [1.0 if prompt.startswith("good") else -1.0]
+
+
+class MockLabelLeakExtractor(LabelLeakExtractor):
+    mocked = True
+
+
+class SaturatingExtractor:
+    """Test double: large activations, so every dev sigmoid rounds to 1.0."""
+
+    mocked = False
+    values = {"good train": 1.0, "bad train": -1.0, "good dev": 100.0, "bad dev": 50.0}
+
+    def extract(self, prompt: str, reply: str) -> list[float]:
+        return [self.values[" ".join(prompt.split()[:2])]]
+
+
+class ConstantExtractor:
+    """Test double: a broken extractor that returns the same vector each time."""
+
+    mocked = False
+
+    def extract(self, prompt: str, reply: str) -> list[float]:
+        return [0.0, 0.0]
+
+
+def example(prompt: str, correct: bool, token_confidence: float) -> ProbeExample:
+    return ProbeExample(
+        prompt=prompt,
+        reply="reply",
+        correct=correct,
+        token_confidence=token_confidence,
+    )
+
+
+def examples(
+    good_confidence: float,
+    bad_confidence: float,
+    split: str = "train",
+    count: int = 2,
+) -> list[ProbeExample]:
+    return [
+        *[
+            example(f"good {split} {i}", True, good_confidence)
+            for i in range(1, count + 1)
+        ],
+        *[
+            example(f"bad {split} {i}", False, bad_confidence)
+            for i in range(1, count + 1)
+        ],
+    ]
+
+
+def dev_examples(good_confidence: float, bad_confidence: float) -> list[ProbeExample]:
+    return examples(good_confidence, bad_confidence, "dev", MIN_DEV_CLASS_SIZE)
+
+
+@pytest.mark.parametrize(
+    ("scores", "expected"),
+    [
+        ([0.9, 0.8, 0.2, 0.1], 1.0),
+        ([0.1, 0.2, 0.8, 0.9], 0.0),
+        ([0.5, 0.5, 0.5, 0.5], 0.5),
+        ([0.9, 0.2, 0.8, 0.1], 0.75),
+        ([0.9, 0.5, 0.5, 0.1], 0.875),
+    ],
+)
+def test_auroc(scores: list[float], expected: float) -> None:
+    assert auroc(scores, [True, True, False, False]) == expected
+
+
+@pytest.mark.parametrize("label", [True, False])
+def test_auroc_needs_both_classes(label: bool) -> None:
+    with pytest.raises(ValueError, match="both"):
+        auroc([0.1, 0.2], [label, label])
+
+
+def test_auroc_rejects_mismatched_lengths() -> None:
+    with pytest.raises(ValueError, match="same length"):
+        auroc([0.1], [True, False])
+
+
+NONFINITE = [math.nan, math.inf, -math.inf]
+
+
+@pytest.mark.parametrize("bad", NONFINITE)
+@pytest.mark.parametrize("position", [0, 1])
+def test_auroc_rejects_nonfinite_scores(bad: float, position: int) -> None:
+    # NaN used to hang the tie loop (review of #62); it must raise instead.
+    scores = [0.0, 0.0]
+    scores[position] = bad
+    with pytest.raises(ValueError, match="finite"):
+        auroc(scores, [True, False])
+
+
+def test_auroc_matches_comparing_every_pair() -> None:
+    rng = random.Random(1)
+    scores = [rng.randrange(10) / 10 for _ in range(60)]
+    labels = [rng.random() < 0.4 for _ in range(60)]
+    positives = [s for s, label in zip(scores, labels, strict=True) if label]
+    negatives = [s for s, label in zip(scores, labels, strict=True) if not label]
+
+    wins = sum(
+        1.0 if positive > negative else 0.5 if positive == negative else 0.0
+        for positive in positives
+        for negative in negatives
+    )
+
+    assert auroc(scores, labels) == pytest.approx(
+        wins / (len(positives) * len(negatives))
+    )
+
+
+def test_difference_interval_is_exact_when_scores_never_change_order() -> None:
+    labels = [True, True, False, False]
+
+    low, high = auroc_difference_interval(
+        [0.9, 0.8, 0.2, 0.1], [0.5, 0.5, 0.5, 0.5], labels
+    )
+
+    assert (low, high) == (0.5, 0.5)
+
+
+def test_difference_interval_is_zero_for_identical_scores() -> None:
+    scores = [0.9, 0.2, 0.8, 0.1]
+
+    low, high = auroc_difference_interval(scores, scores, [True, True, False, False])
+
+    assert (low, high) == (0.0, 0.0)
+
+
+def test_difference_interval_contains_the_observed_difference() -> None:
+    rng = random.Random(2)
+    labels = [index % 2 == 0 for index in range(80)]
+    first = [rng.random() + 0.3 * label for label in labels]
+    second = [rng.random() for _ in labels]
+
+    low, high = auroc_difference_interval(first, second, labels)
+
+    assert low < auroc(first, labels) - auroc(second, labels) < high
+    assert low < high
+
+
+def test_difference_interval_matches_known_endpoints() -> None:
+    # Pins the 95% interval, 2,000 resamples and seed. The endpoints move with
+    # a 90% interval (0.045, 0.375), 200 resamples (0.010, 0.395) or seed 1.
+    rng = random.Random(7)
+    labels = [index % 2 == 0 for index in range(40)]
+    first = [round(rng.random() + 0.4 * label, 3) for label in labels]
+    second = [round(rng.random() + 0.2 * label, 3) for label in labels]
+
+    low, high = auroc_difference_interval(first, second, labels)
+
+    assert low == pytest.approx(0.0175, abs=1e-12)
+    assert high == pytest.approx(0.405, abs=1e-12)
+
+
+def test_difference_interval_is_repeatable() -> None:
+    scores = [0.9, 0.2, 0.8, 0.1, 0.4, 0.6]
+    other = [0.3, 0.7, 0.5, 0.2, 0.9, 0.1]
+    labels = [True, True, True, False, False, False]
+
+    assert auroc_difference_interval(scores, other, labels) == (
+        auroc_difference_interval(scores, other, labels)
+    )
+
+
+def test_difference_interval_rejects_bad_input() -> None:
+    with pytest.raises(ValueError, match="same length"):
+        auroc_difference_interval([0.1], [0.1, 0.2], [True, False])
+    with pytest.raises(ValueError, match="both"):
+        auroc_difference_interval([0.1, 0.2], [0.1, 0.2], [True, True])
+
+
+@pytest.mark.parametrize("bad", NONFINITE)
+@pytest.mark.parametrize("which", ["first", "second"])
+def test_difference_interval_rejects_nonfinite_scores(bad: float, which: str) -> None:
+    good = [0.9, 0.8, 0.2, 0.1]
+    broken = [0.9, bad, 0.2, 0.1]
+    first, second = (broken, good) if which == "first" else (good, broken)
+    with pytest.raises(ValueError, match="finite"):
+        auroc_difference_interval(first, second, [True, True, False, False])
+
+
+def test_mock_extractor_is_deterministic_and_bounded() -> None:
+    extractor = MockActivationExtractor(size=4)
+    features = extractor.extract("prompt", "reply")
+
+    assert features == extractor.extract("prompt", "reply")
+    assert features != extractor.extract("prompt", "another reply")
+    assert len(features) == 4
+    assert all(-1 <= value <= 1 for value in features)
+
+
+def test_train_probe_separates_a_simple_signal() -> None:
+    probe = train_probe([[1.0], [1.0], [-1.0], [-1.0]], [True, True, False, False])
+
+    assert probe.score([1.0]) > 0.9
+    assert probe.score([-1.0]) < 0.1
+
+
+def test_train_probe_learns_a_bias() -> None:
+    probe = train_probe([[2.0], [3.0], [2.5], [3.5]], [False, True, True, True])
+
+    assert probe.bias != 0
+    assert probe.score([3.5]) > probe.score([2.0])
+
+
+def test_train_probe_weights_the_informative_feature() -> None:
+    probe = train_probe(
+        [[1.0, 0.3], [1.0, -0.3], [-1.0, 0.3], [-1.0, -0.3]],
+        [True, True, False, False],
+    )
+
+    assert probe.weights[0] > 1
+    assert abs(probe.weights[1]) < 0.01
+
+
+def test_train_probe_rejects_bad_input() -> None:
+    with pytest.raises(ValueError, match="at least one"):
+        train_probe([], [])
+    with pytest.raises(ValueError, match="same length"):
+        train_probe([[1.0]], [True, False])
+
+
+@pytest.mark.parametrize("label", [True, False])
+def test_train_probe_needs_both_classes(label: bool) -> None:
+    with pytest.raises(ValueError, match="both"):
+        train_probe([[1.0], [2.0]], [label, label])
+
+
+def test_probe_score_stays_finite_on_extreme_logits() -> None:
+    probe = LinearProbe(weights=(1.0,), bias=0.0)
+
+    assert probe.score([-1000.0]) == 0.0
+    assert probe.score([1000.0]) == 1.0
+
+
+def test_probe_score_rejects_wrong_feature_size() -> None:
+    with pytest.raises(ValueError):
+        LinearProbe(weights=(1.0,), bias=0.0).score([1.0, 2.0])
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf])
+def test_probe_score_rejects_non_finite_features(value: float) -> None:
+    with pytest.raises(ValueError, match="finite"):
+        LinearProbe(weights=(1.0,), bias=0.0).score([value])
+
+
+def test_gate_passes_when_probe_beats_token_confidence() -> None:
+    train = examples(0.5, 0.5)
+    dev = dev_examples(0.5, 0.5)
+
+    report = run_gate(train, dev, LabelLeakExtractor(), RUN_INFO)
+
+    assert report.probe_auroc == 1.0
+    assert report.probe_auroc_low == report.probe_auroc_high == 1.0
+    assert report.token_auroc == 0.5
+    assert report.passed
+    assert report.difference_low == report.difference_high == 0.5
+    assert report.train_examples == 4
+    assert report.dev_examples == 2 * MIN_DEV_CLASS_SIZE
+    assert report.run_info == RUN_INFO
+    assert not report.mocked
+
+
+def test_gate_fails_when_the_lead_could_be_noise() -> None:
+    dev = [
+        *[example(f"good right {i}", True, 0.5) for i in range(12)],
+        *[example(f"bad right {i}", True, 0.5) for i in range(8)],
+        *[example(f"good wrong {i}", False, 0.5) for i in range(8)],
+        *[example(f"bad wrong {i}", False, 0.5) for i in range(12)],
+    ]
+
+    report = run_gate(examples(0.5, 0.5), dev, LabelLeakExtractor(), RUN_INFO)
+
+    assert report.probe_auroc > report.token_auroc
+    assert report.difference_low <= 0 < report.difference_high
+    assert not report.passed
+
+
+def test_gate_fails_on_a_tie() -> None:
+    dev = dev_examples(0.9, 0.1)
+
+    report = run_gate(examples(0.5, 0.5), dev, LabelLeakExtractor(), RUN_INFO)
+
+    assert report.probe_auroc == report.token_auroc == 1.0
+    assert not report.passed
+
+
+def test_gate_fails_when_token_confidence_is_better() -> None:
+    train = examples(0.5, 0.5)
+    dev = [
+        *[example(f"bad dev {i}", True, 0.9) for i in range(MIN_DEV_CLASS_SIZE)],
+        *[example(f"good dev {i}", False, 0.1) for i in range(MIN_DEV_CLASS_SIZE)],
+    ]
+
+    report = run_gate(train, dev, LabelLeakExtractor(), RUN_INFO)
+
+    assert report.probe_auroc == 0.0
+    assert report.token_auroc == 1.0
+    assert not report.passed
+
+
+def test_mock_activations_never_pass_the_gate() -> None:
+    dev = dev_examples(0.5, 0.5)
+
+    report = run_gate(examples(0.5, 0.5), dev, MockLabelLeakExtractor(), RUN_INFO)
+
+    assert report.probe_auroc > report.token_auroc
+    assert report.mocked
+    assert not report.passed
+
+
+def test_report_marks_the_hash_extractor_as_mocked() -> None:
+    dev = dev_examples(0.9, 0.1)
+
+    assert run_gate(examples(0.5, 0.5), dev, MockActivationExtractor(), RUN_INFO).mocked
+
+
+def test_gate_rejects_prompts_in_both_sets() -> None:
+    with pytest.raises(ValueError, match="share prompts"):
+        run_gate(examples(0.5, 0.5), examples(0.5, 0.5), LabelLeakExtractor(), RUN_INFO)
+
+
+@pytest.mark.parametrize("prompt", ["GOOD TRAIN 1", "  good   train\t1 "])
+def test_gate_ignores_case_and_whitespace_in_prompt_overlap(prompt: str) -> None:
+    dev = [example(prompt, True, 0.5), example("bad dev 1", False, 0.5)]
+
+    with pytest.raises(ValueError, match="share prompts"):
+        run_gate(examples(0.5, 0.5), dev, LabelLeakExtractor(), RUN_INFO)
+
+
+def test_gate_rejects_single_class_training_set() -> None:
+    train = [example("good 1", True, 0.5), example("good 2", True, 0.5)]
+
+    with pytest.raises(ValueError, match="both"):
+        run_gate(train, dev_examples(0.5, 0.5), LabelLeakExtractor(), RUN_INFO)
+
+
+@pytest.mark.parametrize("label", [True, False])
+def test_gate_rejects_too_few_of_either_class(label: bool) -> None:
+    dev = dev_examples(0.5, 0.5)
+    dev.remove(next(item for item in dev if item.correct is label))
+
+    with pytest.raises(ValueError, match="at least 20"):
+        run_gate(examples(0.5, 0.5), dev, LabelLeakExtractor(), RUN_INFO)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"model": ""},
+        {"model": " "},
+        {"layer": -1},
+        {"layer": True},
+        {"layer": 1.0},
+        {"layer": "1"},
+        {"pooling": ""},
+        {"pooling": "\t"},
+        {"token_confidence_method": ""},
+        {"token_confidence_method": "  \n"},
+        {"dataset_version": ""},
+        {"dataset_version": " "},
+    ],
+)
+def test_run_info_rejects_missing_values(change: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        GateRunInfo.model_validate(RUN_INFO.model_dump() | change)
+
+
+def test_run_info_strips_surrounding_whitespace() -> None:
+    info = GateRunInfo.model_validate(RUN_INFO.model_dump() | {"model": " qwen "})
+
+    assert info.model == "qwen"
+
+
+@pytest.mark.parametrize("confidence", [1.5, -0.1])
+def test_example_rejects_confidence_outside_zero_to_one(confidence: float) -> None:
+    with pytest.raises(ValidationError):
+        example("good", True, confidence)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"token_confidence": True},
+        {"token_confidence": "0.5"},
+        {"correct": "no"},
+        {"correct": 0},
+        {"prompt": " "},
+        {"prompt": "\u200b\ufeff"},
+    ],
+)
+def test_example_rejects_loose_values(change: dict[str, object]) -> None:
+    values = {"prompt": "good", "reply": "r", "correct": True, "token_confidence": 0.5}
+
+    with pytest.raises(ValidationError):
+        ProbeExample.model_validate(values | change)
+
+
+def test_example_accepts_integer_confidence_and_keeps_the_prompt() -> None:
+    item = ProbeExample(prompt=" Good ", reply="r", correct=False, token_confidence=1)
+
+    assert item.token_confidence == 1.0
+    assert item.prompt == " Good "
+
+
+def test_probe_logit_is_the_score_before_the_sigmoid() -> None:
+    probe = LinearProbe(weights=(2.0, -1.0), bias=0.5)
+
+    assert probe.logit([1.0, 3.0]) == -0.5
+    assert probe.score([1.0, 3.0]) == pytest.approx(1 / (1 + math.exp(0.5)))
+    assert probe.score([100.0, 0.0]) == probe.score([50.0, 0.0]) == 1.0
+    assert probe.logit([100.0, 0.0]) > probe.logit([50.0, 0.0])
+
+
+def test_gate_ranks_by_logit_when_the_sigmoid_saturates() -> None:
+    dev = dev_examples(0.5, 0.5)
+
+    report = run_gate(examples(0.5, 0.5), dev, SaturatingExtractor(), RUN_INFO)
+
+    # On rounded probabilities every dev score is 1.0, which gives AUROC 0.5.
+    assert report.probe_auroc == 1.0
+    assert report.passed
+
+
+def test_gate_fails_a_probe_with_no_information() -> None:
+    # Token confidence ranks worse than chance, so the probe "leads" by 0.5.
+    dev = dev_examples(0.1, 0.9)
+
+    report = run_gate(examples(0.5, 0.5), dev, ConstantExtractor(), RUN_INFO)
+
+    assert report.probe_auroc == 0.5
+    assert report.token_auroc == 0.0
+    assert report.difference_low > 0
+    assert report.probe_auroc_low == report.probe_auroc_high == 0.5
+    assert not report.passed
+
+
+def test_probe_interval_brackets_chance_for_a_noisy_probe() -> None:
+    dev = [
+        *[example(f"good right {i}", True, 0.5) for i in range(12)],
+        *[example(f"bad right {i}", True, 0.5) for i in range(8)],
+        *[example(f"good wrong {i}", False, 0.5) for i in range(8)],
+        *[example(f"bad wrong {i}", False, 0.5) for i in range(12)],
+    ]
+
+    report = run_gate(examples(0.5, 0.5), dev, LabelLeakExtractor(), RUN_INFO)
+
+    assert report.probe_auroc_low <= 0.5 < report.probe_auroc < report.probe_auroc_high
+
+
+def test_gate_rejects_repeated_dev_prompts() -> None:
+    dev = dev_examples(0.5, 0.5)
+    wrong = next(item for item in dev if not item.correct)
+    dev = [item for item in dev if item.correct] + [wrong] * MIN_DEV_CLASS_SIZE
+
+    with pytest.raises(ValueError, match="dev set repeats"):
+        run_gate(examples(0.5, 0.5), dev, LabelLeakExtractor(), RUN_INFO)
+
+
+def test_gate_rejects_repeated_train_prompts() -> None:
+    train = examples(0.5, 0.5) + [example("Good  TRAIN 1", True, 0.5)]
+
+    with pytest.raises(ValueError, match="train set repeats"):
+        run_gate(train, dev_examples(0.5, 0.5), LabelLeakExtractor(), RUN_INFO)
+
+
+def test_gate_rejects_repeats_that_differ_only_in_reply() -> None:
+    dev = dev_examples(0.5, 0.5)
+    dev.append(dev[0].model_copy(update={"reply": "another reply"}))
+
+    with pytest.raises(ValueError, match="dev set repeats"):
+        run_gate(examples(0.5, 0.5), dev, LabelLeakExtractor(), RUN_INFO)
+
+
+HIDDEN_VARIANTS = {
+    "zero-width space": "good\u200b train 1",
+    "word joiner": "good train\u2060 1",
+    "byte order mark": "\ufeffgood train 1",
+    "soft hyphen": "go\u00adod train 1",
+    "fullwidth letters": "\uff47\uff4f\uff4f\uff44 train 1",
+    "null character": "good\x00 train 1",
+    "control character": "good\x01 train 1",
+    "combining grapheme joiner": "good\u034f train 1",
+    "variation selector": "good\ufe0f train 1",
+    "Hangul filler": "good\u3164 train 1",
+    "halfwidth Hangul filler": "good train\uffa0 1",
+    "blank braille pattern": "good\u2800 train 1",
+}
+
+
+@pytest.mark.parametrize("prompt", HIDDEN_VARIANTS.values(), ids=HIDDEN_VARIANTS)
+def test_gate_catches_overlap_hidden_by_unicode(prompt: str) -> None:
+    dev = dev_examples(0.5, 0.5)
+    dev[0] = example(prompt, True, 0.5)
+
+    with pytest.raises(ValueError, match="share prompts"):
+        run_gate(examples(0.5, 0.5), dev, LabelLeakExtractor(), RUN_INFO)
+
+
+def test_normalize_prompt_merges_composed_and_decomposed_accents() -> None:
+    composed = unicodedata.normalize("NFC", "Café card")
+    decomposed = unicodedata.normalize("NFD", "café  CARD")
+
+    assert composed != decomposed
+    assert normalize_prompt(composed) == normalize_prompt(decomposed) == "café card"
+
+
+def test_normalize_prompt_keeps_different_words_apart() -> None:
+    assert normalize_prompt("top up card") != normalize_prompt("top-up card")
+
+
+@pytest.mark.parametrize("separator", ["\t", "\n", "\r\n", "\u00a0"])
+def test_normalize_prompt_treats_whitespace_controls_as_spaces(separator: str) -> None:
+    assert normalize_prompt(f"good{separator}train") == "good train"
+
+
+def test_normalize_prompt_does_not_merge_look_alike_letters() -> None:
+    # Documented limit: Cyrillic "о" looks like Latin "o" but stays different.
+    assert normalize_prompt("g\u043e\u043ed") != normalize_prompt("good")
+
+
+def valid_report(**change: object) -> dict[str, object]:
+    report = {
+        "probe_auroc": 0.8,
+        "probe_auroc_low": 0.7,
+        "probe_auroc_high": 0.9,
+        "token_auroc": 0.6,
+        "difference_low": 0.05,
+        "difference_high": 0.3,
+        "train_examples": 100,
+        "dev_examples": 40,
+        "passed": True,
+        "mocked": False,
+        "run_info": RUN_INFO.model_dump(),
+    }
+    return report | change
+
+
+def test_report_accepts_a_consistent_result() -> None:
+    report = GateReport.model_validate(valid_report())
+
+    assert GateReport.model_validate_json(report.model_dump_json()) == report
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"mocked": True},
+        {"difference_low": -0.01},
+        {"difference_low": 0.0},
+        {"probe_auroc_low": 0.5},
+        {"passed": False},
+        {"difference_low": 0.4, "difference_high": 0.3},
+        {"probe_auroc_low": 0.95, "probe_auroc_high": 0.9},
+    ],
+)
+def test_report_rejects_a_contradictory_result(change: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        GateReport.model_validate(valid_report(**change))
+
+
+def test_report_cannot_be_changed_after_it_is_built() -> None:
+    report = run_gate(
+        examples(0.5, 0.5), dev_examples(0.5, 0.5), MockLabelLeakExtractor(), RUN_INFO
+    )
+
+    assert not report.passed
+    with pytest.raises(ValidationError):
+        report.passed = True  # type: ignore[misc]
+    assert not report.passed
+
+
+def test_saved_report_with_a_contradiction_fails_to_load() -> None:
+    saved = GateReport.model_validate(valid_report()).model_dump_json()
+    tampered = saved.replace('"mocked":false', '"mocked":true')
+
+    assert tampered != saved
+    with pytest.raises(ValidationError):
+        GateReport.model_validate_json(tampered)

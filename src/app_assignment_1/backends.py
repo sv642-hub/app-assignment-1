@@ -28,12 +28,17 @@ class Backend(Protocol):
     """
 
     config: BackendConfig
+    # True for a simulated model. The semantic monitor only compares a mock
+    # with mock Jev, or a real model with real Jev (see semantic.py).
+    mocked: bool
 
     async def generate(self, message: str) -> BackendReply: ...
 
 
 class MockBackend:
     """Both mock models share one keyword classifier; only the delay differs."""
+
+    mocked = True
 
     def __init__(
         self,
@@ -47,10 +52,17 @@ class MockBackend:
         self.rng = random.Random()
 
     async def generate(self, message: str) -> BackendReply:
-        await asyncio.sleep(self.config.latency_ms / 1000)
-        if self.rng.random() < self.config.error_rate:
+        # The call runs on the config it started with, as a real call runs on
+        # the version it was sent to, even if a release changes it meanwhile.
+        config = self.config
+        await asyncio.sleep(config.latency_ms / 1000)
+        if self.rng.random() < config.error_rate:
             raise ConnectionError("Simulated backend outage")
         _, match = match_intent(self.intents, message)
+        if match is not None and self.rng.random() < config.label_swap_rate:
+            # Simulated semantic fault: a confident reply for the wrong intent.
+            # It passes the format check; only the semantic monitor sees it.
+            match = self.intents[(self.intents.index(match) + 1) % len(self.intents)]
         if match is None:
             reply = BackendReply(intent="unknown", reply=UNKNOWN_REPLY, policy_facts=[])
         else:
@@ -60,7 +72,7 @@ class MockBackend:
                 reply=card.reply_template.format(facts=" ".join(card.facts)),
                 policy_facts=card.facts,
             )
-        if self.rng.random() < self.config.fault_rate:
+        if self.rng.random() < config.fault_rate:
             # Simulated fault: a template slot the model failed to fill.
             reply.reply += " {customer_name}"
         return reply

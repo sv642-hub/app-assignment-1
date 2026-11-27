@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Route = Literal["standard", "complex"]
 BackendName = Literal["qwen3-1.7b", "qwen3-4b"]
@@ -40,15 +40,24 @@ class BackendReply(StrictModel):
 
 
 class Trace(StrictModel):
-    router: Literal["mock_jev", "rule_router"]
+    # jev: the real TypeSafe Jev answered the route question.
+    router: Literal["mock_jev", "jev", "rule_router"]
     jev_choice: Route | None
     route: Route
     model: BackendName
+    # policy_template: the gateway filled the card's template with the facts the
+    # model chose, for mock and real models alike. generated: a real model's
+    # own text; no longer returned, kept so older stored requests still load.
     reply_source: Literal[
-        "policy_template", "no_match", "unsupported_topic", "format_fallback"
+        "policy_template",
+        "generated",
+        "no_match",
+        "unsupported_topic",
+        "format_fallback",
     ]
     confidence: float | None = Field(ge=0, le=1)
     latency_ms: float = Field(ge=0)
+    # A mock's configured delay; 0 for a real model.
     simulated_latency_ms: int = Field(ge=0)
     format_check: Literal["passed", "failed"]
     format_errors: list[str] = Field(default_factory=list)
@@ -58,7 +67,12 @@ class Trace(StrictModel):
     # only on requests saved before canary releases existed.
     version_id: str | None = None
     canary: bool = False
-    mocked: Literal[True] = True
+    # Whether the reply came from a mock Qwen backend; router says whether Jev
+    # was real.
+    mocked: bool = True
+    # Groups requests by the settings and config files that answered them.
+    # None on requests saved before it existed.
+    settings_version: str | None = None
 
 
 class ChatResponse(StrictModel):
@@ -116,6 +130,57 @@ class BackendConfig(StrictModel):
     fault_rate: float = Field(default=0, ge=0, le=1)
     # Share of mock calls that raise on purpose, to simulate an outage.
     error_rate: float = Field(default=0, ge=0, le=1)
+    # Share of matched mock replies given another intent's label and card on
+    # purpose. The reply passes the format check; only the semantic monitor
+    # sees it.
+    label_swap_rate: float = Field(default=0, ge=0, le=1)
+
+
+FaultKind = Literal["none", "outage", "bad_format", "label_swap"]
+
+
+class FaultRequest(StrictModel):
+    """Set one simulated fault on one mock model. `none` clears all three."""
+
+    model: BackendName
+    fault: FaultKind
+    # Share of calls the fault hits; ignored for `none`.
+    rate: float = Field(default=1, ge=0, le=1)
+
+
+JevFaultKind = Literal["none", "outage", "slow"]
+
+
+class JevFaultConfig(StrictModel):
+    """Simulated faults on the mock Jev router, set through /v1/faults/jev."""
+
+    # Share of calls that raise, as a TypeSafe outage would.
+    error_rate: float = Field(default=0, ge=0, le=1)
+    # Share of calls held for slow_seconds more before answering. Past
+    # APP_JEV_TIMEOUT_SECONDS the gateway uses the rule router.
+    slow_rate: float = Field(default=0, ge=0, le=1)
+    slow_seconds: float = Field(default=0, ge=0, le=120)
+
+
+class JevFaultRequest(StrictModel):
+    """Set one simulated fault on the mock Jev router. `none` clears both."""
+
+    fault: JevFaultKind
+    # Share of calls the fault hits; ignored for `none`.
+    rate: float = Field(default=1, ge=0, le=1, allow_inf_nan=False)
+    # Extra seconds a `slow` call is held; required for `slow` only.
+    seconds: float | None = Field(default=None, gt=0, le=120, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def seconds_only_for_slow(self) -> "JevFaultRequest":
+        if (self.fault == "slow") != (self.seconds is not None):
+            raise ValueError("seconds is required for slow and only allowed for slow")
+        return self
+
+
+class OperatorRequest(StrictModel):
+    # Saved in the intervention log; never put customer data here.
+    reason: str = Field(default="operator request", min_length=1, max_length=200)
 
 
 class BackendMonitor(StrictModel):
@@ -125,14 +190,100 @@ class BackendMonitor(StrictModel):
     call_errors: int = Field(ge=0)
     failure_rate: float | None = Field(ge=0, le=1)
     disabled_by_controller: bool
+    # Why the controller disabled it: format failures and call errors, or
+    # intents that differ from Jev's (a last resort when no other model answers).
+    disabled_for: Literal["failure", "semantic"] | None = None
+    # Held by POST /v1/operator/models/{name}/disable until an operator enables it.
+    disabled_by_operator: bool = False
     disabled_for_seconds: float | None = Field(default=None, ge=0)
+    # Has calls in its failure window, at a rate below the threshold. A
+    # semantic disable of the other model needs this.
+    answering: bool = False
+
+
+InterventionAction = Literal[
+    "disabled",
+    "re-enabled",
+    "kept_last_backend",
+    "operator_disabled",
+    "operator_enabled",
+    # The controller put a model back on its rollback target (see releases.py).
+    "rolled_back",
+]
 
 
 class Intervention(StrictModel):
     at: datetime
     backend: BackendName
-    action: Literal["disabled", "re-enabled", "kept_last_backend"]
+    action: InterventionAction
     reason: str
+
+
+# The version every model starts on: its entry in APP_BACKENDS_PATH.
+BASE_VERSION = "base"
+VERSION_PATTERN = r"^[a-z0-9][a-z0-9._-]{0,63}$"
+ReleaseStatus = Literal["stable", "watching", "rolled_back"]
+ReleaseAction = Literal["deployed", "confirmed", "rolled_back"]
+ReleaseActor = Literal["operator", "controller"]
+
+
+class ReleaseChanges(StrictModel):
+    """What a version changes in a model's base config. Mock settings only
+    for now; a prompt version joins them once the Qwen backends are real."""
+
+    latency_ms: int | None = Field(default=None, ge=0, le=5000)
+    fault_rate: float | None = Field(default=None, ge=0, le=1)
+    error_rate: float | None = Field(default=None, ge=0, le=1)
+    label_swap_rate: float | None = Field(default=None, ge=0, le=1)
+
+
+class ReleaseVersion(StrictModel):
+    description: str = Field(min_length=1, max_length=200)
+    changes: ReleaseChanges
+
+
+class ModelRelease(StrictModel):
+    """The version a model serves now, and where a rollback would take it."""
+
+    name: BackendName
+    version: str
+    # stable: base or confirmed. watching: deployed and not yet confirmed; the
+    # controller rolls it back instead of disabling the model. rolled_back:
+    # back on the rollback target after a failed release.
+    status: ReleaseStatus
+    rollback_target: str | None = None
+    # Calls counted since the deploy, while watching; the release is
+    # confirmed at watch_samples.
+    watched_samples: int = Field(default=0, ge=0)
+    watch_samples: int = Field(ge=1)
+    since: datetime | None = None
+    versions: list[str] = Field(default_factory=list)
+
+
+class ReleaseEvent(StrictModel):
+    """One change to a model's release, saved in the release history."""
+
+    at: datetime
+    backend: BackendName
+    action: ReleaseAction
+    # What the model serves after this event.
+    version: str
+    # What it served before, for a deploy or a rollback.
+    from_version: str | None = None
+    # Where a rollback would take it after this event.
+    rollback_target: str | None = None
+    actor: ReleaseActor
+    # Public through /v1/health; never put customer data here.
+    reason: str = Field(min_length=1, max_length=300)
+    # Per model, one higher for each change, in the order the gateway made
+    # them. A restart loads the highest, whatever order the writes landed in.
+    revision: int = Field(ge=1)
+
+
+class ReleaseRequest(StrictModel):
+    version: str = Field(pattern=VERSION_PATTERN)
+    # Saved in the release history; never put customer data here.
+    reason: str = Field(default="operator request", min_length=1, max_length=200)
 
 
 class ControllerRules(StrictModel):
@@ -154,14 +305,35 @@ class RecentRequest(StrictModel):
     canary: bool = False
 
 
+# Why a backend call failed. The vLLM client's typed failures map to the first
+# three; anything else, such as a mock's simulated outage, is call_failed or other.
+BackendErrorCode = Literal["timeout", "call_failed", "invalid_output", "other"]
+
+
 class ModelUsage(StrictModel):
     name: BackendName
     attempted_calls: int = Field(ge=0)
     completed_calls: int = Field(ge=0)
     failed_calls: int = Field(ge=0)
+    # failed_calls split by BackendErrorCode; codes with no failures are absent.
+    failed_by_error: dict[BackendErrorCode, int] = Field(default_factory=dict)
+    deadline_exceeded_calls: int = Field(default=0, ge=0)
     input_tokens: int | None = None
     output_tokens: int | None = None
     estimated_cost_usd: float | None = None
+
+
+class JevUsage(StrictModel):
+    """Jev calls that returned an answer since the gateway started, and their
+    tokens. Each call counts once, not once per question."""
+
+    mocked: bool
+    answered_calls: int = Field(ge=0)
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    # Input tokens times APP_JEV_INPUT_PRICE_PER_MILLION_USD; Jev does not
+    # charge for output tokens. None while the price is unset.
+    estimated_cost_usd: float | None = Field(default=None, ge=0)
 
 
 class JevBreakerStatus(StrictModel):
@@ -174,14 +346,58 @@ class JevBreakerStatus(StrictModel):
     cooldown_seconds: float = Field(gt=0)
 
 
+class SemanticStatus(StrictModel):
+    """One model's agreement with Jev's intent answer, over the monitor window."""
+
+    name: BackendName
+    samples: int = Field(ge=0)
+    agreements: int = Field(ge=0)
+    disagreements: int = Field(ge=0)
+    # Passed format checks with no usable Jev intent answer.
+    no_signal: int = Field(ge=0)
+    # None until a sample is scored, so an empty window never reads as 0%.
+    disagreement_rate: float | None = Field(ge=0, le=1)
+    coverage: float | None = Field(ge=0, le=1)
+    status: Literal[
+        "low_coverage", "collecting", "no_baseline", "above_baseline", "normal"
+    ]
+    # Traffic from the other route, kept out of the window above.
+    rerouted_agreements: int = Field(ge=0)
+    rerouted_disagreements: int = Field(ge=0)
+    rerouted_no_signal: int = Field(ge=0)
+    # Replies since the gateway started that were not scored, because one of
+    # Jev and the model is a mock and the other is real.
+    not_compared: int = Field(default=0, ge=0)
+
+
+class SemanticRules(StrictModel):
+    window: int = Field(ge=1)
+    min_samples: int = Field(ge=1)
+    min_coverage: float = Field(ge=0, le=1)
+    baseline_disagreement_rate: float | None = Field(ge=0, le=1)
+    alert_margin: float = Field(ge=0, le=1)
+    # Whether the controller disables a model that is above the baseline.
+    actions_enabled: bool
+
+
 class HealthResponse(StrictModel):
     recent_requests: list[RecentRequest] = Field(default_factory=list)
+    releases: list[ModelRelease] = Field(default_factory=list)
+    # The last release changes, oldest first.
+    release_history: list[ReleaseEvent] = Field(default_factory=list)
     usage: list[ModelUsage] = Field(default_factory=list)
     status: Literal["ok", "degraded"]
-    mode: Literal["mock"] = "mock"
-    router: Literal["mock_jev"] = "mock_jev"
+    # mode is the Qwen backends; jev_mode and router are Jev.
+    mode: Literal["mock", "real"] = "mock"
+    jev_mode: Literal["mock", "real"] = "mock"
+    router: Literal["mock_jev", "jev"] = "mock_jev"
     backends: list[BackendConfig]
     monitor: list[BackendMonitor]
     interventions: list[Intervention]
     controller: ControllerRules
     jev_breaker: JevBreakerStatus
+    jev_usage: JevUsage
+    # The same ID as on each reply's trace, for the settings now in use.
+    settings_version: str | None = None
+    semantic: list[SemanticStatus]
+    semantic_rules: SemanticRules
