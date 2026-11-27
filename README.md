@@ -229,6 +229,15 @@ The `grafana` service (Grafana 12.3.0) shows the metrics as plots. Open the **Me
 
 - Data sources: Prometheus, and Postgres through a read-only role, `grafana_ro`, that the one-off `grafana-db-setup` service creates (SELECT on `requests`, `jev_assessments`, `interventions` and `model_releases`). Its password is `GRAFANA_DB_PASSWORD`; `env/compose.defaults.env` holds a public throwaway, so set your own in `env/grafana.env` (template `env/grafana.env.example`) for a deployment, before the first start.
 - Anonymous viewers can still send their own queries to the data sources through Grafana's API (open-source Grafana has no per-data-source permissions; the dashboard's own panels need that path). Nothing private is stored, so the limit is load: `grafana_ro` has a 5 s statement timeout and 5 connections, and the Explore screen is off. Prometheus has no such limit.
+- Check the limits on a running stack. This sends a raw query as an anonymous viewer, so it should return rows (that path is open by design) and a slow one should be cut off after 5 s:
+
+  ```bash
+  curl -s -X POST http://localhost:8080/grafana/api/ds/query -H 'Content-Type: application/json' \
+    -d '{"queries":[{"refId":"A","datasource":{"uid":"postgres"},"rawSql":"SELECT pg_sleep(10)","format":"table"}]}'
+  # expect an error mentioning "statement timeout"; the datasource uid is in grafana/provisioning/datasources/
+  ```
+
+  Not run yet on a live stack. If you would rather put `/grafana` behind the operator token, say so.
 - Deploying on a host that starts with `--pull never` (the boot units): run `docker compose -p app-assignment-1 pull grafana` once first, or the next boot fails for lack of the Grafana image.
 - Rows: overview; latency percentiles (p50, p90, p95, p99) per model, route and for Qwen calls alone; traffic, errors and saturation (in-flight requests); SLOs and error budget; reply quality (format checks, Qwen vs Jev intent agreement); self-healing and releases; Jev latency, tokens, cost and route choices, with the primacy-bias split by option order; security (operator auth failures).
 - Interventions from Postgres are drawn as annotations on every graph.
