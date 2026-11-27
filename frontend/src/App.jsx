@@ -4,10 +4,11 @@ import { GatewayError, getHealth, sendChat } from "./api.js";
 import ChatView, { DRAFT_KEY, TURNS_KEY, readSavedDraft, readSavedTurns, writeSaved } from "./components/ChatView.jsx";
 import HealthView from "./components/HealthView.jsx";
 import JevView from "./components/JevView.jsx";
+import MetricsView from "./components/MetricsView.jsx";
 import Sidebar from "./components/Sidebar.jsx";
 
 export const HEALTH_POLL_MS = 5000;
-const VIEWS = ["chat", "health", "jev"];
+const VIEWS = ["chat", "health", "jev", "metrics"];
 
 function viewFromHash() {
   const view = window.location.hash.replace(/^#\/?/, "");
@@ -106,6 +107,8 @@ export default function App() {
           <ChatView turns={turns} message={draft} setMessage={setDraft} onSend={send} />
         ) : view === "jev" ? (
           <JevView health={health} error={healthError} />
+        ) : view === "metrics" ? (
+          <MetricsView />
         ) : (
           <HealthView health={health} error={healthError} />
         )}

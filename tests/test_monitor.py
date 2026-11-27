@@ -313,3 +313,19 @@ def test_health_reports_the_controller_rules(tmp_path):
         "failure_threshold": 0.4,
         "cooldown_seconds": 30,
     }
+
+
+def test_a_reply_recorded_after_the_cooldown_ended_survives_the_re_enable(tmp_path):
+    """The reply of a call still in flight, recorded after the cooldown ended
+    but before the next is_disabled check, counts. A restart agrees: the
+    re-enable is dated when the cooldown ended, and the sample is after it."""
+    clock = Clock()
+    c = controller(tmp_path, clock)
+    for _ in range(3):
+        c.record("qwen3-1.7b", True, can_disable=True)
+    clock.now = 100.0  # the 30 s cooldown ended 70 s ago, nobody checked
+    c.record("qwen3-1.7b", True, can_disable=False)
+    assert list(c.windows["qwen3-1.7b"]) == ["format_failure"]
+    assert [i.action for i in c.log] == ["disabled", "re-enabled"]
+    re_enabled = c.log[-1].at
+    assert c.unsaved_samples[-1].at > re_enabled

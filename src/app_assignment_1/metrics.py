@@ -8,15 +8,24 @@ reason, action). Never add message text, replies or request IDs as labels.
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, get_args
 
-from prometheus_client import CollectorRegistry, Counter, Histogram, generate_latest
+from prometheus_client import (
+    CollectorRegistry,
+    Counter,
+    Gauge,
+    Histogram,
+    generate_latest,
+)
 from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily, Metric
 from prometheus_client.registry import Collector
 
-from app_assignment_1.schemas import BackendErrorCode, InterventionAction
+from app_assignment_1.schemas import BackendErrorCode, InterventionAction, Route
 from app_assignment_1.semantic import SAMPLES
 
 if TYPE_CHECKING:
     from app_assignment_1.service import Gateway
+
+# The problems service.check_reply can return.
+TEXT_PROBLEMS = ("empty_reply", "reply_too_long", "unfilled_placeholder")
 
 ACTIONS = get_args(InterventionAction)
 JEV_FALLBACK_REASONS = (
@@ -25,6 +34,12 @@ JEV_FALLBACK_REASONS = (
     "jev_invalid_route",
     "jev_circuit_open",
 )
+# Includes 2 s and 4 s, the latency targets in docs/MONITORING.md, so the
+# dashboard can count requests under each target exactly.
+LATENCY_BUCKETS = (0.05, 0.1, 0.25, 0.5, 1, 2, 4, 8, 15, 30, 60)
+JEV_OUTCOMES = ("ok", "timeout", "error")
+CALL_OUTCOMES = ("ok", "failed")
+AUTH_FAILURE_REASONS = ("operator_disabled", "missing_or_wrong_token")
 
 
 class GatewayMetrics:
@@ -47,6 +62,53 @@ class GatewayMetrics:
             buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60),
             registry=self.registry,
         )
+        self.chat_latency_by_model = Histogram(
+            "gateway_chat_answer_latency_seconds",
+            "Time to handle a chat request that was answered, by route and model. "
+            "Unlike gateway_chat_latency_seconds it leaves out 503s.",
+            ["route", "model"],
+            buckets=LATENCY_BUCKETS,
+            registry=self.registry,
+        )
+        self.backend_call_latency = Histogram(
+            "gateway_backend_call_latency_seconds",
+            "Time of one call to a Qwen model, by model and outcome (ok or "
+            "failed). A call cut short by the request deadline is not counted.",
+            ["model", "outcome"],
+            buckets=LATENCY_BUCKETS,
+            registry=self.registry,
+        )
+        self.jev_call_latency = Histogram(
+            "gateway_jev_call_latency_seconds",
+            "Time of one Jev call, by outcome: ok, timeout or error. Skipped "
+            "calls (circuit open) are not counted.",
+            ["outcome"],
+            buckets=LATENCY_BUCKETS,
+            registry=self.registry,
+        )
+        for outcome in JEV_OUTCOMES:
+            self.jev_call_latency.labels(outcome)
+        self.chat_in_flight = Gauge(
+            "gateway_chat_in_flight",
+            "Chat requests being handled right now. A hung call shows here "
+            "before it shows in any latency histogram.",
+            registry=self.registry,
+        )
+        self.operator_auth_failures = Counter(
+            "gateway_operator_auth_failures",
+            "Operator route calls refused: operator_disabled (no token is "
+            "configured, 403) or missing_or_wrong_token (401).",
+            ["reason"],
+            registry=self.registry,
+        )
+        for reason in AUTH_FAILURE_REASONS:
+            self.operator_auth_failures.labels(reason)
+        for route in get_args(Route):
+            for backend in gateway.backends:
+                self.chat_latency_by_model.labels(route, backend.config.name)
+        for backend in gateway.backends:
+            for outcome in CALL_OUTCOMES:
+                self.backend_call_latency.labels(backend.config.name, outcome)
         self.jev_fallbacks = Counter(
             "gateway_jev_fallbacks",
             "Requests routed by the rule router: the Jev call failed, its route "
@@ -87,6 +149,17 @@ class GatewayMetrics:
         )
         for backend in gateway.backends:
             self.empty_unknown_filled.labels(backend.config.name)
+        self.discarded_text_problems = Counter(
+            "gateway_discarded_text_problems",
+            "Problems in the model's own reply text, which the gateway discards: "
+            "the reply is built from the policy card. These do not fail the "
+            "format check. One reply can count under more than one problem.",
+            ["model", "problem"],
+            registry=self.registry,
+        )
+        for backend in gateway.backends:
+            for problem in TEXT_PROBLEMS:
+                self.discarded_text_problems.labels(backend.config.name, problem)
         self.semantic_not_compared = Counter(
             "gateway_semantic_not_compared",
             "Replies that passed the format check but were not scored against "

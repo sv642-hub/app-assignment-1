@@ -54,6 +54,11 @@ services:
   # published; see the README for how to look at it locally.
   prometheus:
     image: prom/prometheus:v3.15.1
+    # 30 days, so the dashboard's error budget has a month of data to read.
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
@@ -66,6 +71,69 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+
+  # One-off job: creates the read-only database role Grafana reads with, once
+  # the gateway has created the tables. Exits when done.
+  grafana-db-setup:
+    image: postgres:18.6-alpine@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
+    env_file:
+      - path: env/compose.defaults.env
+      - path: env/postgres.env
+        required: false
+      - path: env/grafana.env
+        required: false
+    volumes:
+      - ./grafana/db-setup.sql:/db-setup.sql:ro
+    command:
+      - sh
+      - -c
+      - >-
+        PGPASSWORD="$$POSTGRES_PASSWORD" psql -h postgres -U "$$POSTGRES_USER"
+        -d "$$POSTGRES_DB" -v ON_ERROR_STOP=1 -v pw="$$GRAFANA_DB_PASSWORD"
+        -f /db-setup.sql
+    depends_on:
+      gateway:
+        condition: service_healthy
+    restart: "no"
+
+  # Dashboards. No published port: Caddy proxies it under /grafana as an
+  # anonymous viewer, and the React app embeds it. Nobody can log in, so there
+  # is no admin to reach; dashboards and data sources come from ./grafana.
+  grafana:
+    image: grafana/grafana:12.3.0
+    env_file:
+      - path: env/compose.defaults.env
+      - path: env/grafana.env
+        required: false
+    environment:
+      GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s/grafana/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_EXPLORE_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_SNAPSHOTS_EXTERNAL_ENABLED: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/smart-gateway.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      grafana-db-setup:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/grafana/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
     restart: unless-stopped
 
 volumes:

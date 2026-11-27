@@ -164,6 +164,14 @@ class FixedBackend:
         ),
         BackendReply(intent="card_arrival", reply="Soon.", policy_facts=[LOST[0]]),
         BackendReply(intent="card_arrival", reply="", policy_facts=["made up"]),
+        # Discarded model text never fails the check (#131).
+        BackendReply(intent="card_arrival", reply="", policy_facts=[ARRIVAL[0]]),
+        BackendReply(intent="card_arrival", reply="Hi {name}", policy_facts=ARRIVAL),
+        BackendReply(
+            intent="card_arrival", reply="x" * 4001, policy_facts=[ARRIVAL[0]]
+        ),
+        BackendReply(intent="unknown", reply="Hi {name}", policy_facts=[]),
+        BackendReply(intent="made_up", reply="", policy_facts=["a fact"]),
     ],
 )
 def test_format_errors_agree_with_the_gateway(reply):
@@ -510,6 +518,22 @@ def test_direct_targets_refuse_what_the_gateway_refuses(tmp_path):
         ("HTTP422", True),
         (None, None),
     ]
+
+
+@pytest.mark.parametrize("key", [" k-1", "k-1 ", "k-1\r", "k-1\r\n", "\tk-1\n"])
+def test_runner_strips_the_vllm_key_like_the_gateway(monkeypatch, key):
+    run_eval = load_script()
+    monkeypatch.setenv("VLLM_API_KEY", key)
+    assert run_eval.vllm_key() == "k-1"
+
+
+@pytest.mark.parametrize("key", ["   ", "secret 1", "secret\t1", "sécret"])
+def test_runner_refuses_a_vllm_key_that_cannot_be_sent(monkeypatch, key):
+    run_eval = load_script()
+    monkeypatch.setenv("VLLM_API_KEY", key)
+    with pytest.raises(SystemExit, match="VLLM_API_KEY") as caught:
+        run_eval.vllm_key()
+    assert "ecret" not in str(caught.value)
 
 
 def test_resume_refuses_another_server(tmp_path, monkeypatch):
