@@ -231,6 +231,11 @@ class Controller:
     def _record(
         self, name: BackendName, outcome: Outcome, can_disable: bool, own_route: bool
     ) -> str | None:
+        # A cooldown that has ended is processed before this sample counts, so
+        # a reply from a call still in flight is not cleared by the re-enable.
+        # A restart then agrees: the re-enable is dated when the cooldown
+        # ended, and this sample is after it.
+        self._cooling_down(name)
         window = self.windows[name]
         window.append(outcome)
         self.unsaved_samples.append(
