@@ -312,6 +312,59 @@ def test_empty_unknown_replies_do_not_disable_a_model(settings, servers, clients
     assert small["disabled_by_controller"] is False
 
 
+TEXT_PROBLEMS = [
+    ("", "empty_reply"),
+    ("x" * 4001, "reply_too_long"),
+    ("Hi {customer_name}.", "unfilled_placeholder"),
+]
+
+
+def discarded(problem: str, model: str = SMALL) -> str:
+    return (
+        f'gateway_discarded_text_problems_total{{model="{model}",problem="{problem}"}}'
+    )
+
+
+@pytest.mark.parametrize(("text", "problem"), TEXT_PROBLEMS)
+def test_bad_text_with_the_right_facts_passes_and_is_counted(
+    settings, servers, clients, text, problem
+):
+    servers[SMALL].content = reply("card_arrival", text, [ARRIVE])
+    with TestClient(create_app(settings)) as client:
+        body = chat(client)
+        metrics = client.get("/metrics").text
+    assert body["reply"] == CARD_REPLY
+    assert body["policy_facts"] == [ARRIVE]
+    assert (body["trace"]["reply_source"], body["trace"]["format_check"]) == (
+        "policy_template",
+        "passed",
+    )
+    assert f"{discarded(problem)} 1.0" in metrics
+    assert f"{discarded(problem, LARGE)} 0.0" in metrics
+
+
+def test_bad_unknown_text_passes_and_is_counted(settings, servers, clients):
+    servers[SMALL].content = reply("unknown", "Hi {customer_name}.", [])
+    with TestClient(create_app(settings)) as client:
+        body = chat(client)
+        metrics = client.get("/metrics").text
+    assert body["reply"] == UNKNOWN_REPLY
+    assert body["trace"]["format_check"] == "passed"
+    assert f"{discarded('unfilled_placeholder')} 1.0" in metrics
+
+
+def test_bad_text_does_not_disable_a_model(settings, servers, clients):
+    servers[SMALL].content = reply("card_arrival", "x" * 4001, [ARRIVE])
+    with TestClient(create_app(settings)) as client:
+        for _ in range(settings.monitor_window):
+            assert chat(client)["trace"]["model"] == SMALL
+        small = {m["name"]: m for m in client.get("/v1/health").json()["monitor"]}[
+            SMALL
+        ]
+    assert small["format_failures"] == 0
+    assert small["disabled_by_controller"] is False
+
+
 def test_faults_are_refused_on_a_real_model(settings, servers, clients):
     with TestClient(create_app(settings)) as client:
         response = client.post(

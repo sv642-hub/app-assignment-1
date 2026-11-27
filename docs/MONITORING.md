@@ -22,7 +22,7 @@ The [README](../README.md#monitor-and-controller) explains each part in detail; 
 | The database is slow or down | A store write takes longer than `APP_STORE_TIMEOUT_SECONDS` (2 s) or fails | The customer still gets the reply, but it can't be looked up by id. Interventions that fail to save are kept and retried in order | When the database answers again |
 
 Two limits to keep in mind:
-- **Memory only:** the windows, cooldowns and operator holds live in the gateway process. A restart clears them; the intervention log survives in Postgres. Run one gateway worker.
+- **Per process:** the windows, cooldowns and operator holds live in the gateway process. With Postgres, a restart rebuilds them from the saved samples and interventions; with the memory store it clears them. Run one gateway worker.
 - **No Alertmanager:** alerts show in Prometheus and nowhere else, so someone has to look.
 
 ## Where to look
@@ -89,7 +89,7 @@ It clears 1 minute after the scrape works again.
 This alert covers the controller only. A model an operator holds shows `disabled_by_operator` on Health, but there is no metric or alert for holds.
 
 Check the newest `disabled` intervention for the model on Health. Its reason says what failed:
-- **`format failure rate ...`:** the replies were malformed. With a real model, look at its output. With the mocks, a fault is set: the chaos override, or `POST /v1/faults` with `bad_format`.
+- **`format failure rate ...`:** the replies were malformed: an unknown label, or policy facts missing or not on the card. Problems in the model's own text do not count here; they are in `gateway_discarded_text_problems_total`. With a real model, look at its output. With the mocks, a fault is set: the chaos override, or `POST /v1/faults` with `bad_format`.
 - **`call error rate ...`:** calls raised. With a real model, its server is down, unreachable or timing out. With the mocks: the outage override, or `/v1/faults` with `outage`.
 - **`failure rate ...`:** a mix of both.
 - **`intent differs from Jev's on ...`:** a semantic disable, only with `APP_SEMANTIC_ACTIONS_ENABLED=true`. `disabled_for` is `semantic`, and the model still answers as a last resort. See [PossibleWrongIntents](#possiblewrongintents).
@@ -160,7 +160,7 @@ Do, in order:
 2. Enable any model an operator holds, if it works.
 3. Clear any mock faults (`"fault": "none"` for each model) or return from an override with `docker compose up -d --wait`.
 4. With real models, check that their servers are up and reachable from the gateway.
-5. As a last resort, `docker compose restart gateway`. This clears the cooldowns, holds, windows and faults set through `/v1/faults`. The intervention log stays in Postgres.
+5. As a last resort, `docker compose restart gateway`. This clears faults set through `/v1/faults`. With Postgres, the windows, running cooldowns and holds come back after the restart, so a restart doesn't end a cooldown or a hold: use `/enable` for that.
 
 It clears when the share of 503s stays under 20%.
 
@@ -212,7 +212,7 @@ curl -fsS -X POST -H "$H" -H 'Content-Type: application/json' \
 ```
 
 - **The reason is public:** `GET /v1/health` lists it without a token, so never put customer data in it.
-- **Holds don't survive a restart:** re-apply a hold after restarting the gateway.
+- **Holds survive a restart with Postgres:** the gateway reads each model's last operator action at startup. With the memory store, re-apply a hold after restarting.
 - **Overrides replace the stack:** don't run the Compose fault overrides on the deployment testers use. They take over port 8080 and the default project. Use `/v1/faults`, or another machine.
 - **No new ports:** never publish the gateway, Postgres or Prometheus ports to debug. Use `docker compose exec`, as above.
 

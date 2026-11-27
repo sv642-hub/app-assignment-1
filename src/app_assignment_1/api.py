@@ -101,6 +101,7 @@ def create_app(
             await opened.open()
             await gateway.restore_releases()
             await gateway.load_release()
+            await gateway.restore()
             app.state.gateway = gateway
             app.state.operator_token = configured.operator_token
             try:

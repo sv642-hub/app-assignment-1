@@ -18,9 +18,10 @@ from app_assignment_1.config import Settings, settings_version
 from app_assignment_1.intents import load_intents
 from app_assignment_1.labels import UNKNOWN, load_labels
 from app_assignment_1.metrics import GatewayMetrics
-from app_assignment_1.monitor import Controller
+from app_assignment_1.monitor import RESTORE_ACTIONS, SEMANTIC_REASON, Controller
 from app_assignment_1.records import JevAssessment, check_call
 from app_assignment_1.release import (
+    CanaryGuard,
     Release,
     ReleaseChange,
     ReleaseSource,
@@ -37,6 +38,7 @@ from app_assignment_1.router import (
     RuleRouter,
 )
 from app_assignment_1.schemas import (
+    KEPT_REASON_MARKER,
     BackendConfig,
     BackendErrorCode,
     BackendName,
@@ -60,6 +62,9 @@ from app_assignment_1.vllm import BackendCallError, BackendOutputError
 logger = logging.getLogger(__name__)
 QUESTIONS: tuple[Literal["route", "intent"], ...] = ("route", "intent")
 MAX_REPLY_LENGTH = 4000
+# Release changes read at startup to find each model's last deploy or rollback.
+# Enough of the intervention log to find each model's last disable and
+# re-enable when restoring after a restart.
 # For a recognized intent that has no policy card. The backend sends an empty
 # reply for these; the gateway never shows generated text for them.
 UNCARDED_REPLY = (
@@ -69,7 +74,7 @@ UNCARDED_REPLY = (
 
 
 def check_reply(reply: str) -> list[str]:
-    """Check generated text before returning or storing it."""
+    """Return the problems found in a reply, from metrics.TEXT_PROBLEMS."""
     errors = []
     if not reply.strip():
         errors.append("empty_reply")
@@ -211,6 +216,7 @@ class Gateway:
         # delays a reply by seconds, not by the pool's 30-second default.
         self.store_timeout = settings.store_timeout_seconds
         self.save_lock = asyncio.Lock()
+        self.sample_lock = asyncio.Lock()
         # Request saves still running after their request was cancelled. The
         # event loop keeps only weak references to tasks, so these keep them.
         self.pending_saves: set[asyncio.Task[None]] = set()
@@ -253,9 +259,11 @@ class Gateway:
                 raise ValueError(
                     "Configure exactly one standard 1.7b and one complex 4b backend"
                 )
-        # Usage, the monitor and the controller count per model name, across
-        # versions: a failing canary counts against its model for everyone.
-        # Every version has the same two model names (checked above).
+        # Usage, the monitor and the controller count per model name, so they
+        # only see stable traffic: canary requests are left out (see
+        # `canary_guard`). A bad canary cannot disable or roll back the model
+        # that stable traffic depends on. Every version has the same two model
+        # names (checked above).
         pair = next(iter(self.version_backends.values()))
         self.usage = {
             b.config.name: ModelUsage(
@@ -298,6 +306,13 @@ class Gateway:
         self.releases_loaded = False
         self.release_source: ReleaseSource = "settings"
         self.canary_lock = asyncio.Lock()
+        # The canary's own failure window. When it trips, only the canary is
+        # rolled back; the controller never sees these requests.
+        self.canary_guard = CanaryGuard(
+            settings.monitor_window,
+            settings.monitor_min_samples,
+            settings.monitor_failure_threshold,
+        )
 
         self.metrics = GatewayMetrics(self)
 
@@ -388,6 +403,7 @@ class Gateway:
                 logger.info("The release was saved despite the error")
             self.release = release
             self.release_source = "store"
+            self.canary_guard.reset()
         logger.info(
             "Release changed: stable %s, canary %s at %s%%",
             release.stable,
@@ -436,7 +452,7 @@ class Gateway:
             return None
         scored = status.agreements + status.disagreements
         return (
-            f"intent differs from Jev's on {status.disagreement_rate:.0%} of last "
+            f"{SEMANTIC_REASON} on {status.disagreement_rate:.0%} of last "
             f"{scored} scored replies (baseline {baseline:.0%})"
         )
 
@@ -486,12 +502,18 @@ class Gateway:
         config = backend.config
         if request.fault == "none":
             config.error_rate = config.fault_rate = config.label_swap_rate = 0
+            config.slow_rate = config.slow_seconds = config.bad_prompt_rate = 0
         elif request.fault == "outage":
             config.error_rate = request.rate
         elif request.fault == "bad_format":
             config.fault_rate = request.rate
-        else:
+        elif request.fault == "label_swap":
             config.label_swap_rate = request.rate
+        elif request.fault == "slow":
+            assert request.seconds is not None  # FaultRequest requires it
+            config.slow_rate, config.slow_seconds = request.rate, request.seconds
+        else:
+            config.bad_prompt_rate = request.rate
         self.settings_version = self._settings_version()
         logger.info(
             "Operator set fault %s=%s on %s", request.fault, request.rate, request.model
@@ -610,7 +632,7 @@ class Gateway:
         current = self.releases.state[event.backend].version
         self.releases.kept(
             event.backend,
-            f"change to {event.version} not confirmed as saved; kept {current}",
+            f"change to {event.version} {KEPT_REASON_MARKER}; kept {current}",
         )
 
     async def _skip_saved_revisions(self) -> None:
@@ -662,8 +684,12 @@ class Gateway:
 
     async def save_interventions(self) -> None:
         """Move the controller's new interventions, then the release changes
-        it made, to the store, in order."""
+        it made, then the new monitor samples, to the store, in order."""
         await self._save_interventions()
+        await self._save_release_events()
+        await self._save_samples()
+
+    async def _save_release_events(self) -> None:
         if not self.releases.unsaved:
             return
         async with self.save_lock:
@@ -686,6 +712,82 @@ class Gateway:
                     "Could not save release changes (%s)", type(exc).__name__
                 )
 
+    async def _save_samples(self) -> None:
+        """Save new window samples, one batch at a time so the store keeps
+        their order. If the store fails they are dropped, not retried: the
+        live windows are unaffected, and a later restart just rebuilds from
+        fewer samples. A cancel, such as a /v1/health call whose client left,
+        keeps them for the next save, then passes on."""
+        if not (self.controller.unsaved_samples or self.semantic.unsaved):
+            return
+        async with self.sample_lock:
+            samples = self.controller.unsaved_samples + self.semantic.unsaved
+            if not samples:
+                return
+            self.controller.unsaved_samples, self.semantic.unsaved = [], []
+            samples.sort(key=lambda s: s.at)
+            try:
+                await asyncio.wait_for(
+                    self.store.save_monitor_samples(samples), self.store_timeout
+                )
+            except BaseException as exc:
+                if not isinstance(exc, Exception):
+                    # Both lists are merged and sorted on the next save, so
+                    # putting the batch back in one of them is enough.
+                    self.controller.unsaved_samples = (
+                        samples + self.controller.unsaved_samples
+                    )
+                    raise
+                logger.warning(
+                    "Could not save monitor samples (%s)", type(exc).__name__
+                )
+
+    async def restore(self) -> None:
+        """Rebuild the monitor windows and running cooldowns from the store,
+        at startup, after `restore_releases`. A store problem is logged, and
+        the windows start empty."""
+        per_window = max(self.controller.window, self.semantic.rules.window)
+        try:
+            # Each model's newest reset and hold, however old, so a long run
+            # of newer interventions on the other model can't hide them.
+            interventions = await asyncio.wait_for(
+                self.store.latest_interventions(RESTORE_ACTIONS),
+                self.store_timeout,
+            )
+            samples = await asyncio.wait_for(
+                self.store.recent_monitor_samples(per_window), self.store_timeout
+            )
+            resets = await self._release_resets()
+        except Exception as exc:
+            logger.warning("Could not restore monitor state (%s)", type(exc).__name__)
+            return
+        cutoffs = self.controller.restore(
+            interventions, samples, datetime.now(UTC), resets
+        )
+        # With actions off, a re-enable never resets the semantic window, but
+        # a release change does (_release_changed).
+        actions = self.semantic.rules.actions_enabled
+        self.semantic.restore(samples, cutoffs if actions else resets)
+        if samples or self.controller.disabled_until or self.controller.held:
+            logger.info(
+                "Restored %d monitor samples; %d model(s) still cooling down, "
+                "%d held by an operator",
+                len(samples),
+                len(self.controller.disabled_until),
+                len(self.controller.held),
+            )
+
+    async def _release_resets(self) -> dict[BackendName, datetime]:
+        """When each model's windows were last cleared by a release change: a
+        deploy or a rollback, not a confirmation. Samples from before it
+        describe the version the model served then."""
+        if not self.releases_loaded:
+            return {}
+        events = await asyncio.wait_for(
+            self.store.latest_release_changes(), self.store_timeout
+        )
+        return {event.backend: event.at for event in events}
+
     async def _save_interventions(self) -> None:
         if not self.controller.unsaved:
             return
@@ -699,9 +801,14 @@ class Gateway:
                 await asyncio.wait_for(
                     self.store.save_interventions(items), self.store_timeout
                 )
-            except Exception as exc:
+            except BaseException as exc:
                 # Keep them for the next attempt; the controller is unaffected.
+                # A cancel, such as a /v1/health call whose client left, keeps
+                # them too, then passes on. (Chat saves run in a shielded task
+                # and are never cancelled here.)
                 self.controller.unsaved = items + self.controller.unsaved
+                if not isinstance(exc, Exception):
+                    raise
                 logger.warning("Could not save interventions (%s)", type(exc).__name__)
 
     async def chat(self, message: str) -> ChatResponse:
@@ -903,6 +1010,7 @@ class Gateway:
         attempt: int,
         action: str | None,
         own_route: bool,
+        canary: bool = False,
     ) -> tuple[BackendReply | None, str | None, bool, int]:
         """Call one backend within `budget` seconds. Return its reply (None if
         the call failed), the latest controller action, whether the deadline
@@ -938,6 +1046,10 @@ class Gateway:
                 code,
                 type(exc).__name__,
             )
+            if canary:
+                # Not the controller's business: only the canary is judged.
+                self._canary_outcome(failed=True)
+                return None, action, False, generation
             # No await from here to the return: the check and the record see
             # one release state, without holding a lock on the reply path.
             if self.releases.generation[name] != generation:
@@ -959,6 +1071,33 @@ class Gateway:
             perf_counter() - call_start
         )
         return generated, action, False, generation
+
+    def _canary_outcome(self, failed: bool) -> None:
+        """Count one canary call. If the canary is failing, roll it back (the
+        stable version keeps serving). No await: the check and the trip see one
+        release state."""
+        canary = self.release.canary
+        if canary is None or not self.canary_guard.record(canary, failed):
+            return
+        change = ReleaseChange(
+            stable=self.release.stable,
+            canary=None,
+            canary_percent=0,
+            reason=f"Automatic rollback: canary {canary} kept failing",
+        )
+        logger.warning("Canary %s kept failing; rolling it back", canary)
+        task = asyncio.create_task(self._roll_back_canary(canary, change))
+        self.pending_saves.add(task)
+        task.add_done_callback(self.pending_saves.discard)
+
+    async def _roll_back_canary(self, canary: str, change: ReleaseChange) -> None:
+        if self.release.canary != canary:
+            return  # an operator already changed the release
+        try:
+            await self.set_release(change)
+        except Exception as exc:
+            logger.warning("Canary rollback failed (%s)", type(exc).__name__)
+            self.canary_guard.reset()  # judge the canary again from scratch
 
     def _finish_release_watch(self, backend: Backend) -> None:
         name = backend.config.name
@@ -1069,7 +1208,13 @@ class Gateway:
                 tried.append(backend)
                 attempted_latency = backend.config.latency_ms
                 generated, action, cut_short, generation = await self._attempt(
-                    backend, message, budget, len(tried), action, backend is selected
+                    backend,
+                    message,
+                    budget,
+                    len(tried),
+                    action,
+                    backend is selected,
+                    canary,
                 )
                 if generated is not None:
                     break
@@ -1115,11 +1260,16 @@ class Gateway:
             reply = UNKNOWN_REPLY
             format_errors = []
         else:
-            # The model's own text is still checked, so a malformed reply counts
-            # as a format failure. It is never shown or stored, though: it can
-            # repeat the customer's message or say things the card doesn't. The
-            # customer gets text built from approved content only.
-            format_errors = check_reply(reply)
+            # The model's own text is never shown or stored: it can repeat the
+            # customer's message or say things the card doesn't. The customer
+            # gets text built from approved content only. So only the intent
+            # and the facts decide the format check; problems in the discarded
+            # text are counted on their own, to keep the prompt visible (#126).
+            for problem in check_reply(reply):
+                self.metrics.discarded_text_problems.labels(
+                    backend.config.name, problem
+                ).inc()
+            format_errors = []
             if intent not in self.labels.names:
                 format_errors.append("unknown_label")
             elif intent == UNKNOWN:
@@ -1136,6 +1286,8 @@ class Gateway:
                 # The chosen facts, in the card's order, once each.
                 facts = [fact for fact in card.facts if fact in facts]
                 reply = card.reply_template.format(facts=" ".join(facts))
+                # A broken card can still build a bad reply, and that one is shown.
+                format_errors += check_reply(reply)
         if format_errors:
             # Keep malformed generated content out of the UI and stored response.
             intent = "unknown"
@@ -1147,7 +1299,13 @@ class Gateway:
         # A reply from a call that started on a version the model no longer
         # serves goes to the customer, but the monitors skip it: it says
         # nothing about the new version.
-        current = self.releases.generation[backend.config.name] == generation
+        # A canary reply never reaches the monitors or the controller: it says
+        # nothing about the model stable traffic uses.
+        current = (
+            not canary and self.releases.generation[backend.config.name] == generation
+        )
+        if canary:
+            self._canary_outcome(failed=bool(format_errors))
         # The trace reports validation of the original generated reply.
         if current:
             action = (

@@ -12,6 +12,7 @@ requests can land on different versions.
 
 import hashlib
 import json
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal, Self
@@ -109,3 +110,38 @@ def pick_version(release: Release, request_id: UUID) -> tuple[str, bool]:
     ):
         return release.canary, True
     return release.stable, False
+
+
+class CanaryGuard:
+    """The canary's own failure window, apart from the controller's per-model
+    windows. Canary calls count here and nowhere else, so a bad canary can be
+    rolled back without touching the model stable traffic uses."""
+
+    def __init__(self, window: int, min_samples: int, threshold: float):
+        self.window = window
+        self.min_samples = min_samples
+        self.threshold = threshold
+        self.version: str | None = None
+        self.outcomes: deque[bool] = deque(maxlen=window)
+        self.tripped = False
+
+    def reset(self) -> None:
+        self.version = None
+        self.outcomes.clear()
+        self.tripped = False
+
+    def record(self, version: str, failed: bool) -> bool:
+        """Count one canary call. True once, when the window first shows the
+        canary failing (enough samples and the failure rate at the threshold)."""
+        if version != self.version:
+            self.reset()
+            self.version = version
+        if self.tripped:
+            return False
+        self.outcomes.append(failed)
+        if len(self.outcomes) < self.min_samples:
+            return False
+        if sum(self.outcomes) / len(self.outcomes) < self.threshold:
+            return False
+        self.tripped = True
+        return True

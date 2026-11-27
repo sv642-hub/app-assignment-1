@@ -3,6 +3,8 @@
 import asyncio
 import json
 import random
+import time
+from collections import deque
 from pathlib import Path
 from uuid import UUID
 
@@ -13,6 +15,7 @@ from pydantic import ValidationError
 from app_assignment_1.api import create_app
 from app_assignment_1.config import Settings
 from app_assignment_1.release import (
+    CanaryGuard,
     Release,
     ReleaseChange,
     canary_bucket,
@@ -456,3 +459,69 @@ def test_other_authorization_values_are_refused(settings: Settings, header: str)
             "/v1/release", json=CANARY, headers={"Authorization": header}
         )
     assert response.status_code == 401
+
+
+# A failing canary never reaches the controller
+
+
+def canary_settings(settings: Settings, percent: int) -> Settings:
+    return settings.model_copy(
+        update={"canary_version": "v2-chaos", "canary_percent": percent}
+    )
+
+
+def wait_for_rollback(client: TestClient) -> dict:
+    for _ in range(100):
+        current = client.get("/v1/release").json()["current"]
+        if current["canary"] is None:
+            return current
+        time.sleep(0.02)
+    raise AssertionError("the canary was not rolled back")
+
+
+def test_canary_guard_trips_once_when_the_window_fails():
+    guard = CanaryGuard(window=10, min_samples=4, threshold=0.5)
+    assert [guard.record("v2", True) for _ in range(5)] == [False] * 3 + [True, False]
+    guard.reset()
+    assert not any(guard.record("v2", False) for _ in range(10))
+    # A new canary version starts a fresh window.
+    assert guard.record("v3", True) is False
+    assert guard.outcomes == deque([True])
+
+
+def test_a_failing_canary_rolls_itself_back_and_never_disables_stable(
+    settings: Settings,
+):
+    # Every canary reply is corrupt; at 50% the stable model still gets traffic.
+    with TestClient(create_app(canary_settings(settings, 50))) as client:
+        traces = [
+            client.post("/v1/chat", json={"message": SMALL}).json()["trace"]
+            for _ in range(60)
+        ]
+        current = wait_for_rollback(client)
+        health = client.get("/v1/health").json()
+        after = client.post("/v1/chat", json={"message": SMALL}).json()["trace"]
+        history = client.get("/v1/release").json()["history"]
+
+    stable = [t for t in traces if not t["canary"]]
+    assert stable
+    assert all(t["format_check"] == "passed" for t in stable)
+    # The controller saw no canary request: no intervention, nothing disabled.
+    assert all(t["controller_action"] is None for t in traces)
+    assert health["interventions"] == []
+    # Only the canary was rolled back; stable kept serving.
+    assert current["stable"] == "v1"
+    assert current["canary_percent"] == 0
+    assert (after["version_id"], after["canary"]) == ("v1", False)
+    assert after["format_check"] == "passed"
+    assert history[0]["reason"].startswith("Automatic rollback: canary v2-chaos")
+
+
+def test_canary_failures_do_not_count_against_the_stable_model(settings: Settings):
+    # Without the guard's rollback ever finishing, the controller still sees
+    # nothing: even 100% canary traffic leaves the model enabled.
+    with TestClient(create_app(canary_settings(settings, 100))) as client:
+        for _ in range(40):
+            client.post("/v1/chat", json={"message": SMALL})
+        health = client.get("/v1/health").json()
+    assert health["interventions"] == []
