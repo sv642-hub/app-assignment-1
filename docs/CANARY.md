@@ -19,7 +19,7 @@ The release names the stable version, an optional canary version and the canary'
 
 Each request gets a bucket from 0 to 99, taken from a hash of its request ID. Requests with a bucket below the canary's percent go to the canary. So raising the percent only moves stable requests to the canary, and the choice can be worked out again from a saved request. There is no login or session, so one customer's requests can land on different versions.
 
-Every reply's trace records `version_id` and `canary`. `/v1/health` shows them for recent requests, and `/metrics` counts requests by version, role (stable or canary) and format check (`gateway_version_requests_total`).
+Every reply's trace records `version_id` and `canary`. `/v1/health` shows them for recent requests, and `/metrics` counts requests by version, role (stable or canary), the model that answered and format check (`gateway_version_requests_total`). Compare one model at a time: if a model is disabled, the other one answers its route, so a canary that breaks one model can look healthy in the totals.
 
 ## Changing the release
 
@@ -46,10 +46,13 @@ A change is saved before it is applied. If the save fails, the gateway reads the
 - It was not: `PUT` returns 503, "The release could not be saved", and nothing changes.
 - The store cannot be read either: `PUT` returns 503, "may or may not have been saved". Check `GET /v1/release` before trying again.
 
+If the request is cancelled during the save, such as by a client disconnect, the gateway still finishes the save and applies the change, so it and a restarted gateway agree. An automatic rollback waits for any operator change in progress, then rolls back only if the canary it judged is still the current one.
+
 ## Limits
 
-- **The controller never sees canary requests.** The monitor and controller count failures per model, so canary calls are left out of them: a bad canary cannot disable the model stable traffic uses, and cannot trigger a model rollback from `releases.json`. A canary reply also adds no semantic sample and does not count toward confirming a model release. The cost is that the controller's windows describe stable traffic only. Comparing a canary with stable inside the monitor would need it to group by `version_id` (the "Canary comparison" in the monitor records draft, #45).
+- **The controller never sees canary requests.** The monitor and controller count failures per model, so canary calls are left out of them: a bad canary cannot disable the model stable traffic uses, and cannot trigger a model rollback from `releases.json`. A canary reply also adds no semantic sample and does not count toward confirming a model release. The usage on `/v1/health` counts stable traffic only. The cost is that the controller's windows describe stable traffic only. Comparing a canary with stable inside the monitor would need it to group by `version_id` (the "Canary comparison" in the monitor records draft, #45).
 - **The canary rolls itself back.** The gateway keeps a separate window of canary calls (failed calls and failed format checks), using the monitor's window size, minimum samples and failure threshold. When it shows the canary failing, the gateway saves a release with no canary, so only the canary goes and stable keeps serving. The history shows the reason, "Automatic rollback: canary ... kept failing". This only catches failed calls and failed format checks, not wrong intents.
+- **Mock backends only.** With `APP_PROVIDER_MODE=real` the gateway runs the vLLM backends as its only version, so there is nothing to split between.
 - **Rolling back the gateway image.** Every request saved from this version on has `version_id` and `canary` in its trace. A gateway image from before the canary splitter rejects those fields, so after rolling back to one, `/v1/requests/{id}` and the recent requests on `/v1/health` fail for those rows. From this version on, rows are read leniently: fields a newer gateway added are ignored.
 - **One gateway process.** Each process holds the release in memory and loads it only at startup, so a change made through one process does not reach another.
 - **No screen yet.** The Deployments screen (Verness) can read `GET /v1/release`.

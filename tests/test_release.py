@@ -86,6 +86,34 @@ def test_bucket_is_fixed_for_a_request_id():
     assert all(0 <= canary_bucket(i) < 100 for i in ids(500))
 
 
+@pytest.mark.parametrize(
+    ("request_id", "bucket"),
+    [
+        # Worked out by hand: SHA-256 of the 16 ID bytes, the first 8 bytes
+        # big-endian, mod 100. Hashing fewer bytes or another modulus changes
+        # every one of these.
+        ("00000000-0000-4000-8000-000000000000", 32),
+        ("12345678-1234-4234-8234-123456789abc", 15),
+        ("ffffffff-ffff-4fff-bfff-ffffffffffff", 87),
+        ("6f1c2a9e-3b4d-4e5f-9a1b-2c3d4e5f6a7b", 82),
+    ],
+)
+def test_known_request_ids_get_known_buckets(request_id: str, bucket: int):
+    assert canary_bucket(UUID(request_id)) == bucket
+
+
+@pytest.mark.parametrize(
+    ("percent", "tolerance"),
+    # 20,000 fixed IDs. One standard error is 0.07 points at 1% and 99%, and
+    # 0.35 points at 50%; each tolerance is a few of those.
+    [(1, 0.005), (50, 0.015), (99, 0.005)],
+)
+def test_the_share_matches_the_percent_at_the_edges(percent: int, tolerance: float):
+    current = release(canary="v2", canary_percent=percent)
+    share = sum(pick_version(current, i)[1] for i in ids(20_000, seed=84)) / 20_000
+    assert abs(share - percent / 100) < tolerance
+
+
 def test_no_canary_or_zero_percent_sends_everything_to_stable():
     for current in (release(), release(canary="v2", canary_percent=0)):
         assert {pick_version(current, i) for i in ids(200)} == {("v1", False)}
@@ -199,8 +227,8 @@ def test_requests_record_the_stable_version(settings: Settings):
     assert recent["version_id"] == "v1"
     assert recent["canary"] is False
     assert (
-        'gateway_version_requests_total{format_check="passed",role="stable",'
-        'version="v1"} 1.0' in metrics
+        'gateway_version_requests_total{format_check="passed",'
+        'model="qwen3-1.7b",role="stable",version="v1"} 1.0' in metrics
     )
 
 
@@ -321,6 +349,48 @@ class FlakyReleaseStore(MemoryStore):
             self.read_failures -= 1
             raise ConnectionError("database down")
         return await super().recent_releases(limit)
+
+
+class SlowReleaseStore(MemoryStore):
+    """Writes the release, then holds the save open until `finish` is set,
+    like a commit whose reply is slow to arrive."""
+
+    def __init__(self) -> None:
+        super().__init__(100)
+        self.written = asyncio.Event()
+        self.finish = asyncio.Event()
+
+    async def save_release(self, release: Release) -> None:
+        await super().save_release(release)
+        self.written.set()
+        await self.finish.wait()
+
+
+def test_a_cancel_after_the_store_write_still_applies_the_change(settings: Settings):
+    """A client that disconnects mid-PUT cancels the change. If the row was
+    already written, the running gateway must apply it too, or it keeps the
+    old split while a restart loads the new one."""
+
+    async def main() -> None:
+        store = SlowReleaseStore()
+        gateway = Gateway(settings, MockJevRouter(settings.intents_path), store=store)
+        change = ReleaseChange(
+            stable="v1", canary="v2-chaos", canary_percent=100, reason="Canary"
+        )
+        task = asyncio.create_task(gateway.set_release(change))
+        await store.written.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        store.finish.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        live = gateway.release
+        assert (live.canary, live.canary_percent) == ("v2-chaos", 100)
+        restarted = Gateway(settings, MockJevRouter(settings.intents_path), store=store)
+        await restarted.load_release()
+        assert restarted.release == live
+
+    asyncio.run(main())
 
 
 def saved_canary_store(read_failures: int) -> FlakyReleaseStore:
@@ -525,3 +595,135 @@ def test_canary_failures_do_not_count_against_the_stable_model(settings: Setting
             client.post("/v1/chat", json={"message": SMALL})
         health = client.get("/v1/health").json()
     assert health["interventions"] == []
+
+
+def write_backends(tmp_path: Path, name: str, source: str, **changes: dict) -> Path:
+    """A copy of config/<source>.json with no simulated latency and
+    `changes` applied per model name."""
+    backends = json.loads(Path(f"config/{source}.json").read_text())
+    for backend in backends:
+        backend["latency_ms"] = 0
+        backend.update(changes.get(backend["name"], {}))
+    path = tmp_path / f"{name}.json"
+    path.write_text(json.dumps(backends))
+    return path
+
+
+def test_a_canary_whose_calls_fail_leaves_stable_serving(tmp_path: Path):
+    """The repro from the #84 review, through failed calls rather than corrupt
+    replies: stable has only its small model, and the canary's small model
+    fails every call. Counting the canary against qwen3-1.7b used to disable
+    it for stable too, and stable answered 503."""
+    stable = write_backends(
+        tmp_path, "stable", "backends", **{"qwen3-4b": {"available": False}}
+    )
+    outage = write_backends(tmp_path, "outage", "backends.outage")
+    versions = tmp_path / "versions.json"
+    versions.write_text(
+        json.dumps(
+            [
+                {"id": "v1", "description": "Stable."},
+                {"id": "v2", "description": "Bad.", "backends_path": str(outage)},
+            ]
+        )
+    )
+    settings = Settings(
+        _env_file=None,
+        backends_path=stable,
+        versions_path=versions,
+        canary_version="v2",
+        canary_percent=50,
+    )
+    with TestClient(create_app(settings)) as client:
+        responses = [
+            client.post("/v1/chat", json={"message": SMALL}) for _ in range(40)
+        ]
+        health = client.get("/v1/health").json()
+    assert [r.status_code for r in responses] == [200] * 40
+    traces = [r.json()["trace"] for r in responses]
+    stable_traces = [t for t in traces if not t["canary"]]
+    assert stable_traces
+    # Stable answers with its small model; a canary request falls back to the
+    # canary's 4b until the canary rolls itself back.
+    assert {(t["version_id"], t["model"]) for t in stable_traces} == {
+        ("v1", "qwen3-1.7b")
+    }
+    assert {t["model"] for t in traces if t["canary"]} <= {"qwen3-4b"}
+    assert health["interventions"] == []
+    monitor = {m["name"]: m for m in health["monitor"]}
+    assert not monitor["qwen3-1.7b"]["disabled_by_controller"]
+    # The usage /v1/health reports is stable's alone.
+    usage = {u["name"]: u for u in health["usage"]}
+    assert usage["qwen3-1.7b"]["attempted_calls"] == len(stable_traces)
+    assert usage["qwen3-1.7b"]["failed_calls"] == 0
+    assert usage["qwen3-4b"]["attempted_calls"] == 0
+
+
+def test_canary_traffic_does_not_count_toward_a_model_release(settings: Settings):
+    """A model release (#107) is watched, then confirmed or rolled back, on
+    stable traffic only."""
+    with TestClient(create_app(canary_settings(settings, 100))) as client:
+        response = client.post(
+            "/v1/operator/models/qwen3-1.7b/release",
+            json={"version": "v2-faster", "reason": "Watch it"},
+            headers=AUTH,
+        )
+        assert response.status_code == 200
+        traces = [
+            client.post("/v1/chat", json={"message": SMALL}).json()["trace"]
+            for _ in range(10)
+        ]
+        wait_for_rollback(client)
+        health = client.get("/v1/health").json()
+    small = next(r for r in health["releases"] if r["name"] == "qwen3-1.7b")
+    # Only the requests after the canary's rollback reached the watch.
+    stable_calls = sum(not t["canary"] for t in traces)
+    assert stable_calls < 10
+    assert (small["version"], small["status"], small["watched_samples"]) == (
+        "v2-faster",
+        "watching",
+        stable_calls,
+    )
+    assert health["interventions"] == []
+
+
+def test_a_queued_canary_rollback_keeps_a_newer_operator_change(settings: Settings):
+    """The canary trips while an operator's change to another canary is being
+    saved. The rollback waits for the lock, then finds the canary it judged is
+    gone, so it must not remove the operator's new one."""
+    versions = json.loads(settings.versions_path.read_text())
+    versions.append({"id": "v3", "description": "Next try."})
+    settings.versions_path.write_text(json.dumps(versions))
+    current = canary_settings(settings, 50)
+
+    async def main() -> None:
+        store = SlowReleaseStore()
+        gateway = Gateway(current, MockJevRouter(current.intents_path), store=store)
+        operator = asyncio.create_task(
+            gateway.set_release(
+                ReleaseChange(
+                    stable="v1", canary="v3", canary_percent=10, reason="Try v3"
+                )
+            )
+        )
+        await store.written.wait()
+        rollback = asyncio.create_task(
+            gateway._roll_back_canary(
+                "v2-chaos",
+                ReleaseChange(
+                    stable="v1",
+                    canary=None,
+                    canary_percent=0,
+                    reason="Automatic rollback: canary v2-chaos kept failing",
+                ),
+            )
+        )
+        await asyncio.sleep(0)  # the rollback now waits on the lock
+        store.finish.set()
+        await operator
+        await rollback
+        assert (gateway.release.canary, gateway.release.canary_percent) == ("v3", 10)
+        saved = await store.recent_releases(5)
+        assert [r.reason for r in saved] == ["Try v3"]
+
+    asyncio.run(main())

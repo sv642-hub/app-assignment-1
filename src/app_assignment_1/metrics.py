@@ -52,12 +52,15 @@ class GatewayMetrics:
             ["route", "model", "reply_source", "format_check"],
             registry=self.registry,
         )
-        # Versions come from config/versions.json, so this label is a fixed set.
+        # Versions come from config/versions.json and models are the two Qwen
+        # names, so every label is a fixed set. The model shows which one
+        # answered: when one model is disabled, the other answers its route,
+        # and a canary that breaks one model would otherwise look healthy.
         self.version_requests = Counter(
             "gateway_version_requests",
-            "Chat requests answered, by config version, release role and format "
-            "check. Compare a canary with stable here.",
-            ["version", "role", "format_check"],
+            "Chat requests answered, by config version, release role, answering "
+            "model and format check. Compare a canary with stable here.",
+            ["version", "role", "model", "format_check"],
             registry=self.registry,
         )
         self.chat_unavailable = Counter(

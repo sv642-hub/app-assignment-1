@@ -379,38 +379,48 @@ class Gateway:
         A failed save may still have been committed (a timeout after the
         database wrote the row), so the latest saved release is read back
         before reporting failure.
+
+        A cancel, such as a client disconnect, waits for the save and the
+        apply to finish, then passes on. Otherwise a cancel after the store
+        wrote the row would leave this gateway on the old release while a
+        restart loads the new one.
         """
         async with self.canary_lock:
-            # Stamped inside the lock, so saved order matches changed_at.
-            release = self.check_release(change)
+            return await self._set_release_locked(change)
+
+    async def _set_release_locked(self, change: ReleaseChange) -> Release:
+        """set_release, for a caller that holds canary_lock."""
+        # Stamped inside the lock, so saved order matches changed_at.
+        release = self.check_release(change)
+        await self._finish(self._save_and_apply(release), hold=True)
+        return release
+
+    async def _save_and_apply(self, release: Release) -> None:
+        try:
+            await asyncio.wait_for(self.store.save_release(release), self.store_timeout)
+        except Exception as exc:
+            logger.warning("Could not save release (%s)", type(exc).__name__)
             try:
-                await asyncio.wait_for(
-                    self.store.save_release(release), self.store_timeout
+                latest = await self._latest_saved_release()
+            except Exception as read_exc:
+                logger.warning(
+                    "Could not check the release save (%s)",
+                    type(read_exc).__name__,
                 )
-            except Exception as exc:
-                logger.warning("Could not save release (%s)", type(exc).__name__)
-                try:
-                    latest = await self._latest_saved_release()
-                except Exception as read_exc:
-                    logger.warning(
-                        "Could not check the release save (%s)",
-                        type(read_exc).__name__,
-                    )
-                    self.release_source = "settings_store_unreadable"
-                    raise CanaryOutcomeUnknown from None
-                if latest != [release]:
-                    raise CanaryNotSaved from None
-                logger.info("The release was saved despite the error")
-            self.release = release
-            self.release_source = "store"
-            self.canary_guard.reset()
+                self.release_source = "settings_store_unreadable"
+                raise CanaryOutcomeUnknown from None
+            if latest != [release]:
+                raise CanaryNotSaved from None
+            logger.info("The release was saved despite the error")
+        self.release = release
+        self.release_source = "store"
+        self.canary_guard.reset()
         logger.info(
             "Release changed: stable %s, canary %s at %s%%",
             release.stable,
             release.canary,
             release.canary_percent,
         )
-        return release
 
     def _release_changed(self, event: ReleaseEvent) -> None:
         """A model now serves another version: its monitor windows describe
@@ -1015,10 +1025,17 @@ class Gateway:
         """Call one backend within `budget` seconds. Return its reply (None if
         the call failed), the latest controller action, whether the deadline
         cut short a later attempt, and the release generation the call
-        started on."""
+        started on.
+
+        A canary call is not counted in the usage /v1/health reports, which
+        describes stable traffic, nor by the controller (see _canary_outcome)."""
         name = backend.config.name
         generation = self.releases.generation[name]
-        usage = self.usage[name]
+        usage = (
+            ModelUsage(name=name, attempted_calls=0, completed_calls=0, failed_calls=0)
+            if canary
+            else self.usage[name]
+        )
         usage.attempted_calls += 1
         timer = asyncio.timeout(budget)
         call_start = perf_counter()
@@ -1091,10 +1108,13 @@ class Gateway:
         task.add_done_callback(self.pending_saves.discard)
 
     async def _roll_back_canary(self, canary: str, change: ReleaseChange) -> None:
-        if self.release.canary != canary:
-            return  # an operator already changed the release
         try:
-            await self.set_release(change)
+            async with self.canary_lock:
+                # Checked under the lock: an operator change saved while this
+                # waited (a new canary, say) must not be rolled back.
+                if self.release.canary != canary:
+                    return
+                await self._set_release_locked(change)
         except Exception as exc:
             logger.warning("Canary rollback failed (%s)", type(exc).__name__)
             self.canary_guard.reset()  # judge the canary again from scratch
@@ -1389,7 +1409,10 @@ class Gateway:
             trace.route, trace.model, trace.reply_source, trace.format_check
         ).inc()
         self.metrics.version_requests.labels(
-            version_id, "canary" if canary else "stable", trace.format_check
+            version_id,
+            "canary" if canary else "stable",
+            trace.model,
+            trace.format_check,
         ).inc()
         elapsed = perf_counter() - start
         self.metrics.chat_latency.observe(elapsed)
