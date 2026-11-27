@@ -252,7 +252,7 @@ def test_bad_format_fault_corrupts_replies(client):
     )
     trace = client.post("/v1/chat", json={"message": STANDARD}).json()["trace"]
     assert trace["format_check"] == "failed"
-    assert "unfilled_placeholder" in trace["format_errors"]
+    assert trace["format_errors"] == ["unknown_policy_facts"]
 
 
 def test_label_swap_fault_and_partial_rate(client):

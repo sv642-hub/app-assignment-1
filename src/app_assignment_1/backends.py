@@ -18,6 +18,8 @@ UNKNOWN_REPLY = (
     "Please rephrase your request with the details, or try an example. "
     "This is a fictional bank demo."
 )
+# The fact the mock bad_format fault adds. No policy card lists it.
+INVENTED_FACT = "DemoBank waives every fee forever."
 
 
 class Backend(Protocol):
@@ -73,6 +75,7 @@ class MockBackend:
                 policy_facts=card.facts,
             )
         if self.rng.random() < config.fault_rate:
-            # Simulated fault: a template slot the model failed to fill.
-            reply.reply += " {customer_name}"
+            # Simulated fault: a policy fact the model made up. It is on no card,
+            # so the reply fails the format check (unknown_policy_facts).
+            reply.policy_facts = [*reply.policy_facts, INVENTED_FACT]
         return reply

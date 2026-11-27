@@ -122,7 +122,7 @@ class BackendConfig(StrictModel):
     route: Route
     latency_ms: int = Field(ge=0, le=5000)
     available: bool = True
-    # Share of mock replies corrupted on purpose, to exercise the controller.
+    # Share of mock replies given an invented policy fact, to exercise the controller.
     fault_rate: float = Field(default=0, ge=0, le=1)
     # Share of mock calls that raise on purpose, to simulate an outage.
     error_rate: float = Field(default=0, ge=0, le=1)
