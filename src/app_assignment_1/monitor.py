@@ -1,13 +1,15 @@
 """In-memory failure monitor and controller for the backends.
 
-Windows and disabled backends live in the gateway process and reset on restart.
+Windows and disabled backends live in the gateway process. Each window sample
+is saved through `Store` (`unsaved_samples`), and `restore` rebuilds the windows
+and running cooldowns at startup, so with Postgres they survive a restart.
 The gateway saves each intervention to its store (see store.py), which may be
 Postgres; `unsaved` holds the ones it has not saved yet.
 """
 
 import time
 from collections import Counter, deque
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
@@ -18,11 +20,22 @@ from app_assignment_1.schemas import (
     ControllerRules,
     Intervention,
     InterventionAction,
+    MonitorSample,
 )
 
 Outcome = Literal["ok", "format_failure", "call_error"]
 DetectReason = Literal["timeout", "call_error", "format_failure", "failure"]
+# Interventions that start or end a cooldown. Both kinds of enable clear the
+# window; an operator enable also ends a running cooldown.
+WINDOW_EVENTS = ("disabled", "re-enabled", "operator_enabled")
+OPERATOR_ACTIONS = ("operator_disabled", "operator_enabled")
+# What a restart reads back: each model's newest of each (Store.latest_interventions).
+RESTORE_ACTIONS = tuple(dict.fromkeys(WINDOW_EVENTS + OPERATOR_ACTIONS))
+OUTCOMES: tuple[Outcome, ...] = ("ok", "format_failure", "call_error")
 DisabledFor = Literal["failure", "semantic"]
+# Every semantic disable reason starts with this (see Gateway._semantic_reason),
+# so a restart can tell a semantic disable from a failure one.
+SEMANTIC_REASON = "intent differs from Jev's"
 
 
 class Controller:
@@ -60,6 +73,11 @@ class Controller:
         # fills the window slowly (each call waits out its timeout), so a
         # streak disables the model before monitor_min_samples calls.
         self.timeouts: Counter[BackendName] = Counter()
+        # When the current timeout streak's first call started. Kept apart
+        # from the window, which evicts old calls while the streak goes on.
+        self.streak_start: dict[BackendName, float | None] = {
+            name: None for name in names
+        }
         # When each call in a model's window started (None for an answer),
         # kept in step with the window, so a disable can report how long the
         # fault went undetected: from the earliest failure still in the window,
@@ -81,6 +99,9 @@ class Controller:
         # Every intervention since start; the log above keeps only the latest.
         self.action_counts: Counter[tuple[str, BackendName]] = Counter()
         self.unsaved: list[Intervention] = []
+        # New window samples, waiting for the gateway to save them, so the
+        # windows can be rebuilt after a restart (see `restore`).
+        self.unsaved_samples: list[MonitorSample] = []
         # Called with a model's name when its cooldown ends, so other monitors
         # can start that model's window again too.
         self.on_reenable: list[Callable[[BackendName], None]] = []
@@ -107,6 +128,7 @@ class Controller:
     def _clear_window(self, name: BackendName) -> None:
         self.windows[name].clear()
         self.timeouts[name] = 0
+        self.streak_start[name] = None
         self.starts[name].clear()
 
     def _note(
@@ -252,12 +274,30 @@ class Controller:
         timed_out: bool = False,
         call_seconds: float = 0,
     ) -> str | None:
+        # A cooldown that has ended is processed before this sample counts, so
+        # a reply from a call still in flight is not cleared by the re-enable.
+        # A restart then agrees: the re-enable is dated when the cooldown
+        # ended, and this sample is after it.
+        self._cooling_down(name)
         window = self.windows[name]
         window.append(outcome)
         self.starts[name].append(
             None if outcome == "ok" else self.clock() - call_seconds
         )
-        self.timeouts[name] = self.timeouts[name] + 1 if timed_out else 0
+        if timed_out:
+            began = self.clock() - call_seconds
+            first = self.streak_start[name]
+            # Hung calls can finish out of order: keep the earliest start.
+            self.streak_start[name] = began if first is None else min(first, began)
+            self.timeouts[name] += 1
+        else:
+            self.timeouts[name] = 0
+            self.streak_start[name] = None
+        self.unsaved_samples.append(
+            MonitorSample(
+                at=datetime.now(UTC), model=name, monitor="failure", outcome=outcome
+            )
+        )
         failures = sum(item != "ok" for item in window)
         rate = failures / len(window)
         window_trips = len(window) >= self.min_samples and rate >= self.threshold
@@ -360,17 +400,98 @@ class Controller:
         self.disabled_until[name] = self.clock() + self.cooldown
         self.disabled_for[name] = kind
         self._note(name, "disabled", reason)
-        starts = list(self.starts[name])
         if detect == "timeout":
-            # A streak disable is dated from the calls in the streak, not from
-            # an older failure that happens to be in the window.
-            starts = starts[len(starts) - min(self.timeouts[name], len(starts)) :]
-        failed_at = [t for t in starts if t is not None]
-        started = min(failed_at) if failed_at else None
+            # A streak disable is dated from the first call of the streak, not
+            # from an older failure in the window, and not from the window's
+            # oldest call: a short window has evicted the streak's start.
+            started = self.streak_start[name]
+        else:
+            failed_at = [t for t in self.starts[name] if t is not None]
+            started = min(failed_at) if failed_at else None
         if detect is not None and started is not None:
             for hook in self.on_detect:
                 hook(name, detect, max(0.0, self.clock() - started))
         return f"disabled {name}: {reason}"
+
+    def restore(
+        self,
+        interventions: Sequence[Intervention],
+        samples: Sequence[MonitorSample],
+        now: datetime,
+        resets: Mapping[BackendName, datetime] | None = None,
+    ) -> dict[BackendName, datetime | None]:
+        """Rebuild the windows, cooldowns and operator holds after a restart.
+
+        A cooldown still running when the gateway stopped resumes for the time
+        left, unless an operator ended it. A re-enable, by the controller or an
+        operator, clears a model's window, so only samples after the last one
+        go back in, or after the end of a cooldown that ended while it was
+        stopped. `resets` gives other times a model's window was cleared, such
+        as a release deploy or rollback; the latest of all of them wins. A
+        model whose last operator action was a disable is held again. A
+        resumed cooldown keeps its reason, failure or semantic, so a semantic
+        disable is still a last resort.
+        `interventions` are oldest first, and only the newest of each action
+        per model matters, so `Store.latest_interventions(RESTORE_ACTIONS)` is
+        enough. `samples` are oldest first. Returns each model's cutoff: its
+        window starts after that time, or from the oldest sample for None.
+        """
+        cutoffs: dict[BackendName, datetime | None] = {}
+        for name, window in self.windows.items():
+            events = [
+                i
+                for i in interventions
+                if i.backend == name and i.action in WINDOW_EVENTS
+            ]
+            cutoff: datetime | None = None
+            if events:
+                last = events[-1]
+                left = self.cooldown - (now - last.at).total_seconds()
+                if last.action == "disabled" and left > 0:
+                    self.disabled_until[name] = self.clock() + left
+                    self.disabled_for[name] = (
+                        "semantic"
+                        if last.reason.startswith(SEMANTIC_REASON)
+                        else "failure"
+                    )
+                    enabled = [e for e in events if e.action != "disabled"]
+                    cutoff = enabled[-1].at if enabled else None
+                elif last.action == "disabled":
+                    # The cooldown ended while the gateway was stopped. Live,
+                    # the re-enable at its end clears the window, which drops
+                    # samples from calls still running during the cooldown.
+                    cutoff = last.at + timedelta(seconds=self.cooldown)
+                else:
+                    cutoff = last.at
+            reset = (resets or {}).get(name)
+            if reset is not None and (cutoff is None or reset > cutoff):
+                cutoff = reset
+            holds = [
+                i.action
+                for i in interventions
+                if i.backend == name and i.action in OPERATOR_ACTIONS
+            ]
+            if holds and holds[-1] == "operator_disabled":
+                self.held.add(name)
+            outcomes = [
+                s.outcome
+                for s in samples
+                if s.model == name
+                and s.monitor == "failure"
+                and (cutoff is None or s.at > cutoff)
+            ]
+            window.clear()
+            window.extend(o for o in outcomes if o in OUTCOMES)
+            # Keep the start times in step with the window. A restored sample
+            # has only a wall-clock time, so it gets no start: restored
+            # failures do not count toward detection time, which understates it
+            # rather than inventing one.
+            self.starts[name].clear()
+            self.starts[name].extend(None for _ in window)
+            self.timeouts[name] = 0
+            self.streak_start[name] = None
+            cutoffs[name] = cutoff
+        return cutoffs
 
     def rules(self) -> ControllerRules:
         return ControllerRules(

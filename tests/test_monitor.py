@@ -437,6 +437,29 @@ def test_a_streak_disable_is_dated_from_the_streak_not_an_old_failure(tmp_path):
     assert seen == [("qwen3-1.7b", "timeout", 18)]
 
 
+def test_a_streak_longer_than_the_window_is_dated_from_its_first_call(tmp_path):
+    clock = Clock()
+    c = Controller(
+        ["qwen3-1.7b", "qwen3-4b"],
+        make_settings(
+            tmp_path,
+            monitor_window=2,
+            monitor_min_samples=2,
+            monitor_timeout_streak=4,
+        ),
+        clock,
+    )
+    seen = []
+    c.on_detect.append(lambda *args: seen.append(args))
+    # Four six-second timeouts, recorded at 6, 12, 18 and 24. The window keeps
+    # only the last two, so the streak start must not come from it.
+    # Disabling is allowed only on the fourth call.
+    for now in (6, 12, 18, 24):
+        clock.now = now
+        c.record_error("qwen3-1.7b", now == 24, timed_out=True, call_seconds=6)
+    assert seen == [("qwen3-1.7b", "timeout", 24)]
+
+
 def hang_settings(tmp_path, **overrides):
     return make_settings(
         tmp_path,
@@ -494,3 +517,19 @@ def test_slow_but_healthy_replies_under_the_cap_are_not_failures(tmp_path):
         monitors = {m["name"]: m for m in client.get("/v1/health").json()["monitor"]}
         assert monitors["qwen3-1.7b"]["call_errors"] == 0
         assert monitors["qwen3-1.7b"]["disabled_by_controller"] is False
+
+
+def test_a_reply_recorded_after_the_cooldown_ended_survives_the_re_enable(tmp_path):
+    """The reply of a call still in flight, recorded after the cooldown ended
+    but before the next is_disabled check, counts. A restart agrees: the
+    re-enable is dated when the cooldown ended, and the sample is after it."""
+    clock = Clock()
+    c = controller(tmp_path, clock)
+    for _ in range(3):
+        c.record("qwen3-1.7b", True, can_disable=True)
+    clock.now = 100.0  # the 30 s cooldown ended 70 s ago, nobody checked
+    c.record("qwen3-1.7b", True, can_disable=False)
+    assert list(c.windows["qwen3-1.7b"]) == ["format_failure"]
+    assert [i.action for i in c.log] == ["disabled", "re-enabled"]
+    re_enabled = c.log[-1].at
+    assert c.unsaved_samples[-1].at > re_enabled
