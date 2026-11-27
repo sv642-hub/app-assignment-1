@@ -27,7 +27,14 @@ from app_assignment_1.api import create_app
 from app_assignment_1.config import PUBLIC_DATABASE_PASSWORD, Settings
 from app_assignment_1.records import JevAssessment
 from app_assignment_1.router import MockJevRouter
-from app_assignment_1.schemas import ChatResponse, Intervention, ReleaseEvent, Trace
+from app_assignment_1.schemas import (
+    KEPT_REASON_MARKER,
+    ChatResponse,
+    Intervention,
+    MonitorSample,
+    ReleaseEvent,
+    Trace,
+)
 from app_assignment_1.service import Gateway
 from app_assignment_1.store import (
     MIGRATIONS,
@@ -514,6 +521,45 @@ def test_shutdown_saves_pending_interventions() -> None:
     assert list(store.interventions) == [intervention(0)]
 
 
+def test_monitor_samples_keep_the_newest_per_window(make_store: MakeStore) -> None:
+    start = datetime(2026, 11, 22, 12, tzinfo=UTC)
+    samples = [
+        MonitorSample(
+            at=start + timedelta(seconds=i),
+            model="qwen3-1.7b",
+            monitor="failure",
+            outcome="call_error" if i == 0 else "ok",
+        )
+        for i in range(4)
+    ] + [
+        MonitorSample(
+            at=start + timedelta(seconds=10),
+            model="qwen3-1.7b",
+            monitor="semantic",
+            outcome="disagree",
+            traffic="own",
+        ),
+        MonitorSample(
+            at=start + timedelta(seconds=11),
+            model="qwen3-4b",
+            monitor="semantic",
+            outcome="agree",
+            traffic="rerouted",
+        ),
+    ]
+
+    async def body(store: Store) -> None:
+        await store.save_monitor_samples(samples[:3])
+        await store.save_monitor_samples(samples[3:])
+        await store.save_monitor_samples(samples[3:4])  # a retried save
+        newest = await store.recent_monitor_samples(per_window=2)
+        # The oldest failure sample drops out; the rest come back oldest first,
+        # and the retried one only once.
+        assert newest == samples[2:]
+
+    run(make_store(), body)
+
+
 def release_event(
     minute: int, backend: str, action: str, version: str, revision: int = 0
 ) -> ReleaseEvent:
@@ -548,6 +594,90 @@ def test_release_events_keep_order_and_the_latest_per_model(
         assert await store.recent_release_events(2) == events[1:]
         latest = await store.latest_release_events()
         assert sorted(latest, key=lambda e: e.backend) == [events[2], events[1]]
+
+    run(make_store(), body)
+
+
+def test_latest_release_changes_skip_confirmations_and_kept_records(
+    make_store: MakeStore,
+) -> None:
+    small, large = "qwen3-1.7b", "qwen3-4b"
+    deploy = release_event(0, small, "deployed", "v2-good")
+    kept = release_event(1, small, "deployed", "v2-good", 9).model_copy(
+        update={
+            "reason": f"change to v3 {KEPT_REASON_MARKER}; kept v2-good",
+            "from_version": None,
+        }
+    )
+    confirm = release_event(2, small, "confirmed", "v2-good")
+    rollback = release_event(3, large, "rolled_back", "base")
+    filler = [
+        release_event(4 + i % 50, large, "deployed", "v2-good", 10 + i)
+        for i in range(250)
+    ]
+
+    async def body(store: Store) -> None:
+        assert await store.latest_release_changes() == []
+        await store.save_release_events([deploy, kept, confirm, rollback])
+        # The small model's newest change is the deploy: the kept record and
+        # the confirmation don't count.
+        changes = await store.latest_release_changes()
+        assert sorted(changes, key=lambda e: e.backend) == [deploy, rollback]
+        # However many newer events the other model has.
+        await store.save_release_events(filler)
+        changes = await store.latest_release_changes()
+        assert [e for e in changes if e.backend == small] == [deploy]
+
+    run(make_store(), body)
+
+
+def test_a_restarted_app_resumes_from_postgres(postgres_url: str) -> None:
+    settings = Settings(
+        _env_file=None,
+        store="postgres",
+        database_url=postgres_url,
+        backends_path=Path("config/backends.chaos.json"),
+    )
+    with TestClient(create_app(settings)) as client:
+        for _ in range(5):
+            client.post("/v1/chat", json={"message": "my card has not arrived"})
+        before = client.get("/v1/health").json()
+    with TestClient(create_app(settings)) as client:
+        after = client.get("/v1/health").json()
+    small = {m["name"]: m for m in after["monitor"]}["qwen3-1.7b"]
+    assert small["disabled_by_controller"] is True
+    assert small["format_failures"] == 5
+    assert [m["samples"] for m in after["monitor"]] == [
+        m["samples"] for m in before["monitor"]
+    ]
+
+
+def test_latest_interventions_per_model_and_action(make_store: MakeStore) -> None:
+    start = datetime(2026, 11, 22, 12, tzinfo=UTC)
+
+    def item(seconds: int, backend: str, action: str) -> Intervention:
+        return Intervention(
+            at=start + timedelta(seconds=seconds),
+            backend=backend,
+            action=action,
+            reason="test",
+        )
+
+    items = [
+        item(0, "qwen3-1.7b", "operator_disabled"),
+        item(1, "qwen3-4b", "operator_disabled"),
+        item(2, "qwen3-4b", "operator_enabled"),
+        item(3, "qwen3-4b", "disabled"),
+        item(4, "qwen3-1.7b", "kept_last_backend"),
+        item(5, "qwen3-4b", "operator_disabled"),
+    ]
+
+    async def body(store: Store) -> None:
+        await store.save_interventions(items)
+        latest = await store.latest_interventions(
+            ["operator_disabled", "operator_enabled", "disabled"]
+        )
+        assert latest == [items[0], items[2], items[3], items[5]]
 
     run(make_store(), body)
 
@@ -616,3 +746,34 @@ def test_postgres_release_survives_a_restart(postgres_url: str, tmp_path) -> Non
         small = {r["name"]: r for r in health["releases"]}["qwen3-1.7b"]
         assert (small["version"], small["status"]) == ("v2-bad-format", "watching")
         assert [e["action"] for e in health["release_history"]] == ["deployed"]
+
+
+def test_latest_release_changes_use_revision_and_skip_voided_deploys(
+    make_store: MakeStore,
+) -> None:
+    small = "qwen3-1.7b"
+    # An operator's reason may hold the kept phrase and is still a deploy.
+    first = release_event(0, small, "deployed", "v2-good", 1).model_copy(
+        update={"reason": f"retry, {KEPT_REASON_MARKER}"}
+    )
+    # Saved before revision 2, which a retried save lands after revision 3.
+    third = release_event(1, small, "deployed", "v2-faster", 3)
+    second = release_event(2, small, "rolled_back", "base", 2)
+
+    async def body(store: Store) -> None:
+        await store.save_release_events([first])
+        assert await store.latest_release_changes() == [first]
+        await store.save_release_events([third, second])
+        assert await store.latest_release_changes() == [third]
+        # A kept record right after a change says that change was not made.
+        kept = release_event(3, small, "confirmed", "v2-faster", 4).model_copy(
+            update={"reason": f"change to v3 {KEPT_REASON_MARKER}; kept v2-faster"}
+        )
+        await store.save_release_events([kept])
+        assert await store.latest_release_changes() == [second]
+        voided = release_event(4, small, "deployed", "v3", 5)
+        kept2 = kept.model_copy(update={"revision": 6})
+        await store.save_release_events([voided, kept2])
+        assert await store.latest_release_changes() == [second]
+
+    run(make_store(), body)
