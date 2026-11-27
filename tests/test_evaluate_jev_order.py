@@ -486,3 +486,30 @@ def test_the_verdict_gates_on_the_headlines_own_n() -> None:
     assert summary["messages_answered_in_both_orders"] == n
     assert summary["flip_minus_same_order"]["n"] == 20
     assert summary["verdict"].startswith("inconclusive: too few")
+
+
+def test_the_verdict_gates_on_the_headline_not_on_one_call_per_order() -> None:
+    # Review on #90: 93% of messages had one answered call in each order, but
+    # the headline used only those with two. A model that ignores order lost
+    # half its "complex" calls in standard_first and looked biased.
+    calls = []
+    for row in range(1000):
+        if row < 500:  # all four calls answered, and the first option wins
+            for order in script.ORDERS:
+                for repeat in range(2):
+                    calls.append(call(row, order, repeat, first_listed(order)))
+        else:  # one call per order only, and they disagree: a flip
+            calls.append(call(row, "standard_first", 0, "standard"))
+            calls.append(call(row, "complex_first", 0, "complex"))
+    meta = {**META, "messages": 1000}
+    summary = script.summarize([{"meta": meta}, *calls])
+
+    assert summary["paired_coverage"] == 1.0
+    assert summary["headline_coverage"] == 0.5
+    assert summary["verdict"].startswith("inconclusive")
+
+
+def test_the_budget_message_says_to_rerun_with_the_same_file(tmp_path: Path) -> None:
+    out = tmp_path / "calls.jsonl"
+    with pytest.raises(script.Stopped, match="same --out"):
+        run(out, lambda order: order[0], meta={**META, "max_calls": 3})

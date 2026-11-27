@@ -39,9 +39,9 @@ same-order disagreement: a flip only points to order bias if it happens more
 often than two calls in the same order disagree. It needs two answered calls
 in each order, so the verdict is "inconclusive" when that interval covers 0,
 when fewer than MIN_MESSAGES messages have that many (the result's own n), or
-when under MIN_PAIRED_COVERAGE of the sampled messages are answered in both
-orders. For a model that ignores order, a conclusive verdict still comes up
-in about 8% of runs, not 5%.
+when under MIN_PAIRED_COVERAGE of the sampled messages are in the result
+(two answered calls in each order), not just one in each. For a model that
+ignores order, a conclusive verdict still comes up in about 8% of runs, not 5%.
 TypeSafe does not document that criteria order reaches the model, so a
 difference near 0 also fits order being ignored.
 
@@ -256,7 +256,7 @@ async def run_experiment(
                     if made >= budget:
                         stop_reason = (
                             f"the call budget ({meta['max_calls']}) is spent; "
-                            "raise --max-calls with a new --out to go on"
+                            "raise --max-calls and rerun with the same --out to go on"
                         )
                         return
                     made += 1
@@ -378,7 +378,8 @@ def p_standard_gap(orders: Orders) -> float | None:
 
 def verdict(result: dict[str, Any] | None, coverage: float) -> str:
     """Gates on the result's own n: messages with two answered calls in each
-    order, not just one in each."""
+    order, not just one in each. `coverage` is that n over the messages
+    sampled."""
     if result is None or result["n"] < MIN_MESSAGES or coverage < MIN_PAIRED_COVERAGE:
         return "inconclusive: too few messages with two answered calls per order"
     if result["low"] <= 0 <= result["high"]:
@@ -419,6 +420,8 @@ def summarize(records: Sequence[Record]) -> dict[str, Any]:
         for order in ORDERS
     }
     result = per_message(excess_flip)
+    sampled = meta.get("messages") or 0
+    headline_coverage = result["n"] / sampled if result and sampled else 0.0
     return {
         "attempts": len(attempts),
         "answered_calls": len(answered),
@@ -427,8 +430,9 @@ def summarize(records: Sequence[Record]) -> dict[str, Any]:
         "messages_answered_in_both_orders": len(paired),
         "messages_answered_in_one_order_only": one_order,
         "paired_coverage": coverage,
+        "headline_coverage": headline_coverage,
         "flip_minus_same_order": result,
-        "verdict": verdict(result, coverage),
+        "verdict": verdict(result, headline_coverage),
         "flip_rate": per_message(flip),
         "same_order_disagreement": per_message(same_order),
         "first_position_rate": per_message(first_position),
