@@ -154,12 +154,26 @@ def test_unknown_with_an_empty_reply_and_facts_still_fails():
     assert "unknown_policy_facts" in result.trace.format_errors
 
 
-def test_empty_reply_for_a_carded_intent_still_fails():
+@pytest.mark.parametrize("generated", ["", "x" * 4001, "Hi {customer_name}."])
+def test_bad_text_for_a_carded_intent_passes_on_its_facts(generated):
+    # The model's text is never shown: the reply is built from the card, so
+    # only the facts decide the format check (#126 review).
     fact = "DemoBank standard cards arrive within 5 business days."
     result = chat_with(
-        BackendReply(intent="card_arrival", reply="", policy_facts=[fact])
+        BackendReply(intent="card_arrival", reply=generated, policy_facts=[fact])
     )
-    assert result.trace.format_errors == ["empty_reply"]
+    assert result.intent == "card_arrival"
+    assert result.reply == f"For this fictional DemoBank scenario: {fact}"
+    assert result.trace.format_check == "passed"
+    assert result.trace.format_errors == []
+
+
+@pytest.mark.parametrize("generated", ["x" * 4001, "Hi {customer_name}."])
+def test_bad_text_for_unknown_gets_the_no_match_reply(generated):
+    result = chat_with(BackendReply(intent=UNKNOWN, reply=generated, policy_facts=[]))
+    assert result.reply == UNKNOWN_REPLY
+    assert result.trace.reply_source == "no_match"
+    assert result.trace.format_check == "passed"
 
 
 @pytest.mark.parametrize("path", ["env/.env.example", "env/.env.production.example"])

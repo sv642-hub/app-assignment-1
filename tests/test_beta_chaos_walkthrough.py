@@ -3,6 +3,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app_assignment_1.api import create_app
+from app_assignment_1.backends import INVENTED_FACT
 from app_assignment_1.config import Settings
 
 
@@ -18,8 +19,8 @@ def test_documented_six_requests_really_inject_and_recover():
             trace = result["trace"]
             if i < 5:
                 assert trace["format_check"] == "failed"
-                assert "unfilled_placeholder" in trace["format_errors"]
-                assert "{customer_name}" not in result["reply"]
+                assert trace["format_errors"] == ["unknown_policy_facts"]
+                assert INVENTED_FACT not in result["reply"]
                 assert bool(trace["controller_action"]) == (i == 4)
             else:
                 assert trace["model"] == "qwen3-4b"

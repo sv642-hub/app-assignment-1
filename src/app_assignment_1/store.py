@@ -9,7 +9,7 @@ Neither store keeps the customer's message: `ChatResponse` has no message field.
 """
 
 import logging
-from collections import OrderedDict, deque
+from collections import Counter, OrderedDict, deque
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
@@ -21,7 +21,13 @@ from psycopg_pool import AsyncConnectionPool
 
 from app_assignment_1.config import PUBLIC_DATABASE_PASSWORD, Settings
 from app_assignment_1.records import JevAssessment, ReplyCheck
-from app_assignment_1.schemas import ChatResponse, Intervention, ReleaseEvent
+from app_assignment_1.schemas import (
+    KEPT_REASON_MARKER,
+    ChatResponse,
+    Intervention,
+    MonitorSample,
+    ReleaseEvent,
+)
 
 logger = logging.getLogger(__name__)
 MIGRATIONS = Path(__file__).parent / "migrations"
@@ -68,6 +74,19 @@ class Store(Protocol):
         """The last `limit` interventions, oldest first."""
         ...
 
+    async def latest_interventions(self, actions: Sequence[str]) -> list[Intervention]:
+        """Each model's newest intervention of each of `actions`, however old,
+        oldest first. Restore reads resets and holds from this, so a long run
+        of newer interventions on the other model can't hide them."""
+        ...
+
+    async def save_monitor_samples(self, items: Sequence[MonitorSample]) -> None: ...
+
+    async def recent_monitor_samples(self, per_window: int) -> list[MonitorSample]:
+        """The newest `per_window` samples of each model's window (per model,
+        monitor and traffic), oldest first."""
+        ...
+
     async def save_release_events(self, items: Sequence[ReleaseEvent]) -> None:
         """Save release changes. Saving a change already saved is a no-op. A
         different change saved under the same (backend, revision) is a
@@ -77,6 +96,14 @@ class Store(Protocol):
 
     async def recent_release_events(self, limit: int) -> list[ReleaseEvent]:
         """The last `limit` release changes, oldest first."""
+        ...
+
+    async def latest_release_changes(self) -> list[ReleaseEvent]:
+        """Each model's newest deploy or rollback by revision, however old. A
+        confirmation is not a change. Neither is a kept record, which has no
+        from_version, so an operator's reason can't pass for one, nor the
+        change a kept record follows: it was not made. Restore cuts the
+        monitor windows at these."""
         ...
 
     async def latest_release_events(self) -> list[ReleaseEvent]:
@@ -103,10 +130,17 @@ class MemoryStore:
         # Two per request, so this keeps about as many calls as requests.
         self.jev_assessments: deque[JevAssessment] = deque(maxlen=2 * limit)
         self.reply_checks: deque[ReplyCheck] = deque(maxlen=limit)
+        # About two per request: a failure sample and a semantic one.
+        self.monitor_samples: deque[MonitorSample] = deque(maxlen=4 * limit)
+        self.monitor_sample_ids: set[UUID] = set()
         self.release_events: deque[ReleaseEvent] = deque(maxlen=RELEASE_EVENT_LIMIT)
         # Kept apart from the bounded history, so it never loses a model.
         self.latest_releases: dict[str, ReleaseEvent] = {}
         self.saved_revisions: dict[tuple[str, int], ReleaseEvent] = {}
+        # Every deploy and rollback, and the revisions a kept record voided,
+        # kept apart for the same reason (a handful per model).
+        self.changes: dict[str, dict[int, ReleaseEvent]] = {}
+        self.voided: set[tuple[str, int]] = set()
 
     async def open(self) -> None:
         pass
@@ -137,6 +171,33 @@ class MemoryStore:
     async def recent_interventions(self, limit: int) -> list[Intervention]:
         return list(self.interventions)[-limit:] if limit > 0 else []
 
+    async def latest_interventions(self, actions: Sequence[str]) -> list[Intervention]:
+        latest: dict[tuple[str, str], int] = {}
+        items = list(self.interventions)
+        for index, item in enumerate(items):
+            if item.action in actions:
+                latest[(item.backend, item.action)] = index
+        return [items[index] for index in sorted(latest.values())]
+
+    async def save_monitor_samples(self, items: Sequence[MonitorSample]) -> None:
+        for item in items:
+            if item.id in self.monitor_sample_ids:
+                continue  # a retried save
+            if len(self.monitor_samples) == self.monitor_samples.maxlen:
+                self.monitor_sample_ids.discard(self.monitor_samples[0].id)
+            self.monitor_samples.append(item)
+            self.monitor_sample_ids.add(item.id)
+
+    async def recent_monitor_samples(self, per_window: int) -> list[MonitorSample]:
+        kept: list[MonitorSample] = []
+        counts: Counter[tuple[str, str, str | None]] = Counter()
+        for sample in reversed(self.monitor_samples):
+            key = (sample.model, sample.monitor, sample.traffic)
+            if counts[key] < per_window:
+                counts[key] += 1
+                kept.append(sample)
+        return kept[::-1]
+
     async def save_release_events(self, items: Sequence[ReleaseEvent]) -> None:
         taken = []
         for item in items:
@@ -148,6 +209,10 @@ class MemoryStore:
                 continue
             self.saved_revisions[key] = item
             self.release_events.append(item)
+            if _is_kept(item):
+                self.voided.add((item.backend, item.revision - 1))
+            elif item.action != "confirmed" and item.from_version is not None:
+                self.changes.setdefault(item.backend, {})[item.revision] = item
             latest = self.latest_releases.get(item.backend)
             if latest is None or item.revision > latest.revision:
                 self.latest_releases[item.backend] = item
@@ -156,6 +221,16 @@ class MemoryStore:
 
     async def recent_release_events(self, limit: int) -> list[ReleaseEvent]:
         return list(self.release_events)[-limit:] if limit > 0 else []
+
+    async def latest_release_changes(self) -> list[ReleaseEvent]:
+        newest = []
+        for backend, by_revision in self.changes.items():
+            live = [
+                e for r, e in by_revision.items() if (backend, r) not in self.voided
+            ]
+            if live:
+                newest.append(max(live, key=lambda e: e.revision))
+        return newest
 
     async def latest_release_events(self) -> list[ReleaseEvent]:
         return list(self.latest_releases.values())
@@ -334,6 +409,68 @@ class PostgresStore:
             for at, backend, action, reason in rows
         ]
 
+    async def latest_interventions(self, actions: Sequence[str]) -> list[Intervention]:
+        async with self.pool.connection() as conn:
+            cur = await conn.execute(
+                """
+                SELECT at, backend, action, reason FROM (
+                    SELECT DISTINCT ON (backend, action)
+                        seq, at, backend, action, reason
+                    FROM interventions WHERE action = ANY(%s)
+                    ORDER BY backend, action, seq DESC
+                ) AS latest ORDER BY seq
+                """,
+                (list(actions),),
+            )
+            rows = await cur.fetchall()
+        return [
+            Intervention(at=at, backend=backend, action=action, reason=reason)
+            for at, backend, action, reason in rows
+        ]
+
+    async def save_monitor_samples(self, items: Sequence[MonitorSample]) -> None:
+        if not items:
+            return
+        async with self.pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.executemany(
+                    "INSERT INTO monitor_samples"
+                    " (id, at, model, monitor, outcome, traffic)"
+                    " VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
+                    [
+                        (s.id, s.at, s.model, s.monitor, s.outcome, s.traffic)
+                        for s in items
+                    ],
+                )
+
+    async def recent_monitor_samples(self, per_window: int) -> list[MonitorSample]:
+        async with self.pool.connection() as conn:
+            cur = await conn.execute(
+                """
+                SELECT id, at, model, monitor, outcome, traffic FROM (
+                    SELECT *, row_number() OVER (
+                        PARTITION BY model, monitor, traffic ORDER BY seq DESC
+                    ) AS newest
+                    FROM monitor_samples
+                ) AS ranked
+                WHERE newest <= %s
+                ORDER BY seq
+                """,
+                (per_window,),
+            )
+            rows = await cur.fetchall()
+        return [
+            MonitorSample(
+                id=id,
+                at=at,
+                model=model,
+                monitor=monitor,
+                outcome=outcome,
+                traffic=traffic,
+            )
+            for id, at, model, monitor, outcome, traffic in rows
+        ]
+
     async def save_release_events(self, items: Sequence[ReleaseEvent]) -> None:
         if not items:
             return
@@ -398,6 +535,25 @@ class PostgresStore:
             rows = await cur.fetchall()
         return [_release_event(row) for row in rows]
 
+    async def latest_release_changes(self) -> list[ReleaseEvent]:
+        async with self.pool.connection() as conn:
+            cur = await conn.execute(
+                f"""
+                SELECT DISTINCT ON (m.backend) {RELEASE_COLUMNS}
+                FROM model_releases AS m
+                WHERE m.action <> 'confirmed' AND m.from_version IS NOT NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM model_releases AS k
+                    WHERE k.backend = m.backend AND k.revision = m.revision + 1
+                      AND k.from_version IS NULL AND position(%s IN k.reason) > 0
+                  )
+                ORDER BY m.backend, m.revision DESC
+                """,
+                (KEPT_REASON_MARKER,),
+            )
+            rows = await cur.fetchall()
+        return [_release_event(row) for row in rows]
+
     async def latest_release_events(self) -> list[ReleaseEvent]:
         async with self.pool.connection() as conn:
             cur = await conn.execute(
@@ -408,6 +564,13 @@ class PostgresStore:
             )
             rows = await cur.fetchall()
         return [_release_event(row) for row in rows]
+
+
+def _is_kept(event: ReleaseEvent) -> bool:
+    """A record of a model keeping its release after an operator change that
+    was not confirmed as saved. It has no from_version, which no deploy or
+    rollback lacks, and the operator does not write its reason."""
+    return event.from_version is None and KEPT_REASON_MARKER in event.reason
 
 
 RELEASE_COLUMNS = (

@@ -1,11 +1,14 @@
 """Settings precedence, caching and invalid configuration."""
 
+import asyncio
 from pathlib import Path
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
 from app_assignment_1.config import Settings, get_settings
+from app_assignment_1.real_backends import create_vllm_http_client, vllm_base_url
 
 
 def test_paths_from_env_override_file(tmp_path: Path, monkeypatch):
@@ -74,44 +77,61 @@ def test_vllm_api_key_is_secret(monkeypatch):
     assert "k" * 64 not in repr(settings)
 
 
+# Missing URLs, a missing key and "no Jev key needed" are covered in
+# tests/test_labels.py (test_real_qwen_needs_both_urls_and_a_key and
+# test_real_qwen_does_not_need_a_jev_key).
+REAL_QWEN = {
+    "provider_mode": "real",
+    "vllm_small_base_url": "http://small.test:8001",
+    "vllm_large_base_url": "http://large.test:8002",
+}
+
+
+@pytest.mark.parametrize("key", ["", "   ", "\t\r\n"])
+def test_real_provider_refuses_a_blank_vllm_key(key):
+    with pytest.raises(ValidationError, match="needs APP_VLLM_API_KEY"):
+        Settings(_env_file=None, vllm_api_key=key, **REAL_QWEN)
+
+
 @pytest.mark.parametrize(
-    "field,value,expected",
+    "key",
     [
-        ("vllm_small_base_url", None, "APP_VLLM_SMALL_BASE_URL"),
-        ("vllm_large_base_url", None, "APP_VLLM_LARGE_BASE_URL"),
-        ("vllm_api_key", None, "APP_VLLM_API_KEY"),
-        ("vllm_api_key", "", "APP_VLLM_API_KEY"),
-        ("vllm_api_key", "   ", "APP_VLLM_API_KEY"),
+        " test-vllm-key",
+        "test-vllm-key ",
+        "test-vllm-key\r",
+        "test-vllm-key\r\n",
+        "\ttest-vllm-key\n",
     ],
 )
-def test_real_provider_requires_vllm_settings(field, value, expected):
-    options = {
-        "provider_mode": "real",
-        "jev_mode": "mock",
-        "jev_api_key": None,
-        "vllm_small_base_url": "http://small.test:8001",
-        "vllm_large_base_url": "http://large.test:8002",
-        "vllm_api_key": "test-vllm-key",
-    }
-    options[field] = value
-
-    with pytest.raises(ValidationError, match=expected):
-        Settings(_env_file=None, **options)
+def test_real_provider_stores_the_vllm_key_stripped(key):
+    # A CRLF key file read with $(cat file) keeps its "\r" (#122 review).
+    settings = Settings(_env_file=None, vllm_api_key=key, **REAL_QWEN)
+    assert settings.vllm_api_key is not None
+    assert settings.vllm_api_key.get_secret_value() == "test-vllm-key"
 
 
-def test_real_provider_with_mock_jev_needs_no_jev_key():
-    settings = Settings(
-        _env_file=None,
-        provider_mode="real",
-        jev_mode="mock",
-        jev_api_key=None,
-        vllm_small_base_url="http://small.test:8001",
-        vllm_large_base_url="http://large.test:8002",
-        vllm_api_key="test-vllm-key",
-    )
+@pytest.mark.parametrize(
+    "key", ["test vllm key", "test\tkey", "k\x00ey", "kéy-unicode"]
+)
+def test_real_provider_refuses_a_vllm_key_that_cannot_be_sent(key):
+    with pytest.raises(ValidationError, match="printable ASCII"):
+        Settings(_env_file=None, vllm_api_key=key, **REAL_QWEN)
 
-    assert settings.provider_mode == "real"
-    assert settings.jev_mode == "mock"
-    assert settings.jev_api_key is None
-    assert settings.vllm_small_base_url.host == "small.test"
-    assert settings.vllm_large_base_url.host == "large.test"
+
+def test_the_vllm_client_sends_the_stripped_key():
+    sent: list[str] = []
+
+    def server(request: httpx.Request) -> httpx.Response:
+        sent.append(request.headers["authorization"])
+        return httpx.Response(200, json={})
+
+    settings = Settings(_env_file=None, vllm_api_key=" test-vllm-key\r", **REAL_QWEN)
+
+    async def call() -> None:
+        url = vllm_base_url(settings, "qwen3-1.7b")
+        transport = httpx.MockTransport(server)
+        async with create_vllm_http_client(settings, url, transport) as client:
+            await client.post("/v1/chat/completions", json={})
+
+    asyncio.run(call())
+    assert sent == ["Bearer test-vllm-key"]
