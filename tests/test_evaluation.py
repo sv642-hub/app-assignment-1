@@ -163,6 +163,14 @@ class FixedBackend:
         ),
         BackendReply(intent="card_arrival", reply="Soon.", policy_facts=[LOST[0]]),
         BackendReply(intent="card_arrival", reply="", policy_facts=["made up"]),
+        # Discarded model text never fails the check (#131).
+        BackendReply(intent="card_arrival", reply="", policy_facts=[ARRIVAL[0]]),
+        BackendReply(intent="card_arrival", reply="Hi {name}", policy_facts=ARRIVAL),
+        BackendReply(
+            intent="card_arrival", reply="x" * 4001, policy_facts=[ARRIVAL[0]]
+        ),
+        BackendReply(intent="unknown", reply="Hi {name}", policy_facts=[]),
+        BackendReply(intent="made_up", reply="", policy_facts=["a fact"]),
     ],
 )
 def test_format_errors_agree_with_the_gateway(reply):

@@ -175,23 +175,26 @@ def reply_format_errors(
     tests/test_evaluation.py checks this agrees with the gateway.
     """
     intent, facts = reply.intent, reply.policy_facts
-    if intent in labels.names and intent != UNKNOWN and intent not in cards:
-        # Uncarded: the gateway shows a fixed reply and drops any facts.
-        return []
-    if intent == UNKNOWN and not reply.reply.strip() and not facts:
-        # No intent and no text: the gateway sends the fixed no-match reply.
-        return []
-    errors = check_reply(reply.reply)
+    # The model's own text is never shown, so it never fails the check (#131):
+    # only the intent and the facts do, plus the reply built from the card.
     if intent not in labels.names:
-        errors.append("unknown_label")
-    elif intent == UNKNOWN:
-        if facts:
-            errors.append("unknown_policy_facts")
-    elif not set(facts) <= set(cards[intent].facts):
-        errors.append("unknown_policy_facts")
+        return ["unknown_label"]
+    if intent == UNKNOWN:
+        # No intent means no card, so there is nothing to ground facts.
+        return ["unknown_policy_facts"] if facts else []
+    if intent not in cards:
+        # Uncarded: the gateway shows a fixed reply and drops any facts (#127).
+        return []
+    card = cards[intent]
+    if not set(facts) <= set(card.facts):
+        errors = ["unknown_policy_facts"]
     elif not facts:
-        errors.append("missing_policy_facts")
-    return errors
+        errors = ["missing_policy_facts"]
+    else:
+        errors = []
+    chosen = [fact for fact in card.facts if fact in facts]
+    # A broken card can still build a bad reply, and that one is shown.
+    return errors + check_reply(card.reply_template.format(facts=" ".join(chosen)))
 
 
 def gold_classes(labels: LabelSet) -> list[str]:
