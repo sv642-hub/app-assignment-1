@@ -76,8 +76,10 @@ x-vllm: &vllm
     retries: 5
     # The first start downloads the weights into MODEL_CACHE_DIR.
     start_period: 900s
-  # Containers did not come back after the instance was shelved and
-  # unshelved; rerun `up -d --wait` after an unshelve.
+  # Docker's own restart at boot starts both servers at once, without
+  # depends_on, so after an unshelve one can fail the memory check. The
+  # systemd unit in deploy/autostart/ starts them in order instead (README,
+  # "Start at boot").
   restart: unless-stopped
 
 services:

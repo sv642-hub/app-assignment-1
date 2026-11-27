@@ -3,6 +3,8 @@ import Logo from "./Logo.jsx";
 const SCREENS = [
   { id: "chat", label: "Chat" },
   { id: "health", label: "Health" },
+  { id: "jev", label: "Jev" },
+  { id: "metrics", label: "Metrics" },
 ];
 
 // Jev and Qwen are each mock or real (health.jev_mode and health.mode).

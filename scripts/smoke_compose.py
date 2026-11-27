@@ -26,6 +26,12 @@ assert "controller" in json.loads(fetch("/v1/health"))
 metrics_page = fetch("/metrics")
 assert b"# TYPE" not in metrics_page and b"gateway_" not in metrics_page, "/metrics"
 assert b'id="root"' in metrics_page, "/metrics should fall back to the React app"
+# Grafana is reached only through the proxy, as a viewer: the dashboard loads
+# and there is no login.
+grafana = json.loads(fetch("/grafana/api/health"))
+assert grafana["database"] == "ok", grafana
+dash = json.loads(fetch("/grafana/api/dashboards/uid/smart-gateway"))
+assert dash["meta"]["canSave"] is False, "anonymous visitors must not edit"
 for message, intent, model in [
     ("My card has not arrived", "card_arrival", "qwen3-1.7b"),
     ("I lost my card", "lost_or_stolen_card", "qwen3-4b"),

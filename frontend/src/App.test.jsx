@@ -13,6 +13,7 @@ import {
   lowCoverageHealth,
   lostCardReply,
   outageHealth,
+  rolledBackHealth,
   semanticActionHealth,
 } from "./test/fixtures.js";
 
@@ -229,6 +230,36 @@ describe("Health", () => {
     renderWith(fakeGateway());
 
     expect(await screen.findByRole("heading", { name: "Health" })).toBeInTheDocument();
+  });
+});
+
+
+describe("Releases", () => {
+  it("shows each model's release and the rollback history", async () => {
+    const user = renderWith(fakeGateway({ health: rolledBackHealth }));
+    await user.click(screen.getByRole("button", { name: "Health" }));
+
+    const table = await screen.findByRole("table", { name: "Releases" });
+    const small = within(table).getByText("qwen3-1.7b").closest("tr");
+    expect(within(small).getByText("Rolled back")).toHaveClass("pill-watch");
+    const large = within(table).getByText("qwen3-4b").closest("tr");
+    expect(within(large).getByText("Watching")).toBeInTheDocument();
+    expect(large).toHaveTextContent("7 of 20 calls");
+    expect(large).toHaveTextContent("base");
+
+    const history = screen.getByRole("table", { name: "Release history" });
+    const rows = within(history).getAllByRole("row");
+    // Newest first.
+    expect(rows[1]).toHaveTextContent("rolled back to base (was v2-bad-format)");
+    expect(rows[1]).toHaveTextContent("controller");
+    expect(screen.getByRole("table", { name: "Interventions" })).toHaveTextContent("rolled back");
+  });
+
+  it("hides the card for a gateway without releases", async () => {
+    const user = renderWith(fakeGateway({ health: healthyHealth }));
+    await user.click(screen.getByRole("button", { name: "Health" }));
+    await screen.findByText("All systems normal");
+    expect(screen.queryByRole("table", { name: "Releases" })).not.toBeInTheDocument();
   });
 });
 

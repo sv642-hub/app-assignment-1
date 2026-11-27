@@ -596,7 +596,9 @@ p {
   color: var(--bad);
 }
 
-.action-kept_last_backend {
+.action-kept_last_backend,
+.action-rolled_back,
+.pill-watch {
   background: var(--complex-bg);
   color: var(--complex-fg);
 }
@@ -679,4 +681,21 @@ p {
 .log td.mono {
   font-size: 13px;
   white-space: nowrap;
+}
+
+.metrics {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  padding: 24px 24px 24px;
+  gap: 12px;
+}
+
+.metrics-frame {
+  flex: 1;
+  min-height: 600px;
+  width: 100%;
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 8px;
+  background: #fff;
 }
