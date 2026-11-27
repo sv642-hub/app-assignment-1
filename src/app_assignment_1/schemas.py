@@ -130,18 +130,37 @@ class BackendConfig(StrictModel):
     # purpose. The reply passes the format check; only the semantic monitor
     # sees it.
     label_swap_rate: float = Field(default=0, ge=0, le=1)
+    # Share of mock calls held for slow_seconds more on purpose, to exercise
+    # the request deadline and the time kept back for the other model.
+    slow_rate: float = Field(default=0, ge=0, le=1)
+    slow_seconds: float = Field(default=0, ge=0, le=120)
+    # Share of mock replies replaced by a well-formed `unknown` on purpose, as a
+    # bad prompt would give. It passes the format check; only the semantic
+    # monitor can see it, and only acts on it with semantic actions on.
+    bad_prompt_rate: float = Field(default=0, ge=0, le=1)
 
 
-FaultKind = Literal["none", "outage", "bad_format", "label_swap"]
+FaultKind = Literal["none", "outage", "bad_format", "label_swap", "slow", "bad_prompt"]
 
 
 class FaultRequest(StrictModel):
-    """Set one simulated fault on one mock model. `none` clears all three."""
+    """Set one simulated fault on one mock model. `none` clears them all."""
 
     model: BackendName
     fault: FaultKind
     # Share of calls the fault hits; ignored for `none`.
-    rate: float = Field(default=1, ge=0, le=1)
+    rate: float = Field(default=1, ge=0, le=1, allow_inf_nan=False)
+    # How long `slow` holds each call it hits, on top of the usual latency.
+    # Required for `slow`; not allowed for any other fault, not even as null.
+    seconds: float | None = Field(default=None, gt=0, le=120, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def seconds_only_for_slow(self) -> "FaultRequest":
+        if self.fault == "slow" and self.seconds is None:
+            raise ValueError("The slow fault needs seconds")
+        if self.fault != "slow" and "seconds" in self.model_fields_set:
+            raise ValueError("Only the slow fault takes seconds")
+        return self
 
 
 JevFaultKind = Literal["none", "outage", "slow"]

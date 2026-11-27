@@ -154,7 +154,15 @@ Operators can act on the models without restarting the stack. Every operator rou
 - Holds live in gateway memory. After a restart every held model serves again, even though the last stored intervention for it still says `operator_disabled`. Disable it again after a restart.
 - Both take an optional JSON body `{"reason": "..."}` (up to 200 characters), saved in the intervention log as `operator_disabled` or `operator_enabled`. The reason is public: `GET /v1/health` lists it without a token. Do not put customer data or anything private in it. Both return the monitor rows; `disabled_by_operator` shows a hold.
 - `POST /v1/operator/models/{name}/release` deploys a version and `/rollback` puts the model back on its rollback target; see [Releases and rollback](#releases-and-rollback). Both take a public `reason` too.
-- `POST /v1/faults` sets a simulated fault on a mock model while it runs, in place of restarting with a Compose override. The body is `{"model": "qwen3-1.7b", "fault": "outage", "rate": 1}`. `fault` is `outage` (sets `error_rate`), `bad_format` (`fault_rate`), `label_swap` (`label_swap_rate`) or `none` (clears all three). `rate` is 0–1 and defaults to 1. It returns the model's config. Faults reset when the gateway restarts.
+- `POST /v1/faults` sets a simulated fault on a mock model while it runs, in place of restarting with a Compose override. The body is `{"model": "qwen3-1.7b", "fault": "outage", "rate": 1}`. `fault` is one of these:
+  - `outage` (sets `error_rate`): calls raise.
+  - `bad_format` (`fault_rate`): replies fail the format check.
+  - `label_swap` (`label_swap_rate`): replies carry the wrong intent.
+  - `slow` (`slow_rate` and `slow_seconds`): calls are held for `seconds` more, above 0 and up to 120, which `slow` requires. The first model gets the request deadline minus the reserve for the other model (`APP_REQUEST_DEADLINE_SECONDS` minus `APP_ALTERNATE_RESERVE_SECONDS`, 30 s by default), so a longer hold makes it a failed call and the other model answers.
+  - `bad_prompt` (`bad_prompt_rate`): replies are a well-formed `unknown`, as a broken prompt would give. They pass the format check, so only the semantic monitor sees them, and nothing disables the model unless semantic actions are on.
+  - `none`: clears them all.
+
+  `rate` is 0–1 and defaults to 1. It returns the model's config. Faults reset when the gateway restarts.
 - `POST /v1/faults/jev` does the same for the mock Jev router. The body is `{"fault": "outage", "rate": 1}`. `fault` is `outage` (sets `error_rate`: the call fails, the gateway uses the rule router with `fallback_reason: "jev_error"`, and 5 failures in a row open the circuit breaker), `slow` (sets `slow_rate` and `slow_seconds`: each call it hits is held for `seconds` more, above 0 and up to 120, which `slow` requires; past `APP_JEV_TIMEOUT_SECONDS`, 2 s by default, the gateway uses the rule router with `jev_timeout`) or `none` (clears both). It returns the Jev fault settings. With `APP_JEV_MODE=real` it answers 409: real Jev can't be faulted.
 
 ```bash

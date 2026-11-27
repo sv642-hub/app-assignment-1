@@ -345,12 +345,18 @@ class Gateway:
         config = backend.config
         if request.fault == "none":
             config.error_rate = config.fault_rate = config.label_swap_rate = 0
+            config.slow_rate = config.slow_seconds = config.bad_prompt_rate = 0
         elif request.fault == "outage":
             config.error_rate = request.rate
         elif request.fault == "bad_format":
             config.fault_rate = request.rate
-        else:
+        elif request.fault == "label_swap":
             config.label_swap_rate = request.rate
+        elif request.fault == "slow":
+            assert request.seconds is not None  # FaultRequest requires it
+            config.slow_rate, config.slow_seconds = request.rate, request.seconds
+        else:
+            config.bad_prompt_rate = request.rate
         self.settings_version = self._settings_version()
         logger.info(
             "Operator set fault %s=%s on %s", request.fault, request.rate, request.model

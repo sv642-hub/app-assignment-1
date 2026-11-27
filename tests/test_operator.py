@@ -265,17 +265,17 @@ def test_label_swap_fault_and_partial_rate(client):
 
 
 def test_none_clears_every_fault(client):
-    for fault in ("outage", "bad_format", "label_swap"):
-        client.post("/v1/faults", json={"model": SMALL, "fault": fault}, headers=AUTH)
+    faults = [{"fault": "outage"}, {"fault": "bad_format"}, {"fault": "label_swap"},
+              {"fault": "slow", "seconds": 5}, {"fault": "bad_prompt"}]  # fmt: skip
+    for fault in faults:
+        client.post("/v1/faults", json={"model": SMALL, **fault}, headers=AUTH)
     response = client.post(
         "/v1/faults", json={"model": SMALL, "fault": "none"}, headers=AUTH
     )
     body = response.json()
-    assert (body["error_rate"], body["fault_rate"], body["label_swap_rate"]) == (
-        0,
-        0,
-        0,
-    )
+    rates = ("error_rate", "fault_rate", "label_swap_rate", "slow_rate",
+             "slow_seconds", "bad_prompt_rate")  # fmt: skip
+    assert [body[key] for key in rates] == [0] * len(rates)
     trace = client.post("/v1/chat", json={"message": STANDARD}).json()["trace"]
     assert (trace["model"], trace["format_check"]) == (SMALL, "passed")
 
@@ -287,7 +287,125 @@ def test_none_clears_every_fault(client):
         {"model": SMALL, "fault": "fire"},
         {"model": SMALL, "fault": "outage", "rate": 1.5},
         {"model": SMALL, "fault": "outage", "extra": 1},
+        {"model": SMALL, "fault": "slow"},  # slow needs seconds
+        {"model": SMALL, "fault": "slow", "seconds": 0},
+        {"model": SMALL, "fault": "slow", "seconds": 121},
+        {"model": SMALL, "fault": "outage", "seconds": 5},  # only slow takes them
+        {"model": SMALL, "fault": "outage", "seconds": None},  # not even as null
     ],
 )
 def test_bad_fault_requests_are_rejected(client, body):
     assert client.post("/v1/faults", json=body, headers=AUTH).status_code == 422
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        f'{{"model": "{SMALL}", "fault": "slow", "seconds": NaN}}',
+        f'{{"model": "{SMALL}", "fault": "slow", "seconds": Infinity}}',
+        f'{{"model": "{SMALL}", "fault": "slow", "seconds": 5, "rate": NaN}}',
+        f'{{"model": "{SMALL}", "fault": "outage", "rate": Infinity}}',
+    ],
+)
+def test_nan_and_infinity_are_a_422_not_a_500(client, body):
+    headers = AUTH | {"content-type": "application/json"}
+    assert client.post("/v1/faults", content=body, headers=headers).status_code == 422
+
+
+# --- slow and bad_prompt (docs/CHAOS_SCENARIOS.md, G1 to G3) ---
+
+
+def test_slow_fault_within_the_budget_only_adds_latency(client):
+    response = client.post(
+        "/v1/faults",
+        json={"model": SMALL, "fault": "slow", "seconds": 0.2},
+        headers=AUTH,
+    )
+    assert (response.json()["slow_rate"], response.json()["slow_seconds"]) == (1, 0.2)
+    trace = client.post("/v1/chat", json={"message": STANDARD}).json()["trace"]
+    assert (trace["model"], trace["format_check"], trace["fallback_reason"]) == (
+        SMALL,
+        "passed",
+        None,
+    )
+    assert trace["latency_ms"] >= 200
+
+
+def test_hung_model_is_cut_off_and_the_other_model_answers(tmp_path, store):
+    # The first model gets the deadline minus the reserve (about 0.5 s here);
+    # the hung small model is cut off, and the large model answers in the
+    # reserve. It counts as a failed call for the small model.
+    settings = make_settings(
+        tmp_path,
+        jev_timeout_seconds=0.05,
+        request_deadline_seconds=1.0,
+        alternate_reserve_seconds=0.5,
+    )
+    with TestClient(create_app(settings, store=store)) as client:
+        client.post(
+            "/v1/faults",
+            json={"model": SMALL, "fault": "slow", "seconds": 5},
+            headers=AUTH,
+        )
+        response = client.post("/v1/chat", json={"message": STANDARD})
+        assert response.status_code == 200
+        trace = response.json()["trace"]
+        assert (trace["model"], trace["fallback_reason"]) == (
+            LARGE,
+            "selected_backend_error",
+        )
+        assert 400 <= trace["latency_ms"] < 1000
+        assert monitor(client)[SMALL]["call_errors"] == 1
+
+
+def test_bad_prompt_passes_the_format_check(client):
+    client.post(
+        "/v1/faults", json={"model": SMALL, "fault": "bad_prompt"}, headers=AUTH
+    )
+    body = client.post("/v1/chat", json={"message": STANDARD}).json()
+    trace = body["trace"]
+    assert body["intent"] == "unknown"
+    assert (trace["model"], trace["format_check"], trace["reply_source"]) == (
+        SMALL,
+        "passed",
+        "no_match",
+    )
+    # The failure monitor sees nothing wrong.
+    assert monitor(client)[SMALL]["format_failures"] == 0
+
+
+def test_bad_prompt_is_caught_only_with_semantic_actions(tmp_path, store):
+    settings = make_settings(
+        tmp_path,
+        semantic_actions_enabled=True,
+        semantic_baseline_disagreement_rate=0,
+    )
+    with TestClient(create_app(settings, store=store)) as client:
+        # The large model must have answered for the small one to be disabled.
+        assert (
+            client.post("/v1/chat", json={"message": "my card was stolen"}).json()[
+                "trace"
+            ]["model"]
+            == LARGE
+        )
+        client.post(
+            "/v1/faults", json={"model": SMALL, "fault": "bad_prompt"}, headers=AUTH
+        )
+        actions = []
+        for _ in range(15):
+            trace = client.post("/v1/chat", json={"message": STANDARD}).json()["trace"]
+            actions.append(trace["controller_action"])
+        assert any(a and a.startswith(f"disabled {SMALL}") for a in actions)
+        assert monitor(client)[SMALL]["disabled_for"] == "semantic"
+
+
+def test_bad_prompt_goes_unnoticed_with_semantic_actions_off(client):
+    # The default: nothing disables a model that answers `unknown` to everything.
+    client.post("/v1/chat", json={"message": "my card was stolen"})
+    client.post(
+        "/v1/faults", json={"model": SMALL, "fault": "bad_prompt"}, headers=AUTH
+    )
+    for _ in range(15):
+        trace = client.post("/v1/chat", json={"message": STANDARD}).json()["trace"]
+        assert trace["controller_action"] is None
+    assert monitor(client)[SMALL]["disabled_by_controller"] is False
