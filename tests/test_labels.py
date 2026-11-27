@@ -7,10 +7,10 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from app_assignment_1.backends import UNKNOWN_REPLY
 from app_assignment_1.config import Settings
 from app_assignment_1.intents import load_intents
 from app_assignment_1.labels import UNKNOWN, load_labels
+from app_assignment_1.no_match import UNKNOWN_REPLY
 from app_assignment_1.router import MockJevRouter
 from app_assignment_1.schemas import BackendConfig, BackendReply
 from app_assignment_1.service import UNCARDED_REPLY, Gateway

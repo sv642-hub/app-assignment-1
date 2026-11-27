@@ -5,18 +5,12 @@ import random
 from typing import Protocol
 
 from app_assignment_1.intents import match_intent
+from app_assignment_1.no_match import no_match_reply
 from app_assignment_1.schemas import (
     BackendConfig,
     BackendReply,
     IntentConfig,
     PolicyCard,
-)
-
-UNKNOWN_REPLY = (
-    "I'm sorry, I could not match that message to a demo banking topic. "
-    "Could you describe the banking problem you need help with? "
-    "Please rephrase your request with the details, or try an example. "
-    "This is a fictional bank demo."
 )
 
 
@@ -64,7 +58,9 @@ class MockBackend:
             # It passes the format check; only the semantic monitor sees it.
             match = self.intents[(self.intents.index(match) + 1) % len(self.intents)]
         if match is None:
-            reply = BackendReply(intent="unknown", reply=UNKNOWN_REPLY, policy_facts=[])
+            reply = BackendReply(
+                intent="unknown", reply=no_match_reply(message), policy_facts=[]
+            )
         else:
             card = self.cards[match.intent]
             reply = BackendReply(

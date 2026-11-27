@@ -19,6 +19,7 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 - `src/app_assignment_1/real_backends.py`: builds the two `VLLMBackend`s and their HTTP clients when `APP_PROVIDER_MODE=real`.
 - `src/app_assignment_1/breaker.py`: the Jev circuit breaker; while it is open the gateway skips Jev and uses the rule router.
 - `src/app_assignment_1/backends.py`: `Backend` interface and `MockBackend` (the mock Qwen backends).
+- `src/app_assignment_1/no_match.py`: the fixed no-match replies: a short one for a pure greeting, thanks or goodbye, and one that lists a few topics for everything else. Templated; no model text or customer text is shown.
 - `src/app_assignment_1/intents.py`: keyword matching over the configured intents, shared by the mocks.
 - `src/app_assignment_1/banking77.py`: the Banking77 development split (`make_split`, `load_split`) for offline evaluation; dev is 20% of Banking77 train per intent, seeded.
 - `src/app_assignment_1/labels.py`: loads the shared labels (77 Banking77 intents plus `unknown`) and derives `option_set_version`.
