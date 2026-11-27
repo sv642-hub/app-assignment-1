@@ -733,12 +733,14 @@ def _flap(run: _Run) -> None:
     """E3: the faults on for `on` seconds, off for `off`, for `total`."""
     on, off, total = run.scenario.flap or (0, 0, 0)
     began = run.now()
+    run.marks["flap_start"] = began
     while run.now() - began < total:
         _for_seconds(run, "fault", on)
         run.clear_faults()
         _for_seconds(run, "off", off)
         if run.now() - began < total:
             run.set_faults()
+    run.marks["flap_end"] = run.now()
 
 
 def _for_seconds(
@@ -754,14 +756,17 @@ def _for_seconds(
 
 def _check_scenario(result: Result, spec: Scenario, run: _Run) -> None:
     """The checks that need more than one fault phase or the intervention log."""
-    cleared_at = result.cleared_at
+    # The last clear: with two cycles (E1), the second fault's disable comes
+    # after the first clear and is expected.
+    clears = [v for k, v in run.marks.items() if k.startswith("cleared_at") and v]
+    cleared_at = max(clears) if clears else None
     if cleared_at is not None and run.wall_start is not None:
         # A model disabled after its fault was cleared, on failures still in
         # its window: after D4's hold is released, for one.
         late = []
         for i in result.interventions:
             if i["action"] == "disabled":
-                at = (_time(i["at"]) - run.wall_start).total_seconds()
+                at = _since(run, i["at"])
                 if at > cleared_at:
                     late.append({"model": i["backend"], "seconds_after_clear":
                                  round(at - cleared_at, 2)})  # fmt: skip
@@ -806,36 +811,47 @@ def _check_scenario(result: Result, spec: Scenario, run: _Run) -> None:
                 result.detect_seconds - (quiet_end - fault_at), 2
             )
     if spec.flap:
-        result.extra |= _flap_measures(result.interventions, spec)
+        result.extra |= _flap_measures(result.interventions, spec, run)
 
 
 def _flap_measures(
-    interventions: list[dict[str, Any]], spec: Scenario
+    interventions: list[dict[str, Any]], spec: Scenario, run: _Run
 ) -> dict[str, Any]:
-    """E3: how often each faulted model was disabled, and for how long."""
-    total = (spec.flap or (0, 0, 0))[2]
+    """E3: how often each faulted model was disabled while the fault flapped,
+    and for how much of that time it was out. A disable still running when
+    the flapping stops counts up to that moment only."""
+    start, end = run.marks.get("flap_start"), run.marks.get("flap_end")
+    if start is None or end is None or run.wall_start is None or end <= start:
+        return {}
     out: dict[str, Any] = {}
     for model in sorted(spec.faulted):
-        events = [i for i in interventions if i["backend"] == model]
-        disables = [i for i in events if i["action"] == "disabled"]
-        seconds = 0.0
-        for d in disables:
-            back = next(
-                (
-                    i
-                    for i in events
-                    if i["action"] == "re-enabled" and i["at"] > d["at"]
-                ),
-                None,
-            )
-            if back is not None:
-                seconds += (_time(back["at"]) - _time(d["at"])).total_seconds()
+        events = sorted(
+            (_since(run, i["at"]), i["action"])
+            for i in interventions
+            if i["backend"] == model and i["action"] in ("disabled", "re-enabled")
+        )
+        disables, seconds, since = 0, 0.0, None
+        for at, action in events:
+            if action == "disabled" and since is None:
+                disables += start <= at < end
+                since = at
+            elif action == "re-enabled" and since is not None:
+                seconds += max(0.0, min(at, end) - max(since, start))
+                since = None
+        if since is not None:
+            seconds += max(0.0, end - max(since, start))
         out[model] = {
-            "disables": len(disables),
+            "disables": disables,
             "seconds_out": round(seconds, 1),
-            "share_out": round(seconds / total, 3) if total else None,
+            "share_out": round(seconds / (end - start), 3),
         }
     return {"flapping": out}
+
+
+def _since(run: _Run, value: str) -> float:
+    """A gateway time as seconds since the run started (same host only)."""
+    assert run.wall_start is not None
+    return (_time(value) - run.wall_start).total_seconds()
 
 
 def _time(value: str) -> datetime:

@@ -571,6 +571,9 @@ def test_e1_the_fault_returns_and_is_detected_again(tmp_path):
     # 4, not 5: the reply that showed the model back is a good call in the
     # fresh window, and 1 good + 4 failures reaches the 5-call minimum at 80%.
     assert second["detected"] and second["requests_to_detect"] == 4
+    # The second disable is the fault coming back, not a disable after the
+    # clear (first stack run, 2026-11-27, reported it as one).
+    assert "disabled_after_clear" not in result.extra
 
 
 def test_e2_clearing_during_the_cooldown_does_not_end_it_early(tmp_path):
@@ -586,6 +589,31 @@ def test_e3_flapping_reports_disables_and_time_out(tmp_path):
     assert result.ok
     small = result.extra["flapping"][mr.SMALL]
     assert small["disables"] >= 1 and small["seconds_out"] > 0
+    assert small["seconds_out"] <= 3.0 + 0.5 and small["share_out"] <= 1
+
+
+def test_flapping_time_out_counts_only_the_flapping_window():
+    # First stack run, 2026-11-27: 5 cooldowns of 60 s were summed in full,
+    # including time after the flapping ended, and showed 100%.
+    from datetime import UTC, datetime, timedelta
+
+    t0 = datetime(2026, 11, 27, 12, 0, tzinfo=UTC)
+
+    def at(seconds):
+        return (t0 + timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+
+    run = mr._Run(None, mr.CATALOG["E3"], 0.5, 180, lambda: 0.0, lambda s: None)
+    run.wall_start = t0
+    run.marks = {"flap_start": 10.0, "flap_end": 70.0}
+    log = [
+        {"at": at(15), "backend": mr.SMALL, "action": "disabled"},
+        {"at": at(35), "backend": mr.SMALL, "action": "re-enabled"},
+        {"at": at(50), "backend": mr.SMALL, "action": "disabled"},
+        {"at": at(110), "backend": mr.SMALL, "action": "re-enabled"},
+    ]
+    small = mr._flap_measures(log, mr.CATALOG["E3"], run)["flapping"][mr.SMALL]
+    # 15-35 and 50-70 (cut at the end of the flapping): 40 s of 60.
+    assert small == {"disables": 2, "seconds_out": 40.0, "share_out": 0.667}
 
 
 def test_e4_no_disable_while_no_traffic_reaches_the_model(tmp_path):
