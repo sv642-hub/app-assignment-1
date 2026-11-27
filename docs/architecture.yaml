@@ -49,7 +49,7 @@ components:
       - built: Chat (the Playground)
       - built: "Health: per-model window, Jev breaker, semantic monitor, recent requests, usage, chaos walkthrough"
       - built: "Jev screen: mode, breaker, usage, intent agreement"
-      - todo: Deployments screen
+      - built: Deployments screen
       - todo: Chaos mode screen
 
   api_routes:
@@ -196,7 +196,7 @@ components:
       - simulated: "Default: routing call is a local JSON mock"
       - built: "TypeSafe client, used when APP_JEV_MODE=real: httpx, jev-1.14.0"
       - built: "B6 live check script: 300 of 300 calls answered on Jetstream2"
-      - todo: First live run in the app
+      - built: Tester stack runs real Jev with mock Qwen
 
   probe:
     title: Probe (stretch, offline)
