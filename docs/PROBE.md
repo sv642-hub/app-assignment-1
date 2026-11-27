@@ -2,7 +2,7 @@
 
 The probe reads Qwen3-1.7B activations and estimates whether the model's output is correct. Under the proposed label (see "Proposed decisions"), that means whether it classified the message's intent correctly, and reply quality would stay with the format checks and the judge. The probe has to beat the model's own token-probability confidence on the dev set (see "Probe gate" in `docs/TEAM_PLAN.md`). Until it does, it stays out of the live system.
 
-**Status: skeleton only.** `src/app_assignment_1/probe.py` runs end to end on mock activations. No real model has been probed, so there are no results yet. The gateway does not import this module.
+**Status: skeleton, plus a real extractor that has not been run on Qwen3-1.7B.** `src/app_assignment_1/probe.py` runs end to end on mock activations, and `src/app_assignment_1/probe_modellens.py` reads real activations with ModelLens (see below). No real model has been probed, so there are no results yet. The gateway imports neither module.
 
 ## How it fits together
 
@@ -46,9 +46,43 @@ The standard error is about 0.2 to 0.3 points at 4,000 runs and 0.5 at 2,000. So
 
 The gateway can already escalate a message from the small model to the large one when the small model looks unsure (`confidence.py`, README "Escalation"). It is off by default. Today the score is token confidence: the joint probability of the intent label's tokens, from vLLM's logprobs. These are raw probabilities, before the JSON schema constrains the output, as vLLM returns them by default. The probe would replace that score only if it passes the gate below. The 0.5 threshold is a placeholder until the escalation curve on dev data picks one.
 
+## Reading real activations with ModelLens
+
+[ModelLens](https://github.com/SebastianVillalobosAlva/ModelLens) is Sebastian's interpretability toolkit. It captures a PyTorch model's layer outputs with forward hooks, and it supports Qwen3. It also has its own linear probes (`modellens.analysis.probing`: `train_probe`, `probe_sweep`, `apply_probe`), which help with exploring, for example choosing a layer with `probe_sweep`.
+
+`src/app_assignment_1/probe_modellens.py` uses it for the real extractor, `ModelLensExtractor`. The extractor captures one Qwen3 decoder layer (`model.layers.N`) with ModelLens and pools it with the same function ModelLens's probes use: `last` keeps the final token, and `mean` averages over all tokens. It rebuilds the text the way vLLM builds it for the gateway: the gateway's system prompt (`gateway_system_prompt`, from the same labels and policy cards), the customer message, the chat template's generation prompt, and then the reply. Nothing follows the reply, so `last` lands on the reply's final token, today the closing `}` of the JSON, not on the template's closing tokens. Pass the reply exactly as the model generated it (the raw completion, including any thinking block), so the tokens match. `from_pretrained` defaults to the model revision vLLM serves. The gate itself stays here (`train_probe` and `run_gate` in `probe.py`), because ModelLens's probes report accuracy, while the gate compares AUROC against token confidence.
+
+ModelLens, torch and transformers are in the optional `probe` extra, pinned to one ModelLens commit. The gateway image and CI never install it. Install it on the GPU host, or on any machine with enough memory for Qwen3-1.7B:
+
+```bash
+uv sync --extra dev --extra probe
+```
+
+```python
+from app_assignment_1.probe import train_probe
+from app_assignment_1.probe_modellens import ModelLensExtractor
+
+# Uses the gateway's system prompt and vLLM's model revision by default.
+extractor = ModelLensExtractor.from_pretrained(layer=14, pooling="last", device="cuda")
+features = [extractor.extract(e.prompt, e.reply) for e in train_examples]
+probe = train_probe(features, [e.correct for e in train_examples])
+```
+
+What was checked: the unit tests use a fake lens and a ChatML-style template, the format Qwen3 uses. By hand, on a tiny randomly initialized Qwen3 (4 layers, no download) with a ChatML template, the text had system, user and assistant turns, its last token was the reply's `}`, and the `last` vector matched the hidden state that transformers itself reports for that layer. The real Qwen3 tokenizer could not be downloaded in that check. It has not been run on Qwen3-1.7B, so there are no probe results.
+
+Notes:
+
+- The vector is the raw layer output. For the last layer, that is before the final norm, so it differs from the last entry of transformers' `hidden_states`.
+- `last` pooling takes the final position, so pass one example at a time (as `extract` does), not a padded batch.
+- `mean` averages over every token the model read, and the gateway's system prompt is most of them (about 7,500 characters, against a reply of about 100). The system prompt is the same for every request, so `mean` mostly measures it. A `mean` over the reply alone needs the reply's token offsets, like the intent-label position, and is not built.
+- The prompt and the reply are tokenized separately and their IDs joined, the way vLLM saw them, so no token merges across the boundary. Re-encoding the reply text can still differ from the IDs the model actually generated. Before the gate run, compare `token_ids` with prompt and completion IDs captured from vLLM, at the same model revision and template settings, on a sample of requests.
+- The template must render the same text vLLM rendered. `CHAT_TEMPLATE_KWARGS` holds the `chat_template_kwargs` the backend sends, and a test compares the two. The backend turns Qwen3's thinking off (`enable_thinking: False`), so the extractor does too.
+- The proposed primary position, the last intent-label token, is not built yet. It needs the reply's token offsets.
+- Record the model revision, layer and pooling in `GateRunInfo`.
+
 ## Still to build
 
-- A real `ActivationExtractor` for Qwen3-1.7B, run offline. Torch and Transformers should go in a separate optional extra, so the gateway image stays small.
+- Run `ModelLensExtractor` on Qwen3-1.7B, offline, and pool at the last intent-label token.
 - A way to collect token confidence during the same offline pass.
 - A development split and loader. Banking77 has only train and test, so this has to be carved from its training data. The frozen evaluation set stays out of probe training and the gate, and is kept for one final report. The human grades are too few to train on, and are for checking the judge.
 - A faster trainer with regularization, such as scikit-learn, to replace `train_probe`.

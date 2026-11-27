@@ -578,12 +578,16 @@ class Gateway:
                 logger.warning("Could not save interventions (%s)", type(exc).__name__)
 
     async def chat(self, message: str) -> ChatResponse:
+        # Counted until the reply is ready; saving it afterwards is not in flight.
+        self.metrics.chat_in_flight.inc()
         try:
             response, jev = await self._chat(message)
         except BaseException:
+            self.metrics.chat_in_flight.dec()
             # Interventions also happen on requests that end in a 503.
             await self._finish(self.save_interventions())
             raise
+        self.metrics.chat_in_flight.dec()
         # By now the failure monitor and the metrics have counted this reply,
         # so a cancel must not stop the saves: the saved requests would no
         # longer match the counts, and the controller has already handed its
@@ -673,6 +677,9 @@ class Gateway:
             error_type = _jev_error_type(exc)
             logger.warning("Jev routing failed; using rule router (%s)", error_type)
             timed_out = isinstance(exc, TimeoutError)
+            self.metrics.jev_call_latency.labels(
+                "timeout" if timed_out else "error"
+            ).observe(perf_counter() - start)
             reason = "jev_timeout" if timed_out else "jev_error"
             reasons.append(reason)
             self.metrics.jev_fallbacks.labels(reason).inc()
@@ -684,6 +691,7 @@ class Gateway:
                 error_type=error_type,
                 start=start,
             )
+        self.metrics.jev_call_latency.labels("ok").observe(perf_counter() - start)
         self.jev_breaker.succeeded()
         self.jev_answered_calls += 1
         self.jev_input_tokens += result.input_tokens
@@ -778,6 +786,7 @@ class Gateway:
         usage = self.usage[name]
         usage.attempted_calls += 1
         timer = asyncio.timeout(budget)
+        call_start = perf_counter()
         try:
             async with timer:
                 generated = BackendReply.model_validate(await backend.generate(message))
@@ -788,6 +797,9 @@ class Gateway:
                 usage.deadline_exceeded_calls += 1
                 return None, action, True, generation
             usage.failed_calls += 1
+            self.metrics.backend_call_latency.labels(name, "failed").observe(
+                perf_counter() - call_start
+            )
             code = backend_error_code(exc)
             usage.failed_by_error[code] = usage.failed_by_error.get(code, 0) + 1
             # A reply that fails BackendReply validation also counts as a call
@@ -816,6 +828,9 @@ class Gateway:
             self._finish_release_watch(backend)
             return None, action, False, generation
         usage.completed_calls += 1
+        self.metrics.backend_call_latency.labels(name, "ok").observe(
+            perf_counter() - call_start
+        )
         return generated, action, False, generation
 
     def _finish_release_watch(self, backend: Backend) -> None:
@@ -1164,5 +1179,9 @@ class Gateway:
         self.metrics.chat_requests.labels(
             trace.route, trace.model, trace.reply_source, trace.format_check
         ).inc()
-        self.metrics.chat_latency.observe(perf_counter() - start)
+        elapsed = perf_counter() - start
+        self.metrics.chat_latency.observe(elapsed)
+        self.metrics.chat_latency_by_model.labels(trace.route, trace.model).observe(
+            elapsed
+        )
         return response, jev
