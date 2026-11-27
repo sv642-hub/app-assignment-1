@@ -547,6 +547,8 @@ curl -fsS http://127.0.0.1:8080/v1/health
 python3 scripts/smoke_compose.py http://127.0.0.1:8080
 ```
 
+The smoke test reads the modes from `/v1/health`. With real Jev, it sends three chats, so three paid TypeSafe calls. It checks that each reply came from Jev, not the rule router, and from the model on the route Jev chose; it does not check which route that was. With real Qwen, it prints each intent and format check instead of checking them, since a real model can be wrong.
+
 These deployment commands target `main` after this PR is merged. For updates:
 
 ```bash
