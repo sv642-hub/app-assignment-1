@@ -1,0 +1,29 @@
+# Loaded by Grafana at startup. Both sources are read-only from Grafana's side:
+# Prometheus over the Compose network, Postgres through the grafana_ro role
+# that grafana/db-setup.sql creates (SELECT on four tables, nothing else).
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s
+
+  - name: Postgres
+    uid: postgres
+    type: grafana-postgresql-datasource
+    access: proxy
+    url: postgres:5432
+    user: grafana_ro
+    editable: false
+    jsonData:
+      database: gateway
+      sslmode: disable
+      postgresVersion: 1800
+    secureJsonData:
+      password: $GRAFANA_DB_PASSWORD

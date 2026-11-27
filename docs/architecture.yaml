@@ -98,8 +98,7 @@ components:
     owner: Pavlos
     items:
       - built: Outage, bad format and label swap, by Compose override
-      - todo: Bad prompt
-      - built: "POST /v1/faults, and /faults/jev for mock Jev"
+      - built: "POST /v1/faults adds slow and bad prompt; /faults/jev for mock Jev"
 
   jev_intent:
     title: Jev intent question
@@ -134,10 +133,10 @@ components:
     owner: Sebastian
     items:
       - built: Scrapes the gateway; no published port
-      - built: Requests, latency, errors, Jev fallbacks, controller
-      - built: Semantic disagreement and coverage
-      - built: Jev tokens and estimated cost
+      - built: Request, error and controller metrics
+      - built: Semantic and Jev cost metrics
       - built: Alert rules, tested with promtool
+      - built: Grafana dashboard, viewer only
       - todo: vLLM targets; Qwen cost
 
   postgres:
@@ -148,8 +147,8 @@ components:
       - built: "Requests, interventions and Jev assessments; survive a restart"
       - built: "All requests kept, with settings version and route order; export"
       - built: Versioned SQL migrations at startup; no published port
+      - built: Monitor windows and cooldowns reload after a restart
       - built: Release history; reloaded after a restart
-      - todo: Reload monitor state, controller state
       - simulated: "Tests and native runs: memory store, resets on restart"
 
   configuration:
@@ -204,6 +203,7 @@ components:
     style: stretch
     items:
       - built: Skeleton and gate check
+      - built: ModelLens extractor, not yet run
       - todo: Load Qwen3-1.7B outside vLLM; real activations
       - todo: Gate run a week after the GPU host and dev split
 
@@ -223,8 +223,8 @@ components:
     items:
       - built: "Three faults by hand: outage, bad format, label swap"
       - built: Tester walkthrough for outage and bad format
-      - built: "Live demo script: all three faults in one run, times printed per run (docs/CHAOS_DEMO.md)"
-      - todo: About 20 scenarios; detection and recovery times over many runs; false interventions
+      - built: "Demo script (docs/CHAOS_DEMO.md); recovery times over many runs (mocks)"
+      - todo: About 20 scenarios
 
   evaluation:
     title: Offline evaluation harness
@@ -234,7 +234,7 @@ components:
       - built: Always-small, always-large, gateway and oracle
       - todo: Results on the real models; fresh set as a check
       - todo: 300 messages, 150 grades; split not agreed
-      - todo: Banking77 development split
+      - built: Banking77 dev split (seeded, 20% per intent)
 
   reports:
     title: Reports and artifacts
@@ -251,7 +251,7 @@ layout:
     - {at: [22, 1345, 1956, 270], style: band, title: Testing and evaluation, note: "Smoke tests prove the parts connect; correctness and probe accuracy need offline evaluation"}
     - {at: [270, 150, 1075, 1170], style: host, title: Jetstream2 CPU instance, note: "Compose runs proxy, gateway, postgres and prometheus: 4 of 6 planned services · starts at boot · host: Pavlos"}
     - {at: [1395, 150, 420, 640], style: host, title: Jetstream2 GPU instance, note: "A100X-20C · Pavlos"}
-    - {at: [605, 190, 715, 565], style: group, title: gateway, note: "FastAPI · :8000 · monitor state in memory · owner: Verness"}
+    - {at: [605, 190, 715, 565], style: group, title: gateway, note: "FastAPI · :8000 · monitor state in memory, saved to Postgres · owner: Verness"}
     - {at: [605, 800, 715, 285], style: group, title: monitor, note: "Runs inside the gateway for now · owner: Sebastian"}
 
   boxes:
