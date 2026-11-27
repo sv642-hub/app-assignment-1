@@ -142,12 +142,18 @@ class TypeSafeJevRouter:
         self.intent_options = frozenset(item.label for item in labels.items)
 
     async def _post(
-        self, state: str, questions: dict[str, Any]
+        self, state: str, questions: dict[str, Any], timeout: float | None = None
     ) -> tuple[_SystemOneResponse, str | None]:
-        """One System One call. Returns the checked body and the request ID."""
+        """One System One call. Returns the checked body and the request ID.
+        `timeout` replaces the shared client's timeout for this call."""
         body = {"model": self.model, "state": state, "questions": questions}
         try:
-            response = await self.client.post(SYSTEM_ONE_PATH, json=body)
+            if timeout is None:
+                response = await self.client.post(SYSTEM_ONE_PATH, json=body)
+            else:
+                response = await self.client.post(
+                    SYSTEM_ONE_PATH, json=body, timeout=timeout
+                )
         except httpx.TimeoutException:
             raise JevTimeout("timeout") from None
         except httpx.RequestError:
@@ -177,10 +183,14 @@ class TypeSafeJevRouter:
             route_order=list(self.questions["route"]["criteria"]),
         )
 
-    async def check_reply(self, message: str, reply: str) -> ReplyCheckResult:
-        """The second call: the message and the reply the customer got."""
+    async def check_reply(
+        self, message: str, reply: str, timeout: float | None = None
+    ) -> ReplyCheckResult:
+        """The second call: the message and the reply the customer got. It
+        sends both, so it is the slower call: `timeout` is its own limit, not
+        the routing call's."""
         parsed, request_id = await self._post(
-            f"{message}{REPLY_MARKER}{reply}", self.reply_questions
+            f"{message}{REPLY_MARKER}{reply}", self.reply_questions, timeout
         )
         return ReplyCheckResult(
             route=_answer(parsed.answers.get("route"), ROUTE_OPTIONS),

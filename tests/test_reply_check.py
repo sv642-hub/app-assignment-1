@@ -96,7 +96,9 @@ def test_off_by_default_makes_no_second_call(backends_path: Path) -> None:
     calls: list[str] = []
 
     class Spy(MockJevRouter):
-        async def check_reply(self, message: str, reply: str) -> ReplyCheckResult:
+        async def check_reply(
+            self, message: str, reply: str, timeout: float | None = None
+        ) -> ReplyCheckResult:
             calls.append(message)
             return await super().check_reply(message, reply)
 
@@ -144,7 +146,9 @@ def test_enabled_records_agreement_and_metrics(backends_path: Path) -> None:
 
 def test_customer_never_waits_for_the_second_call(backends_path: Path) -> None:
     class Slow(MockJevRouter):
-        async def check_reply(self, message: str, reply: str) -> ReplyCheckResult:
+        async def check_reply(
+            self, message: str, reply: str, timeout: float | None = None
+        ) -> ReplyCheckResult:
             await asyncio.sleep(0.3)
             return await super().check_reply(message, reply)
 
@@ -164,7 +168,9 @@ def test_failed_second_call_is_recorded_and_harmless(
     backends_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     class Broken(MockJevRouter):
-        async def check_reply(self, message: str, reply: str) -> ReplyCheckResult:
+        async def check_reply(
+            self, message: str, reply: str, timeout: float | None = None
+        ) -> ReplyCheckResult:
             raise ConnectionError(f"secret {message}")
 
     store = MemoryStore(100)
@@ -188,7 +194,9 @@ def test_failed_second_call_is_recorded_and_harmless(
 
 def test_timeout_is_recorded(backends_path: Path) -> None:
     class Hangs(MockJevRouter):
-        async def check_reply(self, message: str, reply: str) -> ReplyCheckResult:
+        async def check_reply(
+            self, message: str, reply: str, timeout: float | None = None
+        ) -> ReplyCheckResult:
             await asyncio.sleep(5)
             raise AssertionError
 
@@ -208,7 +216,9 @@ def test_timeout_is_recorded(backends_path: Path) -> None:
 
 def test_disagreement_is_counted(backends_path: Path) -> None:
     class Disagrees(MockJevRouter):
-        async def check_reply(self, message: str, reply: str) -> ReplyCheckResult:
+        async def check_reply(
+            self, message: str, reply: str, timeout: float | None = None
+        ) -> ReplyCheckResult:
             real = await super().check_reply(message, reply)
             other = "lost_or_stolen_card"
             return real.model_copy(
@@ -289,7 +299,9 @@ class _PartialFirst(MockJevRouter):
             }
         )
 
-    async def check_reply(self, message: str, reply: str) -> ReplyCheckResult:
+    async def check_reply(
+        self, message: str, reply: str, timeout: float | None = None
+    ) -> ReplyCheckResult:
         self.checks += 1
         return await super().check_reply(message, reply)
 
@@ -338,7 +350,9 @@ def test_partly_valid_first_result_is_still_compared(
 
 def test_too_many_checks_in_flight_are_skipped(backends_path: Path) -> None:
     class Slow(MockJevRouter):
-        async def check_reply(self, message: str, reply: str) -> ReplyCheckResult:
+        async def check_reply(
+            self, message: str, reply: str, timeout: float | None = None
+        ) -> ReplyCheckResult:
             await asyncio.sleep(0.3)
             return await super().check_reply(message, reply)
 
@@ -448,3 +462,58 @@ def test_real_client_sends_message_and_reply_with_three_questions() -> None:
     asyncio.run(router.route(MESSAGE))
     assert set(seen[-1]["questions"]) == {"route", "intent"}
     assert load_labels(Path("config/labels.json")).option_set_version
+
+
+def test_real_check_uses_its_own_timeout_not_the_routing_one() -> None:
+    # The routing client times out at 2 s; the check sends the reply too and
+    # gets its own limit, passed on the request.
+    seen: list[Any] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.extensions["timeout"])
+        raise httpx.ReadTimeout("slow", request=request)
+
+    client = create_jev_http_client(
+        Settings(_env_file=None, jev_api_key=KEY, jev_timeout_seconds=2),
+        httpx.MockTransport(handler),
+    )
+    router = TypeSafeJevRouter(client, "jev-1.14.0", LABELS)
+    with pytest.raises(Exception):  # noqa: B017 - the typed timeout
+        asyncio.run(router.route(MESSAGE))
+    with pytest.raises(Exception):  # noqa: B017
+        asyncio.run(router.check_reply(MESSAGE, "reply", timeout=10))
+    assert seen[0]["read"] == 2
+    assert seen[1]["read"] == 10
+
+
+def test_a_check_is_not_saved_without_its_request(backends_path: Path) -> None:
+    class RequestSaveFails(MemoryStore):
+        async def save_request(self, *args: Any, **kwargs: Any) -> None:
+            raise ConnectionError("store down")
+
+    store = RequestSaveFails(100)
+    settings = make_settings(backends_path, jev_reply_check_enabled=True)
+    with TestClient(create_app(settings, store=store)) as client:
+        chat(client)
+        settle(client)
+    assert not store.reply_checks
+
+
+def test_a_check_is_saved_after_its_request(backends_path: Path) -> None:
+    order: list[str] = []
+
+    class Ordered(MemoryStore):
+        async def save_request(self, *args: Any, **kwargs: Any) -> None:
+            await asyncio.sleep(0.2)
+            order.append("request")
+            await super().save_request(*args, **kwargs)
+
+        async def save_reply_check(self, *args: Any, **kwargs: Any) -> None:
+            order.append("check")
+            await super().save_reply_check(*args, **kwargs)
+
+    settings = make_settings(backends_path, jev_reply_check_enabled=True)
+    with TestClient(create_app(settings, store=Ordered(100))) as client:
+        chat(client)
+        settle(client)
+    assert order == ["request", "check"]

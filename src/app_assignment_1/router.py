@@ -125,7 +125,9 @@ class ReplyChecker(Protocol):
     """The optional second Jev call (APP_JEV_REPLY_CHECK_ENABLED). A failure
     raises; the gateway records it and the customer is unaffected."""
 
-    async def check_reply(self, message: str, reply: str) -> ReplyCheckResult: ...
+    async def check_reply(
+        self, message: str, reply: str, timeout: float | None = None
+    ) -> ReplyCheckResult: ...
 
 
 class MockJevRouter:
@@ -183,7 +185,9 @@ class MockJevRouter:
             route_order=list(ROUTE_ORDER),
         )
 
-    async def check_reply(self, message: str, reply: str) -> ReplyCheckResult:
+    async def check_reply(
+        self, message: str, reply: str, timeout: float | None = None
+    ) -> ReplyCheckResult:
         """Mock second call: matches keywords in the message and in the reply.
 
         The route and intent come from the message and the reply together, so

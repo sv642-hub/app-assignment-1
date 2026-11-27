@@ -693,3 +693,22 @@ def test_migrations_upgrade_from_every_applied_prefix(
                 await conn.execute("DROP SCHEMA up CASCADE")
 
     asyncio.run(main())
+
+
+def test_a_version_recorded_under_another_file_name_stops_startup(
+    postgres_url: str,
+) -> None:
+    async def main() -> None:
+        async with await psycopg.AsyncConnection.connect(postgres_url) as conn:
+            await migrate(conn)
+            await conn.execute(
+                "UPDATE schema_migrations SET name = 'other.sql' WHERE version = 1"
+            )
+            with pytest.raises(RuntimeError, match="renumber"):
+                await migrate(conn)
+            await conn.execute(
+                "UPDATE schema_migrations SET name = %s WHERE version = 1",
+                ("001_requests_and_interventions.sql",),
+            )
+
+    asyncio.run(main())

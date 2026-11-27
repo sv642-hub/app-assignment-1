@@ -427,7 +427,8 @@ async def migrate(conn: AsyncConnection) -> list[str]:
 
     Each file runs once, in order, inside one transaction with the version row,
     under an advisory lock so two processes cannot apply the same file.
-    Returns the names of the files applied.
+    Returns the names of the files applied. A version recorded under another
+    file name stops startup.
     """
     applied_now = []
     async with conn.transaction():
@@ -441,11 +442,19 @@ async def migrate(conn: AsyncConnection) -> list[str]:
             )
             """
         )
-        cur = await conn.execute("SELECT version FROM schema_migrations")
-        done = {row[0] for row in await cur.fetchall()}
+        cur = await conn.execute("SELECT version, name FROM schema_migrations")
+        done = {row[0]: row[1] for row in await cur.fetchall()}
         for path in sorted(MIGRATIONS.glob("*.sql")):
             version = int(path.name.split("_", 1)[0])
             if version in done:
+                if done[version] != path.name:
+                    # The same number ran from a different file, so this file
+                    # would be skipped for good. Say so now, not at the first
+                    # query that needs its tables.
+                    raise RuntimeError(
+                        f"Migration {version} ran as {done[version]}, but the"
+                        f" file is now {path.name}; renumber one of them"
+                    )
                 continue
             await conn.execute(path.read_text(encoding="utf-8"))
             await conn.execute(

@@ -5,7 +5,7 @@ import logging
 import re
 import time
 from collections.abc import Callable, Coroutine, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any, Literal
@@ -176,6 +176,10 @@ class PendingCheck:
     reply: str
     first: JevResult | None
     format_failed: bool
+    # Set once the request's own save has finished, and whether it worked: a
+    # check is saved only after its request, and never without it.
+    saved: asyncio.Event = field(default_factory=asyncio.Event)
+    request_saved: bool = False
 
 
 class Gateway:
@@ -626,14 +630,20 @@ class Gateway:
         # so a cancel must not stop the saves: the saved requests would no
         # longer match the counts, and the controller has already handed its
         # interventions over. Both saves run as one task, in order.
-        await self._finish(self._save_all(response, jev))
+        try:
+            await self._finish(self._save_all(response, jev, pending))
+        finally:
+            pending.saved.set()
         return response
 
     async def _save_all(
-        self, response: ChatResponse, jev: Sequence[JevAssessment]
+        self,
+        response: ChatResponse,
+        jev: Sequence[JevAssessment],
+        pending: PendingCheck,
     ) -> None:
         await self.save_interventions()
-        await self._save_request(response, jev)
+        pending.request_saved = await self._save_request(response, jev)
 
     async def _finish(
         self, saving: Coroutine[Any, Any, None], hold: bool = False
@@ -670,7 +680,7 @@ class Gateway:
 
     async def _save_request(
         self, response: ChatResponse, jev: Sequence[JevAssessment]
-    ) -> None:
+    ) -> bool:
         try:
             # The Jev assessments are saved with their request or not at all, so
             # every saved assessment has a request to join to. A request that
@@ -681,6 +691,8 @@ class Gateway:
         except Exception as exc:
             # The customer still gets the reply; it just cannot be looked up later.
             logger.warning("Could not save request (%s)", type(exc).__name__)
+            return False
+        return True
 
     def _start_reply_check(self, pending: PendingCheck) -> None:
         """Start the second Jev call as its own task, or count why not."""
@@ -726,7 +738,11 @@ class Gateway:
         try:
             result = ReplyCheckResult.model_validate(
                 await asyncio.wait_for(
-                    checker.check_reply(pending.message, pending.reply),
+                    checker.check_reply(
+                        pending.message,
+                        pending.reply,
+                        timeout=self.reply_check_timeout,
+                    ),
                     self.reply_check_timeout,
                 )
             )
@@ -763,6 +779,11 @@ class Gateway:
                 base, status="ok", elapsed=elapsed, result=result
             )
         if record is None:
+            return
+        # Only after the request is saved, and only if it was: a saved check
+        # has a request to join to, never the other way round.
+        await pending.saved.wait()
+        if not pending.request_saved:
             return
         try:
             await asyncio.wait_for(
