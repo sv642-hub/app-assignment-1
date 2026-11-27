@@ -377,7 +377,7 @@ Pydantic Settings reads `.env` then `env/.env` in native local runs. Process env
 | `APP_OPERATOR_TOKEN` | unset | Bearer token for the operator routes, at least 16 characters; unset turns them off (403). Set it only in `env/.env` |
 | `APP_VLLM_SMALL_BASE_URL` | unset | Qwen3-1.7B server on the GPU host's private IP, for example `http://10.0.12.34:8001`; read when `APP_PROVIDER_MODE=real` |
 | `APP_VLLM_LARGE_BASE_URL` | unset | Qwen3-4B server on the GPU host's private IP, for example `http://10.0.12.34:8002`; read when `APP_PROVIDER_MODE=real` |
-| `APP_VLLM_API_KEY` | unset | The key both vLLM servers require (`VLLM_API_KEY` in `env/gpu.env`), sent as a bearer token when `APP_PROVIDER_MODE=real`. Never write it to an env file: on the CPU instance it stays in `~/.vllm_api_key`, and `compose.real.yml` passes it in from the shell (see [Real Qwen in Compose](#real-qwen-in-compose)) |
+| `APP_VLLM_API_KEY` | unset | The key both vLLM servers require (`VLLM_API_KEY` in `env/gpu.env`), sent as a bearer token when `APP_PROVIDER_MODE=real`. Never write it to an env file: on the CPU instance it stays in `~/.vllm_api_key`, and `compose.real.yml` passes it in from the shell (see [Real Qwen in Compose](#real-qwen-in-compose)). Spaces and line endings around it are dropped; inside, it must be printable ASCII with no spaces |
 | `APP_REQUEST_DEADLINE_SECONDS` | `45` | Total time for one chat request, including the Jev call. A first attempt that runs out of time counts as a failed call; an alternate cut short gives a 503 with `deadline_exceeded` |
 | `APP_ALTERNATE_RESERVE_SECONDS` | `15` | Part of the deadline held back from the first attempt for the other backend, only when the other backend is usable; with the Jev timeout, must stay below the deadline |
 
