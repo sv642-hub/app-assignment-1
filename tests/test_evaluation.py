@@ -589,7 +589,7 @@ DIRECT = [
 
 
 def test_score_shows_what_the_format_check_cost():
-    result = score(DIRECT, LABELS)
+    result = score(DIRECT, LABELS, direct=True)
     assert result["accuracy"] == 0.2
     assert result["intent_accuracy_before_check"] == 0.4
     assert result["lost_to_format_check"] == 1
@@ -611,13 +611,44 @@ def test_gateway_results_have_no_before_check_accuracy():
 def test_confusions_use_the_models_own_answer():
     # Row 1 was right before the check, so it is not a confusion; the gateway
     # target (no raw_intent) falls back to the delivered intent.
-    assert confusions(DIRECT, 10) == [
+    assert confusions(DIRECT, 10, direct=True) == [
         ("exchange_rate", "top_up_failed", 1),
         ("top_up_failed", "unknown", 1),
         ("top_up_failed", None, 1),
     ]
-    delivered = [{k: v for k, v in i.items() if k != "raw_intent"} for i in DIRECT]
-    assert ("exchange_rate", "unknown", 2) in confusions(delivered, 10)
+    assert ("exchange_rate", "unknown", 2) in confusions(DIRECT, 10)
+
+
+FAILED = [
+    {**item(row, gold, None), "error": "BackendOutputError", "final": True}
+    for row, gold in enumerate(["card_arrival", "exchange_rate"])
+]
+
+
+def test_a_direct_run_where_every_call_failed_scores_zero():
+    # No row has raw_intent, so the target must come from the run header.
+    result = score(FAILED, LABELS, direct=True)
+    assert result["intent_accuracy_before_check"] == 0.0
+    assert result["lost_to_format_check"] == 0
+    assert confusions(FAILED, 10, direct=True) == [
+        ("card_arrival", None, 1),
+        ("exchange_rate", None, 1),
+    ]
+
+
+def test_score_command_takes_the_target_from_the_header(tmp_path, capsys):
+    run_eval = load_script()
+    out = tmp_path / "small.jsonl"
+    header = {"type": "run", "dataset": "fresh", "dataset_size": 2,
+              "target": "small", "model": "qwen3-1.7b", "sample": None}  # fmt: skip
+    lines = [header] + [{"type": "item", **i} for i in FAILED]
+    out.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    assert run_eval.main(["score", str(out)]) == 0
+    assert "intent accuracy before the format check 0.000" in capsys.readouterr().out
+    assert run_eval.main(["score", str(out), "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)[str(out)]["score"]
+    assert report["intent_accuracy_before_check"] == 0.0
+    assert report["lost_to_format_check"] == 0
 
 
 def test_score_command_prints_the_breakdown(tmp_path, capsys):

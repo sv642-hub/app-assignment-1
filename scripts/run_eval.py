@@ -461,11 +461,17 @@ def _fmt(value: float | None, digits: int = 3) -> str:
     return "-" if value is None else f"{value:.{digits}f}"
 
 
+def is_direct(header: dict[str, Any]) -> bool:
+    """A model called directly, so rows keep its answer before the check."""
+    return header["target"] in ("small", "large")
+
+
 def print_scores(paths: list[Path], top: int = 0) -> None:
     labels, _, _ = load_config()
     for path in paths:
         header, items = read_results(path)
-        result = score(items, labels)
+        direct = is_direct(header)
+        result = score(items, labels, direct=direct)
         low, high = result["accuracy_95ci"]
         sample = header.get("sample")
         expected = sample["size"] if sample else header["dataset_size"]
@@ -496,7 +502,7 @@ def print_scores(paths: list[Path], top: int = 0) -> None:
             lowest = ", ".join(f"{label} {r:.2f}" for label, r in worst[:top])
             print(f"  lowest recall: {lowest}")
             print("  most common mistakes (gold -> answer, count):")
-            for gold, answer, n in confusions(items, top):
+            for gold, answer, n in confusions(items, top, direct=direct):
                 print(f"    {gold} -> {answer or '(no valid label)'}  {n}")
         retry = sum(bool(i.get("error")) and not i.get("final") for i in items)
         if result["messages"] < expected or retry:
@@ -514,8 +520,10 @@ def cmd_score(args: argparse.Namespace) -> int:
             header, items = read_results(path)
             report[str(path)] = {
                 "run": header,
-                "score": score(items, labels),
-                "confusions": confusions(items, args.top or 20),
+                "score": score(items, labels, direct=is_direct(header)),
+                "confusions": confusions(
+                    items, args.top or 20, direct=is_direct(header)
+                ),
             }
         print(json.dumps(report, indent=2))
     else:
@@ -536,7 +544,7 @@ def cmd_oracle(args: argparse.Namespace) -> int:
         combined = oracle(small, large)
     except ValueError as exc:
         raise SystemExit(f"{exc}: run both targets over the same rows") from None
-    result = score(combined, labels)
+    result = score(combined, labels, direct=True)
     large_share = sum(item.get("model") == large_header["model"] for item in combined)
     print(
         f"oracle over {small_header['model']} and {large_header['model']}: "
