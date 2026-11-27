@@ -275,11 +275,28 @@ def _fold(panels: list[dict]) -> list[dict]:
     return out
 
 
+def _zero(expr: str) -> str:
+    """Count a missing series as 0. The gateway exposes a counter only after its
+    first increment, so in an all-503 outage there is no answered series."""
+    return f"(({expr}) or vector(0))"
+
+
+def _answered(w: str, fn: str = "rate") -> str:
+    return _zero(f"sum({fn}(gateway_chat_requests_total[{w}]))")
+
+
+def _unavailable(w: str, fn: str = "rate") -> str:
+    return _zero(f"sum({fn}(gateway_chat_unavailable_total[{w}]))")
+
+
+def _bad_share(w: str, fn: str = "rate") -> str:
+    """503s over all traffic (answered plus 503). No traffic gives no data."""
+    return f"({_unavailable(w, fn)} / ({_answered(w, fn)} + {_unavailable(w, fn)}))"
+
+
 def build() -> dict:
     # --- Overview ---------------------------------------------------------
-    unavailable = "sum(increase(gateway_chat_unavailable_total[$__range]))"
-    answered = "sum(increase(gateway_chat_requests_total[$__range]))"
-    bad_share = f"({unavailable} / ({answered} + {unavailable}))"
+    bad_share = _bad_share("$__range", "increase")
     row("Overview")
     stat("Gateway", 'up{job="gateway"}', w=6,
          mappings=[{"type": "value", "options": {
@@ -291,8 +308,9 @@ def build() -> dict:
     stat("In flight now", "gateway_chat_in_flight", w=6,
          thresholds=_steps(("green", None), ("orange", 5), ("red", 20)),
          desc="Requests being handled right now.")  # fmt: skip
-    stat("Requests per second", f"sum(rate(gateway_chat_requests_total[{R}]))",
-         unit="reqps", w=6, decimals=2)  # fmt: skip
+    stat("Requests per second", f"{_answered(R)} + {_unavailable(R)}",
+         unit="reqps", w=6, decimals=2,
+         desc="Answered requests plus 503s.")  # fmt: skip
     stat("Answered, no 503", f"1 - {bad_share}", unit="percentunit", w=8,
          decimals=2, thresholds=_steps(("red", None), ("orange", 0.98),
                                        ("green", SLO_AVAILABILITY)),
@@ -342,10 +360,14 @@ def build() -> dict:
     row("Traffic, errors, saturation")
     timeseries("Requests per second by model",
                [(f"sum by (model) (rate(gateway_chat_requests_total[{R}]))",
-                 "{{model}}")], unit="reqps", stack=True, minimum=0)  # fmt: skip
+                 "{{model}}"),
+                (_unavailable(R), "503")], unit="reqps", stack=True,
+               minimum=0)  # fmt: skip
     timeseries("Requests per second by route",
                [(f"sum by (route) (rate(gateway_chat_requests_total[{R}]))",
-                 "{{route}}")], unit="reqps", stack=True, minimum=0)  # fmt: skip
+                 "{{route}}"),
+                (_unavailable(R), "503")], unit="reqps", stack=True,
+               minimum=0)  # fmt: skip
     timeseries("503 rate (no backend could answer)",
                [(f"sum(rate(gateway_chat_unavailable_total[{R}]))", "503s")],
                unit="reqps", minimum=0)  # fmt: skip
@@ -378,11 +400,7 @@ def build() -> dict:
 
     # --- SLO ----------------------------------------------------------------
     row("SLOs and error budget")
-    burn = lambda w: (  # noqa: E731
-        f"(sum(rate(gateway_chat_unavailable_total[{w}])) / "
-        f"(sum(rate(gateway_chat_requests_total[{w}])) + "
-        f"sum(rate(gateway_chat_unavailable_total[{w}])))) / {1 - SLO_AVAILABILITY}"
-    )
+    burn = lambda w: f"{_bad_share(w)} / {1 - SLO_AVAILABILITY}"  # noqa: E731
     timeseries("Availability burn rate (target 99% answered)",
                [(burn("5m"), "5 minutes"), (burn("1h"), "1 hour"),
                 (burn("6h"), "6 hours")], minimum=0,
