@@ -60,9 +60,8 @@ for message, intent, mock_model in [
     result = json.loads(fetch("/v1/chat", {"message": message}))
     trace = result["trace"]
     if jev_real:
-        assert (
-            trace["router"] == "jev"
-        ), f"expected real Jev, got {trace['router']}: {trace['fallback_reason']}"
+        why = f"expected real Jev, got {trace['router']}: {trace['fallback_reason']}"
+        assert trace["router"] == "jev", why
         assert trace["model"] == model_for_route[trace["route"]], result
     else:
         assert trace["router"] == "mock_jev", result
