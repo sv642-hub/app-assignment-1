@@ -1,0 +1,10 @@
+# For scripts/measure_recovery.py only: turns semantic actions on with the mock
+# baseline of 0, so the label_swap scenario can run. The models start healthy;
+# the script sets and clears faults through /v1/faults, which needs
+# APP_OPERATOR_TOKEN in env/.env. Not for the deployment testers use.
+# docker compose -f compose.yml -f compose.measure.yml up -d --build --wait
+services:
+  gateway:
+    environment:
+      APP_SEMANTIC_BASELINE_DISAGREEMENT_RATE: "0"
+      APP_SEMANTIC_ACTIONS_ENABLED: "true"

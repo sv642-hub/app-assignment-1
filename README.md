@@ -11,7 +11,7 @@ A mocked banking-support gateway for DSAN 6700 Deliverable 2, with a React chat 
 1. The React app sends the message over HTTP to the FastAPI gateway.
 2. `MockJevRouter` stands in for Jev's combined call, which answers two questions: the route (`standard` or `complex`) and the intent. It uses the configured complexity and intent of the best keyword match; unmatched messages go to `standard` with intent `unknown`. The gateway uses only the route answer. Jev's intent is an assessment for the monitor and never replaces the backend's intent. The gateway builds a record for each answer and saves it with the request (see Storage).
 3. Standard selects mock `qwen3-1.7b`. Complex selects mock `qwen3-4b`. The selected mock backend waits for its simulated delay, detects the intent by matching complete keyword phrases (longer/more matches score higher; config order breaks ties), and fills the reply template with fictional policy facts. Both mock backends share this classifier.
-4. Reply checks reject blank text, replies over 4,000 characters, unfilled `{placeholder}` tokens and intent labels outside `config/labels.json`. Pydantic validates the result. The chat shows the reply and its route; **Show details** opens the intent, policy facts and trace.
+4. Reply checks reject intent labels outside `config/labels.json`, policy facts that are not on the intent's card, and a carded reply with no facts. The model's own text is never shown: the reply is built from the card. So blank text, text over 4,000 characters or an unfilled `{placeholder}` in the model's text does not fail the check; the gateway counts it in `gateway_discarded_text_problems_total`. The reply the gateway builds from the card must still pass those three text checks. Pydantic validates the result. The chat shows the reply and its route; **Show details** opens the intent, policy facts and trace.
 
 **Real Jev.** With `APP_JEV_MODE=real`, the gateway sends each message to TypeSafe in place of step 2, using `TypeSafeJevRouter` in `jev.py`: one `/v1/systemone` call with the route question and the intent question over the 78 labels. Every chat message then leaves the server, so use only made-up details, and update `USER_BRIEF.md` before testers use a gateway in this mode. It needs `APP_JEV_API_KEY` and an `https` `APP_JEV_BASE_URL`. The trace shows `router: "jev"` when real Jev chose the route, and `/v1/health` shows `jev_mode: "real"` and `router: "jev"`. Compose and CI run with the default, `mock`. No test calls TypeSafe; the tests use a fake TypeSafe server.
 
@@ -36,11 +36,11 @@ The gateway runs a small in-memory self-healing loop, the first piece of the pla
 - **Action limit:** the controller never disables the last usable backend. It logs `kept_last_backend` instead and keeps serving.
 - **Visibility:** the request that triggers an action shows it in `trace.controller_action` and in that reply's details. `GET /v1/health` lists samples, format failures, call errors, failure rate and disabled status for each backend, the last 50 interventions with their reasons, and the controller rules. It also lists `recent_requests`, up to 20 retained requests that got a reply, newest first, with `completed_at`, route, actual model, fallback reason and format check, but no request id. `usage` gives attempted, completed and failed calls for each model since startup, including fallback attempts; token and cost fields are `null` in mock mode. The **Health** screen shows the same data and refreshes every 5 seconds.
 
-The failure monitor watches format failures and failed calls only. It does not know whether an intent or reply is correct. Its windows and which backends are disabled reset when the gateway restarts. The intervention log is kept in the store (see [Storage](#storage)), so with Postgres it survives a restart.
+The failure monitor watches format failures and failed calls only. It does not know whether an intent or reply is correct. The intervention log is kept in the store (see [Storage](#storage)), so with Postgres it survives a restart. With Postgres, each window sample is saved too, and at startup the gateway rebuilds the windows from the newest samples and resumes any cooldown still running. Samples from before a model's last re-enable are left out, because a re-enable clears its window. That includes a cooldown that ended while the gateway was stopped: samples from before its end are left out. A release deploy or rollback clears the windows too, so samples from before a model's last one are left out. Each model's last re-enable and operator action are read however old they are, so a long run of newer interventions can't hide them. Each sample has an id, so a save retried after a cancel stores it once. Operator holds come back too, and an operator enable ends the cooldown for good. A resumed cooldown keeps its reason, so a model disabled for its intents is still a last resort. With semantic actions on, the semantic window also starts after the last re-enable, as it does while running. With the memory store, everything starts empty after a restart.
 
 Do not run the overrides below on the deployment testers use. They use the default Compose project and port 8080, so they replace the running stack and reset its history. Use your own machine or a different host.
 
-To see the loop work, start the stack with the chaos override. In `config/backends.chaos.json`, the small model has `fault_rate: 1`, so it corrupts every reply:
+To see the loop work, start the stack with the chaos override. In `config/backends.chaos.json`, the small model has `fault_rate: 1`, so it adds an invented policy fact to every reply, and every reply fails the format check:
 
 ```bash
 docker compose -f compose.yml -f compose.chaos.yml up -d --build --wait
@@ -55,6 +55,46 @@ docker compose -f compose.yml -f compose.outage.yml up -d --build --wait
 ```
 
 Send five standard messages. Each one is still answered, by `qwen3-4b` with `fallback_reason: "selected_backend_error"`, and the fifth disables `qwen3-1.7b`. Health shows the failed calls and the intervention. Both overrides simulate faults with the mock backends; neither stops a real model.
+
+### Measure detection and recovery
+
+[`scripts/measure_recovery.py`](scripts/measure_recovery.py) times the loop. For each fault on the small model (`outage`, `bad_format`, and `label_swap` when semantic actions are on), it:
+1. starts from clean monitor windows: it waits out any cooldown, then disables and enables each model through the operator routes, which clears both models' windows, so each run is an independent sample whatever ran before;
+2. sends 8 normal messages and counts any controller action, a false intervention;
+3. sets the fault with `POST /v1/faults`;
+4. sends a message every 0.5 s, or as soon as the last reply arrives if it took longer (three standard, then one complex), until the controller disables the model, then 4 more;
+5. clears the fault and keeps sending until the small model answers its own route again. The time until it serves again counts from the moment the fault was cleared.
+
+A run fails if the model is never disabled, never serves again, or the controller acted during the normal messages. A run that stops on an error (a dropped connection, say) is reported as failed, and the other runs go on. `--out` is rewritten after each run, so a crash keeps the runs before it. The fault is cleared on Ctrl-C and on SIGTERM. The script exits 1 if any run failed or none ran.
+
+It needs an operator token, and it changes the running models, so it refuses any host but localhost unless you pass `--allow-remote`. Never run it on the deployment testers use. Set `APP_OPERATOR_TOKEN` in `env/.env` first, then pass the same value to the script (it runs on Python 3.9 or later):
+
+```bash
+docker compose -f compose.yml -f compose.measure.yml up -d --build --wait
+APP_OPERATOR_TOKEN='your-operator-token' python3 scripts/measure_recovery.py --runs 3 --out recovery.json
+```
+
+[`compose.measure.yml`](compose.measure.yml) turns semantic actions on with the mock baseline of 0, so the label-swap scenario can run. `--out` saves every reply's trace fields and the results as JSON.
+
+Measured on November 26, 2026, with the mock models, the default settings (window 20, 5 samples minimum, 50% threshold, 60 s cooldown), semantic actions on with a baseline of 0, and 3 runs per fault. The gateway ran under uvicorn with the in-memory store in a cloud container, not under Compose. Each run started from clean windows, and the three runs of each fault gave the same counts, with times within 0.01 s:
+
+| Fault | Time to disable | Standard requests until disabled | Bad replies to customers: until the disable / whole run | 503s | False interventions | Time from clearing the fault until the model serves again | Median latency: normal / fault until the disable / after the disable |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `outage` | 3.5 s | 6 | 0 / 0 | 0 | 0 | 58.6 s | 121 / 472 / 351 ms |
+| `bad_format` | 3.1 s | 6 | 6 / 6 | 0 | 0 | 58.6 s | 121 / 121 / 351 ms |
+| `label_swap` | 2.1 s | 4 | 4 / 4 | 0 | 0 | 58.1 s | 121 / 121 / 351 ms |
+
+These replace the November 23 numbers, which depended on the order the scenarios ran in: each run then started with the windows the last one left.
+
+How to read it:
+- **The controller counts requests, not seconds.** The times above follow from one message every 0.5 s. With other traffic, the request counts are what carry over.
+- **How fast it acts depends on the healthy calls already in the window.** Each run starts with 6 healthy calls to the small model (3 of every 4 normal messages), so it takes 6 failures to reach 50%. With a full window of 20 healthy calls it would take 10. For `label_swap`, 4 wrong intents out of 10 scored replies were above the 0 baseline plus the 0.15 margin; 10 is the semantic minimum.
+- **During an outage, customers got no bad replies or 503s,** but each request waited for the failed call before the large model answered. That's the higher latency until the disable.
+- **After the disable, the large model answers the small model's route.** The mock large model is slower (about 350 ms), so the latency after the disable shows the reroute, not a slower small model.
+- **The time until the model serves again is the rest of the 60 s cooldown.** The gateway doesn't notice that a fault is fixed; it tries the model again when the cooldown ends. The cooldown starts at the disable, and the script sends 4 more messages before it clears the fault, so about 58 s of the 60 are left.
+- **"No false interventions" covers 72 normal requests only.** That's too few to say anything about a false intervention rate.
+
+These are mock models with simulated latency, so the numbers show how the loop behaves. They say nothing about real models.
 
 ### Semantic monitor
 
@@ -75,7 +115,7 @@ A model can return a well-formed reply for the wrong intent, which the format ch
 
 - **Semantic actions:** off by default (`APP_SEMANTIC_ACTIONS_ENABLED=false`), so the monitor only reports. When they are on and a model's status is `above_baseline`, the controller disables it for `APP_CONTROLLER_COOLDOWN_SECONDS`. It does so only while the other model is serving and has answered recently without failing: its failure window has calls, and its failure rate is below `APP_MONITOR_FAILURE_THRESHOLD`. A model that fails every call stays usable until its own window fills, and an empty window after a re-enable says nothing, so neither counts. Otherwise the controller logs `kept_last_backend` once. The other model can still start failing after the disable. So a model disabled only for its intents stays a last resort: when no other model answers, the gateway calls it anyway, with `fallback_reason` ending in `semantic_last_resort`, because a reply with a possibly wrong intent beats a 503. A model disabled for failures is never a last resort. A last resort keeps being called even if some of its own calls fail, like the last enabled model: a model that answers some calls beats a certain 503. If a model's cooldown ends while another model's call is running, the gateway tries it in the same request. This holds with semantic actions off too: when the only usable model fails, a model whose failure cooldown ended during that call answers the request instead of a 503. `/v1/health` shows `disabled_for` (`failure` or `semantic`) and `answering` for each model. The intervention reason gives the disagreement rate and the baseline. Only replies on the model's own route can trigger an action; a rerouted reply never does. Low coverage and a missing baseline never cause an action. With actions on, any re-enable also starts the model's semantic window again; with actions off, the semantic report keeps its window across a cooldown.
 
-The **Health** screen shows the monitor as a table, one row per model. While a model is above the baseline, a red banner says so, and says whether the controller acted. Keep semantic actions off until the baseline comes from dev data: a wrong baseline would take a healthy model out of service. The defaults are placeholders: the baseline, margin and coverage minimum should be set from dev data before the final test. In mock mode, Jev and both models share one keyword classifier, so a healthy mock always agrees and its baseline is 0. A disagreement rate measured on mocks says nothing about real model quality. The windows reset when the gateway restarts.
+The **Health** screen shows the monitor as a table, one row per model. While a model is above the baseline, a red banner says so, and says whether the controller acted. Keep semantic actions off until the baseline comes from dev data: a wrong baseline would take a healthy model out of service. The defaults are placeholders: the baseline, margin and coverage minimum should be set from dev data before the final test. In mock mode, Jev and both models share one keyword classifier, so a healthy mock always agrees and its baseline is 0. A disagreement rate measured on mocks says nothing about real model quality. With Postgres, the windows are rebuilt after a restart, like the failure monitor's.
 
 To see it work, use the label-swap override. In `config/backends.labelswap.json`, the small model has `label_swap_rate: 1`: it answers every matched message with the next intent's label and policy card. The override also sets the mock baseline of 0 and turns semantic actions on:
 
@@ -113,10 +153,18 @@ Operators can act on the models without restarting the stack. Every operator rou
 
 - `POST /v1/operator/models/{name}/disable` holds a model disabled until an operator enables it. There is no cooldown. Like the controller, it refuses to disable the last usable model (409). Traffic moves with `fallback_reason: "selected_backend_disabled"`.
 - `POST /v1/operator/models/{name}/enable` lifts an operator hold, and also ends a controller cooldown early. The model starts with an empty window.
-- Holds live in gateway memory. After a restart every held model serves again, even though the last stored intervention for it still says `operator_disabled`. Disable it again after a restart.
+- With Postgres, a hold survives a restart: the gateway reads the last operator action for each model from the intervention log, however old. With the memory store, every held model serves again after a restart; disable it again.
 - Both take an optional JSON body `{"reason": "..."}` (up to 200 characters), saved in the intervention log as `operator_disabled` or `operator_enabled`. The reason is public: `GET /v1/health` lists it without a token. Do not put customer data or anything private in it. Both return the monitor rows; `disabled_by_operator` shows a hold.
 - `POST /v1/operator/models/{name}/release` deploys a version and `/rollback` puts the model back on its rollback target; see [Releases and rollback](#releases-and-rollback). Both take a public `reason` too.
-- `POST /v1/faults` sets a simulated fault on a mock model while it runs, in place of restarting with a Compose override. The body is `{"model": "qwen3-1.7b", "fault": "outage", "rate": 1}`. `fault` is `outage` (sets `error_rate`), `bad_format` (`fault_rate`), `label_swap` (`label_swap_rate`) or `none` (clears all three). `rate` is 0–1 and defaults to 1. It returns the model's config. Faults reset when the gateway restarts.
+- `POST /v1/faults` sets a simulated fault on a mock model while it runs, in place of restarting with a Compose override. The body is `{"model": "qwen3-1.7b", "fault": "outage", "rate": 1}`. `fault` is one of these:
+  - `outage` (sets `error_rate`): calls raise.
+  - `bad_format` (`fault_rate`): replies fail the format check.
+  - `label_swap` (`label_swap_rate`): replies carry the wrong intent.
+  - `slow` (`slow_rate` and `slow_seconds`): calls are held for `seconds` more, above 0 and up to 120, which `slow` requires. The first model gets the request deadline minus the reserve for the other model (`APP_REQUEST_DEADLINE_SECONDS` minus `APP_ALTERNATE_RESERVE_SECONDS`, 30 s by default), so a longer hold makes it a failed call and the other model answers.
+  - `bad_prompt` (`bad_prompt_rate`): replies are a well-formed `unknown`, as a broken prompt would give. They pass the format check, so only the semantic monitor sees them, and nothing disables the model unless semantic actions are on.
+  - `none`: clears them all.
+
+  `rate` is 0–1 and defaults to 1. It returns the model's config. Faults reset when the gateway restarts.
 - `POST /v1/faults/jev` does the same for the mock Jev router. The body is `{"fault": "outage", "rate": 1}`. `fault` is `outage` (sets `error_rate`: the call fails, the gateway uses the rule router with `fallback_reason: "jev_error"`, and 5 failures in a row open the circuit breaker), `slow` (sets `slow_rate` and `slow_seconds`: each call it hits is held for `seconds` more, above 0 and up to 120, which `slow` requires; past `APP_JEV_TIMEOUT_SECONDS`, 2 s by default, the gateway uses the rule router with `jev_timeout`) or `none` (clears both). It returns the Jev fault settings. With `APP_JEV_MODE=real` it answers 409: real Jev can't be faulted.
 
 ```bash
@@ -162,7 +210,7 @@ The gateway keeps three kinds of records behind a small `Store` interface ([`sto
 - **Jev assessments:** two per request, one for the route question and one for the intent question, for the semantic monitor. They are saved in the same write as their request, so a request that ends in a 503 or is cancelled saves none. Postgres keeps them all, also after their request is deleted; the memory store keeps the last 2 × `APP_REQUEST_STORE_LIMIT`. The route record has `option_order`, the order Jev was shown the route options in, for the position-bias study (#86). The intent options follow `config/labels.json`, whose order is part of `option_set_version`.
 - **Export for analysis:** `APP_DATABASE_URL=... uv run python scripts/export_analysis.py --out exports/<name>` writes `requests.jsonl` and `jev_assessments.jsonl`, which join on the request ID. Reply text and policy facts are left out. `exports/` is ignored by git.
 
-The customer's message is not stored: `ChatResponse` has no message field. The monitor's windows and which backends are disabled stay in process memory and reset on restart. The backend response records for the monitor are not stored yet; they will get their own store methods and migration once their schema is agreed.
+The customer's message is not stored: `ChatResponse` has no message field. The monitor's windows and which backends are disabled live in process memory. With Postgres, the window samples are saved to `monitor_samples` (model, monitor, outcome, traffic and time, no message text), and the gateway rebuilds the windows and running cooldowns from them and the intervention log at startup. The backend response records for the monitor are not stored yet; they will get their own store methods and migration once their schema is agreed.
 
 There are two stores, chosen with `APP_STORE`:
 
@@ -209,6 +257,7 @@ The `prometheus` service (Prometheus 3.15.1, config in [`prometheus/prometheus.y
 | `gateway_backend_calls_attempted_total`, `_completed_total`, `_failed_total` | `model` | Backend calls, the same numbers as `usage` in `/v1/health` |
 | `gateway_jev_fallbacks_total` | `reason` (`jev_timeout`, `jev_error`, `jev_invalid_route`) | Requests routed by the rule router because Jev failed or its route answer was invalid |
 | `gateway_empty_unknown_filled_total` | `model` | Replies with intent `unknown`, no text and no policy facts; the gateway sends the standard no-match text and the reply passes |
+| `gateway_discarded_text_problems_total` | `model`, `problem` (`empty_reply`, `reply_too_long`, `unfilled_placeholder`) | Problems in the model's own reply text, which the gateway discards; these replies still pass if the intent and facts are valid. One reply can count under more than one problem |
 | `gateway_uncarded_facts_dropped_total` | `model` | Replies for an intent with no policy card that listed policy facts anyway; the facts are dropped and the reply still passes |
 | `gateway_model_disabled` | `model` | 1 while the controller has the model disabled |
 | `gateway_monitor_failure_rate`, `gateway_monitor_window_samples` | `model` | Failure rate and number of calls in the monitor window (rate is 0 when the window is empty) |
@@ -339,7 +388,7 @@ Pydantic Settings reads `.env` then `env/.env` in native local runs. Process env
 | `APP_OPERATOR_TOKEN` | unset | Bearer token for the operator routes, at least 16 characters; unset turns them off (403). Set it only in `env/.env` |
 | `APP_VLLM_SMALL_BASE_URL` | unset | Qwen3-1.7B server on the GPU host's private IP, for example `http://10.0.12.34:8001`; read when `APP_PROVIDER_MODE=real` |
 | `APP_VLLM_LARGE_BASE_URL` | unset | Qwen3-4B server on the GPU host's private IP, for example `http://10.0.12.34:8002`; read when `APP_PROVIDER_MODE=real` |
-| `APP_VLLM_API_KEY` | unset | The key both vLLM servers require (`VLLM_API_KEY` in `env/gpu.env`), sent as a bearer token when `APP_PROVIDER_MODE=real`. Never write it to an env file: on the CPU instance it stays in `~/.vllm_api_key`, and `compose.real.yml` passes it in from the shell (see [Real Qwen in Compose](#real-qwen-in-compose)) |
+| `APP_VLLM_API_KEY` | unset | The key both vLLM servers require (`VLLM_API_KEY` in `env/gpu.env`), sent as a bearer token when `APP_PROVIDER_MODE=real`. Never write it to an env file: on the CPU instance it stays in `~/.vllm_api_key`, and `compose.real.yml` passes it in from the shell (see [Real Qwen in Compose](#real-qwen-in-compose)). Spaces and line endings around it are dropped; inside, it must be printable ASCII with no spaces |
 | `APP_REQUEST_DEADLINE_SECONDS` | `45` | Total time for one chat request, including the Jev call. A first attempt that runs out of time counts as a failed call; an alternate cut short gives a 503 with `deadline_exceeded` |
 | `APP_ALTERNATE_RESERVE_SECONDS` | `15` | Part of the deadline held back from the first attempt for the other backend, only when the other backend is usable; with the Jev timeout, must stay below the deadline |
 

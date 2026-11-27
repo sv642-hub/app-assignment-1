@@ -199,11 +199,22 @@ class Settings(BaseSettings):
                 "provider_mode 'real' needs APP_VLLM_SMALL_BASE_URL and "
                 "APP_VLLM_LARGE_BASE_URL"
             )
-        if (
-            self.vllm_api_key is None
-            or not self.vllm_api_key.get_secret_value().strip()
-        ):
+        # Stored stripped, like the operator token: the client sends it as
+        # "Bearer <key>", and vLLM compares that header exactly. A key read
+        # with $(cat file) keeps a CRLF file's "\r", and padding gives a 401.
+        value = (
+            "" if self.vllm_api_key is None else self.vllm_api_key.get_secret_value()
+        ).strip()
+        if not value:
             raise ValueError("provider_mode 'real' needs APP_VLLM_API_KEY")
+        # Printable ASCII with no spaces: anything else cannot go in the header
+        # or never matches vLLM's key.
+        if not all("!" <= char <= "~" for char in value):
+            raise ValueError(
+                "APP_VLLM_API_KEY must be printable ASCII with no spaces or "
+                "control characters inside it"
+            )
+        self.vllm_api_key = SecretStr(value)
         return self
 
 
