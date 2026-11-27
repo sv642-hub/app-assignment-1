@@ -357,7 +357,7 @@ def test_migrations_run_once(postgres_url: str) -> None:
             rows = await cur.fetchall()
         # Every file in migrations/, in order, so a new migration needs no edit.
         files = sorted(path.name for path in MIGRATIONS.glob("*.sql"))
-        assert files[:2] == [
+        assert files[:3] == [
             "001_requests_and_interventions.sql",
             "002_jev_assessments.sql",
             "003_releases.sql",
