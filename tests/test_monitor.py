@@ -416,6 +416,27 @@ def test_detection_dates_a_timed_out_call_from_its_start_inside_the_window(tmp_p
     assert seen == [("qwen3-1.7b", "timeout", 18)]
 
 
+def test_a_streak_disable_is_dated_from_the_streak_not_an_old_failure(tmp_path):
+    clock = Clock()
+    c = Controller(
+        ["qwen3-1.7b", "qwen3-4b"],
+        make_settings(tmp_path, monitor_window=20, monitor_min_samples=15),
+        clock,
+    )
+    seen = []
+    c.on_detect.append(lambda *args: seen.append(args))
+    # One format failure at 0, ten answers, then hung calls that started at 100
+    # and were recorded at 106, 112 and 118.
+    c.record("qwen3-1.7b", True, can_disable=True)
+    for second in range(1, 11):
+        clock.now = second
+        c.record("qwen3-1.7b", False, can_disable=True)
+    for now in (106, 112, 118):
+        clock.now = now
+        c.record_error("qwen3-1.7b", True, timed_out=True, call_seconds=6)
+    assert seen == [("qwen3-1.7b", "timeout", 18)]
+
+
 def hang_settings(tmp_path, **overrides):
     return make_settings(
         tmp_path,

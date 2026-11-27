@@ -62,7 +62,8 @@ class Controller:
         self.timeouts: Counter[BackendName] = Counter()
         # When each call in a model's window started (None for an answer),
         # kept in step with the window, so a disable can report how long the
-        # fault went undetected from the earliest failure still in the window.
+        # fault went undetected: from the earliest failure still in the window,
+        # or from the start of the timeout streak when that tripped it.
         self.starts: dict[BackendName, deque[float | None]] = {
             name: deque(maxlen=settings.monitor_window) for name in names
         }
@@ -359,7 +360,12 @@ class Controller:
         self.disabled_until[name] = self.clock() + self.cooldown
         self.disabled_for[name] = kind
         self._note(name, "disabled", reason)
-        failed_at = [t for t in self.starts[name] if t is not None]
+        starts = list(self.starts[name])
+        if detect == "timeout":
+            # A streak disable is dated from the calls in the streak, not from
+            # an older failure that happens to be in the window.
+            starts = starts[len(starts) - min(self.timeouts[name], len(starts)) :]
+        failed_at = [t for t in starts if t is not None]
         started = min(failed_at) if failed_at else None
         if detect is not None and started is not None:
             for hook in self.on_detect:
