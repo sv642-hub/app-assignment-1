@@ -47,7 +47,7 @@ from app_assignment_1.schemas import (
     Trace,
 )
 from app_assignment_1.semantic import SemanticMonitor, score
-from app_assignment_1.store import MemoryStore, RevisionTaken, Store
+from app_assignment_1.store import MemoryStore, RevisionTaken, Store, same_change
 from app_assignment_1.vllm import BackendCallError, BackendOutputError
 
 logger = logging.getLogger(__name__)
@@ -412,9 +412,9 @@ class Gateway:
         for _ in range(MAX_RELEASE_REPLANS):
             event = plan()
             before = self.releases.state[name]
-            await self._save_release_change(event)
+            saved = await self._save_release_change(event)
             if self.releases.state[name] is before:
-                self.releases.apply(event)
+                self.releases.apply(saved)
                 logger.info(
                     "Operator %s %s: now %s",
                     event.action.replace("_", " "),
@@ -425,7 +425,7 @@ class Gateway:
         logger.warning("Release change for %s kept racing the controller", name)
         raise ReleaseNotSaved
 
-    async def _save_release_change(self, event: ReleaseEvent) -> None:
+    async def _save_release_change(self, event: ReleaseEvent) -> ReleaseEvent:
         """Save one operator change. It does not take save_lock, so chats and
         their saves never wait for it; revisions, not write order, decide what
         a restart loads.
@@ -438,12 +438,14 @@ class Gateway:
 
         A different change already saved under the same revision, such as one
         from another gateway on the same store, is a conflict: the change is
-        not made, and the counter moves past the saved revisions."""
+        not made, and the counter moves past the saved revisions.
+
+        Returns the change as saved: the store sets its time when it commits,
+        so a restart cuts the windows at the end of the write, as `apply` does."""
         try:
-            await asyncio.wait_for(
-                self.store.save_release_events([event]), self.store_timeout
+            return await asyncio.wait_for(
+                self.store.commit_release_change(event), self.store_timeout
             )
-            return
         except RevisionTaken:
             logger.warning(
                 "Release revision %s of %s is already taken",
@@ -464,9 +466,10 @@ class Gateway:
             )
             self._keep_release(event)
             raise ReleaseSaveUnknown from None
-        if event in latest:
-            logger.info("Release change was saved despite the error")
-            return
+        for saved in latest:
+            if same_change(event, saved):
+                logger.info("Release change was saved despite the error")
+                return saved
         self._keep_release(event)
         raise ReleaseNotSaved
 

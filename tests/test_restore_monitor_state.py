@@ -677,3 +677,53 @@ def test_a_saved_but_not_applied_deploy_does_not_cut_the_window():
         return await store.latest_release_changes()
 
     assert asyncio.run(go()) == []
+
+
+class PausedCommitStore(MemoryStore):
+    """Holds an operator's release write until the test lets it go."""
+
+    def __init__(self, limit: int) -> None:
+        super().__init__(limit)
+        self.entered = asyncio.Event()
+        self.resume = asyncio.Event()
+
+    async def commit_release_change(self, event: ReleaseEvent) -> ReleaseEvent:
+        self.entered.set()
+        await self.resume.wait()
+        return await super().commit_release_change(event)
+
+
+def test_replies_to_the_old_version_during_a_deploys_save_do_not_come_back():
+    # Chats keep running while the deploy is written. The running gateway
+    # clears them when it applies the deploy, so a restart must too: the
+    # saved change is dated when the write was made, not when it was planned.
+    settings = Settings(
+        _env_file=None, backends_path=Path("config/backends.chaos.json")
+    )
+    store = PausedCommitStore(settings.request_store_limit)
+
+    async def go() -> tuple[Gateway, Gateway]:
+        live = gateway(settings, store)
+        await live.restore_releases()
+        deploy = asyncio.create_task(live.deploy_release(SMALL, "v2-faster", "test"))
+        await store.entered.wait()
+        for _ in range(3):
+            await live.chat(STANDARD)  # the old, faulty version, still serving
+        await asyncio.sleep(0.01)
+        store.resume.set()
+        await deploy
+        await live.save_interventions()
+        restarted = gateway(settings, store)
+        await restarted.restore_releases()
+        await restarted.restore()
+        return live, restarted
+
+    live, restarted = asyncio.run(go())
+    assert list(live.controller.windows[SMALL]) == []
+    assert list(restarted.controller.windows[SMALL]) == []
+    assert list(restarted.semantic.windows[SMALL]) == list(live.semantic.windows[SMALL])
+    assert restarted.releases.state[SMALL].version == "v2-faster"
+    # The applied release is dated by the same saved time.
+    saved = {e.backend: e for e in asyncio.run(store.latest_release_events())}
+    assert restarted.releases.state[SMALL].since == saved[SMALL].at
+    assert live.releases.state[SMALL].since == saved[SMALL].at
