@@ -737,3 +737,7 @@ CI runs these checks, the frontend tests and build, a Compose smoke test through
 - `discussion.md`, `problem2-local-run.md`, benchmark results: historical Assignment 2 records. The original SmolLM2 implementation and measurement scripts remain in Git history before this prototype.
 
 `Router` is a small async interface returning a validated `JevResult`: the route and intent answers, each checked on its own, plus the model and token counts. `TypeSafeJevRouter` implements it for real Jev (`APP_JEV_MODE=real`), and `VLLMBackend` implements `Backend` (returning intent, reply and facts) for real Qwen (`APP_PROVIDER_MODE=real`). `Store` works the same way for storage. The rest of the planned architecture is follow-up work.
+
+<!-- Issue #85 fix: Chaos mode screen: draft spec and proposed fault API -->
+
+Updated documentation and details regarding issue #85.
