@@ -724,6 +724,42 @@ To run the GPU checks by hand, from the checkout: `deploy/autostart/gpu-prefligh
 
 Deploying an update does not change: `git pull` and `docker compose -p app-assignment-1 up -d --build --wait` as above. The next boot starts the newly built images. To stop a stack until the next boot, run `sudo systemctl stop smart-gateway-cpu` (or `-gpu`). To stop it starting at boot, run `sudo systemctl disable smart-gateway-cpu`.
 
+## Offline evaluation
+
+[`scripts/run_eval.py`](scripts/run_eval.py) measures intent accuracy on a fixed set of messages. The primary set is the official [Banking77](https://github.com/PolyAI-LDN/task-specific-datasets) test set (3,080 messages, 40 per intent; PolyAI, CC BY 4.0). The script downloads it at a pinned commit, checks its SHA-256 and caches it in `data/cache/`. `--dataset-csv` takes any CSV with `text` and `intent` columns instead, such as the fresh set once it exists. For a CSV that holds several splits in a `split` column, such as the Banking77 dev split, add `--split dev` to keep only those rows; results keep each row's number in the whole file. The files are sorted by intent, so `--limit N` covers only the first few intents. For a quick check across all of them, use `--sample N`: N messages spread evenly over the intents, the same ones every time for the same `--seed` (6700 by default). `--sample 154` gives two per intent.
+
+Targets:
+
+| Target | What it measures |
+| --- | --- |
+| `small`, `large` | One model called directly: the always-small and always-large baselines. Real vLLM with `--base-url` and `VLLM_API_KEY`, or `--mock` |
+| `gateway` | The whole system through `POST /v1/chat`: routing, fallbacks and format checks. Only a stack you run yourself; it refuses other hosts unless `--allow-remote` |
+| `oracle` | Worked out from the small and large results, with no calls: the large model only where it is right and the small model is wrong. The best any router over these two models could do |
+
+On the real models, from the CPU instance (the GPU servers accept no other host):
+
+```bash
+export VLLM_API_KEY=$(cat ~/.vllm_api_key)
+uv run python scripts/run_eval.py run --target small --base-url http://GPU_PRIVATE_IP:8001 --out eval/test-small.jsonl
+uv run python scripts/run_eval.py run --target large --base-url http://GPU_PRIVATE_IP:8002 --out eval/test-large.jsonl
+uv run python scripts/run_eval.py score eval/test-small.jsonl eval/test-large.jsonl
+uv run python scripts/run_eval.py oracle eval/test-small.jsonl eval/test-large.jsonl
+```
+
+How it scores, following the integration plan:
+- **Accuracy.** A failed call counts as wrong. A model called directly gets the gateway's format checks, so a reply that fails them counts as the fallback apology a customer would see, which carries `unknown`. `unknown` is wrong for a Banking77 message, and right only where the gold label is `unknown` (the fresh set has some).
+- **Macro F1** averages F1 over the Banking77 intents with at least one gold message in the run; `unknown` is never one of them. On the full official test set that is all 77. On `--limit`, the dev split or the fresh set, the classes depend only on the gold labels, so every target on the same rows is averaged over the same classes, and a wrong guess outside the gold set can't score below answering `unknown`. `score --json` gives the count as `macro_f1_classes`.
+- **Per class:** `score --json` adds recall per intent. With 40 messages per intent in the official test set, one miss moves a class by 2.5 points.
+- Accuracy comes with a 95% Wilson interval, so small runs (`--limit`) show their uncertainty.
+
+Results are JSONL: a `run` line with the dataset's SHA-256, the target, the model, `option_set_version` and the git commit, then one line per message keyed by its row in the dataset. They hold **no message or reply text**. A stopped run continues when you rerun the same command from the same git commit; a different commit is refused, so one file never mixes two versions of the code. A cut-off last line (after a kill or a full disk) is dropped and that message sent again.
+
+Failed calls come in two kinds, and both count as wrong:
+- **Kept**, because they are what a customer would have got: invalid output from the model (`BackendOutputError`), or an error status from the gateway (`unavailable` for a 503, `HTTP422` for a message it refuses). A rerun does not send these again.
+- **Retried**, because they are harness problems: timeouts, refused connections, a 502 from the proxy. `score` says how many are left; rerun the same command to retry them before reporting numbers.
+
+On the mock models, both score about 4% on the official test set: the mock matches keywords for 10 intents and answers `unknown` to the rest. That checks the runner, not the models. No real-model results yet.
+
 ## Tests and project layout
 
 ```bash
