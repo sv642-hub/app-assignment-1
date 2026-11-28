@@ -20,18 +20,25 @@ labels while the mock models know 10 intents, so comparing the two would show
 disagreements that say nothing about the model. Those replies are not scored;
 `not_compared` counts them.
 
-The windows live in the gateway process and reset on restart, like the failure
-monitor's. The rules follow the scoring table drafted in PR #45. The baseline,
+The windows live in the gateway process. Each sample is also saved through
+`Store`, so with Postgres the gateway rebuilds them after a restart, like the
+failure monitor's. The rules follow the scoring table drafted in PR #45. The baseline,
 margin and coverage minimum are placeholders until they are set from dev data.
 """
 
 from collections import Counter, deque
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from datetime import UTC, datetime
 from typing import Literal
 
 from app_assignment_1.config import Settings
 from app_assignment_1.records import JevAssessment
-from app_assignment_1.schemas import BackendName, SemanticRules, SemanticStatus
+from app_assignment_1.schemas import (
+    BackendName,
+    MonitorSample,
+    SemanticRules,
+    SemanticStatus,
+)
 
 Sample = Literal["agree", "disagree", "no_signal"]
 SAMPLES: tuple[Sample, ...] = ("agree", "disagree", "no_signal")
@@ -71,6 +78,8 @@ class SemanticMonitor:
         self.rerouted: dict[BackendName, deque[Sample]] = {
             name: deque(maxlen=settings.semantic_window) for name in names
         }
+        # New samples, waiting for the gateway to save them.
+        self.unsaved: list[MonitorSample] = []
         # Replies not scored because Jev and the model are not alike, since
         # the gateway started.
         self.not_compared: Counter[BackendName] = Counter()
@@ -85,6 +94,43 @@ class SemanticMonitor:
 
     def record(self, name: BackendName, sample: Sample, rerouted: bool) -> None:
         (self.rerouted if rerouted else self.windows)[name].append(sample)
+        self.unsaved.append(
+            MonitorSample(
+                at=datetime.now(UTC),
+                model=name,
+                monitor="semantic",
+                outcome=sample,
+                traffic="rerouted" if rerouted else "own",
+            )
+        )
+
+    def restore(
+        self,
+        samples: Sequence[MonitorSample],
+        cutoffs: Mapping[BackendName, datetime | None] | None = None,
+    ) -> None:
+        """Rebuild both windows after a restart from saved samples, oldest
+        first. Each window keeps only its newest samples. With semantic
+        actions on, a re-enable resets a model's own window (`reset`), so
+        `cutoffs` gives the controller's cutoff for each model: only own
+        samples after it come back."""
+        for name in self.windows:
+            cutoff = (cutoffs or {}).get(name)
+            for traffic, windows in (
+                ("own", self.windows),
+                ("rerouted", self.rerouted),
+            ):
+                window = windows[name]
+                window.clear()
+                window.extend(
+                    s.outcome
+                    for s in samples
+                    if s.model == name
+                    and s.monitor == "semantic"
+                    and s.traffic == traffic
+                    and s.outcome in SAMPLES
+                    and (traffic == "rerouted" or cutoff is None or s.at > cutoff)
+                )
 
     def reset(self, name: BackendName) -> None:
         """Start the model's window again, as the failure monitor does when

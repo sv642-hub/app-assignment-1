@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from app_assignment_1.api import create_app
 from app_assignment_1.config import Settings
+from app_assignment_1.metrics import TEXT_PROBLEMS
 from app_assignment_1.service import check_reply
 
 
@@ -24,6 +25,7 @@ from app_assignment_1.service import check_reply
 )
 def test_format_boundaries(reply, errors):
     assert check_reply(reply) == errors
+    assert set(errors) <= set(TEXT_PROBLEMS)
 
 
 @pytest.mark.parametrize(
