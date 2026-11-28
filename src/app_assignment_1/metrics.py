@@ -42,6 +42,9 @@ REPLY_SOURCES = get_args(Trace.model_fields["reply_source"].annotation)
 FORMAT_CHECKS = get_args(Trace.model_fields["format_check"].annotation)
 JEV_OUTCOMES = ("ok", "timeout", "error")
 CALL_OUTCOMES = ("ok", "failed")
+DETECT_REASONS = ("timeout", "call_error", "format_failure", "failure")
+# Seconds from a model's first failure to its disable; 30 s is the draft target.
+DETECTION_BUCKETS = (1, 2, 4, 8, 12, 16, 20, 30, 45, 60, 120, 240)
 REPLY_CHECK_SKIP_REASONS = (
     "no_first_answer",
     "format_fallback",
@@ -114,6 +117,19 @@ class GatewayMetrics:
             buckets=LATENCY_BUCKETS,
             registry=self.registry,
         )
+        self.fault_detection = Histogram(
+            "gateway_fault_detection_seconds",
+            "Seconds from a model's first failure to the controller disabling "
+            "it, by model and reason (timeout, call_error, format_failure or "
+            "failure for a mix). Semantic disables have no onset and are not "
+            "counted.",
+            ["model", "reason"],
+            buckets=DETECTION_BUCKETS,
+            registry=self.registry,
+        )
+        for backend in gateway.backends:
+            for reason in DETECT_REASONS:
+                self.fault_detection.labels(backend.config.name, reason)
         self.jev_call_latency = Histogram(
             "gateway_jev_call_latency_seconds",
             "Time of one Jev call, by outcome: ok, timeout or error. Skipped "

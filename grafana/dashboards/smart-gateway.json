@@ -2437,6 +2437,235 @@
           }
         },
         {
+          "type": "stat",
+          "title": "Slowest time to detect a fault",
+          "description": "Seconds from a model's first failure to the controller disabling it, the worst in the time range (upper bucket bound; no data when nothing was disabled). Orange above the 30 s draft target. Semantic disables are not counted.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "refId": "A",
+              "expr": "histogram_quantile(1, sum by (le) (increase(gateway_fault_detection_seconds_bucket[$__range])))",
+              "legendFormat": "",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 30
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 1
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            }
+          },
+          "id": 41,
+          "gridPos": {
+            "x": 0,
+            "y": 95,
+            "w": 4,
+            "h": 7
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Median time to detect a fault",
+          "description": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "refId": "A",
+              "expr": "histogram_quantile(0.5, sum by (le) (increase(gateway_fault_detection_seconds_bucket[$__range])))",
+              "legendFormat": "",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 30
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 1
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            }
+          },
+          "id": 42,
+          "gridPos": {
+            "x": 4,
+            "y": 95,
+            "w": 4,
+            "h": 7
+          }
+        },
+        {
+          "type": "table",
+          "title": "Time to detect a fault (per model and reason)",
+          "description": "Faults the controller disabled a model for in the time range, by reason: timeout (a hang), call_error, format_failure or failure. Bucket detail is in the gateway_fault_detection_seconds histogram.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "refId": "A",
+              "expr": "sum by (model, reason) (increase(gateway_fault_detection_seconds_count[$__range])) > 0",
+              "legendFormat": "",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true
+          },
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "Value": true,
+                  "__name__": true,
+                  "job": true,
+                  "instance": true
+                }
+              }
+            }
+          ],
+          "id": 43,
+          "gridPos": {
+            "x": 8,
+            "y": 95,
+            "w": 8,
+            "h": 7
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Time to detect a fault (average, per model and reason)",
+          "description": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "refId": "A",
+              "expr": "sum by (model, reason) (increase(gateway_fault_detection_seconds_sum[$__interval])) / sum by (model, reason) (increase(gateway_fault_detection_seconds_count[$__interval]))",
+              "legendFormat": "{{model}} {{reason}}",
+              "instant": false,
+              "range": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "drawStyle": "line"
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "id": 44,
+          "gridPos": {
+            "x": 16,
+            "y": 95,
+            "w": 8,
+            "h": 7
+          }
+        },
+        {
           "type": "table",
           "title": "Time models stayed disabled",
           "description": "From the saved interventions: how long each disable lasted until the model was re-enabled or the next action.",
@@ -2464,10 +2693,10 @@
           "options": {
             "showHeader": true
           },
-          "id": 41,
+          "id": 45,
           "gridPos": {
             "x": 0,
-            "y": 95,
+            "y": 102,
             "w": 12,
             "h": 8
           }
@@ -2500,10 +2729,10 @@
           "options": {
             "showHeader": true
           },
-          "id": 42,
+          "id": 46,
           "gridPos": {
             "x": 12,
-            "y": 95,
+            "y": 102,
             "w": 12,
             "h": 8
           }
@@ -2607,10 +2836,10 @@
               "sort": "desc"
             }
           },
-          "id": 44,
+          "id": 48,
           "gridPos": {
             "x": 0,
-            "y": 104,
+            "y": 111,
             "w": 8,
             "h": 8
           }
@@ -2667,10 +2896,10 @@
               "sort": "desc"
             }
           },
-          "id": 45,
+          "id": 49,
           "gridPos": {
             "x": 8,
-            "y": 104,
+            "y": 111,
             "w": 8,
             "h": 8
           }
@@ -2727,10 +2956,10 @@
               "sort": "desc"
             }
           },
-          "id": 46,
+          "id": 50,
           "gridPos": {
             "x": 16,
-            "y": 104,
+            "y": 111,
             "w": 8,
             "h": 8
           }
@@ -2782,10 +3011,10 @@
               ]
             }
           },
-          "id": 47,
+          "id": 51,
           "gridPos": {
             "x": 0,
-            "y": 112,
+            "y": 119,
             "w": 4,
             "h": 4
           }
@@ -2837,10 +3066,10 @@
               ]
             }
           },
-          "id": 48,
+          "id": 52,
           "gridPos": {
             "x": 4,
-            "y": 112,
+            "y": 119,
             "w": 4,
             "h": 4
           }
@@ -2885,10 +3114,10 @@
               "placement": "bottom"
             }
           },
-          "id": 49,
+          "id": 53,
           "gridPos": {
             "x": 8,
-            "y": 112,
+            "y": 119,
             "w": 12,
             "h": 8
           }
@@ -2929,10 +3158,10 @@
               "displayMode": "list"
             }
           },
-          "id": 50,
+          "id": 54,
           "gridPos": {
             "x": 0,
-            "y": 120,
+            "y": 127,
             "w": 12,
             "h": 8
           }
@@ -2965,19 +3194,19 @@
           "options": {
             "showHeader": true
           },
-          "id": 51,
+          "id": 55,
           "gridPos": {
             "x": 12,
-            "y": 120,
+            "y": 127,
             "w": 8,
             "h": 8
           }
         }
       ],
-      "id": 43,
+      "id": 47,
       "gridPos": {
         "x": 0,
-        "y": 103,
+        "y": 110,
         "w": 24,
         "h": 1
       }
@@ -3047,10 +3276,10 @@
               ]
             }
           },
-          "id": 53,
+          "id": 57,
           "gridPos": {
             "x": 0,
-            "y": 129,
+            "y": 136,
             "w": 4,
             "h": 4
           }
@@ -3102,10 +3331,10 @@
               ]
             }
           },
-          "id": 54,
+          "id": 58,
           "gridPos": {
             "x": 4,
-            "y": 129,
+            "y": 136,
             "w": 4,
             "h": 4
           }
@@ -3157,10 +3386,10 @@
               ]
             }
           },
-          "id": 55,
+          "id": 59,
           "gridPos": {
             "x": 8,
-            "y": 129,
+            "y": 136,
             "w": 4,
             "h": 4
           }
@@ -3212,10 +3441,10 @@
               ]
             }
           },
-          "id": 56,
+          "id": 60,
           "gridPos": {
             "x": 12,
-            "y": 129,
+            "y": 136,
             "w": 4,
             "h": 4
           }
@@ -3273,10 +3502,10 @@
               "sort": "desc"
             }
           },
-          "id": 57,
+          "id": 61,
           "gridPos": {
             "x": 16,
-            "y": 129,
+            "y": 136,
             "w": 8,
             "h": 8
           }
@@ -3334,10 +3563,10 @@
               "sort": "desc"
             }
           },
-          "id": 58,
+          "id": 62,
           "gridPos": {
             "x": 0,
-            "y": 137,
+            "y": 144,
             "w": 8,
             "h": 8
           }
@@ -3394,10 +3623,10 @@
               "sort": "desc"
             }
           },
-          "id": 59,
+          "id": 63,
           "gridPos": {
             "x": 8,
-            "y": 137,
+            "y": 144,
             "w": 8,
             "h": 8
           }
@@ -3465,10 +3694,10 @@
               "sort": "desc"
             }
           },
-          "id": 60,
+          "id": 64,
           "gridPos": {
             "x": 16,
-            "y": 137,
+            "y": 144,
             "w": 8,
             "h": 8
           }
@@ -3536,10 +3765,10 @@
               "sort": "desc"
             }
           },
-          "id": 61,
+          "id": 65,
           "gridPos": {
             "x": 0,
-            "y": 145,
+            "y": 152,
             "w": 8,
             "h": 8
           }
@@ -3572,10 +3801,10 @@
           "options": {
             "showHeader": true
           },
-          "id": 62,
+          "id": 66,
           "gridPos": {
             "x": 8,
-            "y": 145,
+            "y": 152,
             "w": 12,
             "h": 8
           }
@@ -3587,19 +3816,19 @@
             "mode": "markdown",
             "content": "The **first** Jev call runs before the model and sees only the customer's message. The **second** call is optional and off by default. It runs after the reply is built, sees the message and the reply, answers the route and intent questions again, and says whether the reply fits. It costs one extra Jev call per checked request and never delays the customer.\n\n*Qwen vs Jev intent agreement* (Reply quality) is a different measure: the model's own label against the first call. The standard-first vs complex-first comparison needs the order-swap run (PRs #89, #90)."
           },
-          "id": 63,
+          "id": 67,
           "gridPos": {
             "x": 0,
-            "y": 153,
+            "y": 160,
             "w": 24,
             "h": 5
           }
         }
       ],
-      "id": 52,
+      "id": 56,
       "gridPos": {
         "x": 0,
-        "y": 128,
+        "y": 135,
         "w": 24,
         "h": 1
       }
@@ -3661,10 +3890,10 @@
               "sort": "desc"
             }
           },
-          "id": 65,
+          "id": 69,
           "gridPos": {
             "x": 0,
-            "y": 159,
+            "y": 166,
             "w": 8,
             "h": 8
           }
@@ -3721,10 +3950,10 @@
               "sort": "desc"
             }
           },
-          "id": 66,
+          "id": 70,
           "gridPos": {
             "x": 8,
-            "y": 159,
+            "y": 166,
             "w": 8,
             "h": 8
           }
@@ -3736,19 +3965,19 @@
             "mode": "markdown",
             "content": "Only port 8080 is published. Prometheus, Postgres and the gateway stay on the Compose network. Grafana is reached through the proxy at `/grafana`, as an anonymous **viewer**: no login, no editing. Postgres panels use a read-only database user."
           },
-          "id": 67,
+          "id": 71,
           "gridPos": {
             "x": 16,
-            "y": 159,
+            "y": 166,
             "w": 8,
             "h": 8
           }
         }
       ],
-      "id": 64,
+      "id": 68,
       "gridPos": {
         "x": 0,
-        "y": 158,
+        "y": 165,
         "w": 24,
         "h": 1
       }

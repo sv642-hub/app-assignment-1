@@ -136,6 +136,9 @@ class BackendConfig(StrictModel):
     # purpose. The reply passes the format check; only the semantic monitor
     # sees it.
     label_swap_rate: float = Field(default=0, ge=0, le=1)
+    # Share of mock calls that never answer, to simulate a hung model. The call
+    # waits until the gateway cuts it off.
+    hang_rate: float = Field(default=0, ge=0, le=1)
     # Share of mock calls held for slow_seconds more on purpose, to exercise
     # the request deadline and the time kept back for the other model.
     slow_rate: float = Field(default=0, ge=0, le=1)
@@ -146,7 +149,9 @@ class BackendConfig(StrictModel):
     bad_prompt_rate: float = Field(default=0, ge=0, le=1)
 
 
-FaultKind = Literal["none", "outage", "bad_format", "label_swap", "slow", "bad_prompt"]
+FaultKind = Literal[
+    "none", "outage", "bad_format", "label_swap", "hang", "slow", "bad_prompt"
+]
 
 
 class FaultRequest(StrictModel):

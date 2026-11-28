@@ -98,7 +98,7 @@ components:
     owner: Pavlos
     items:
       - built: Outage, bad format and label swap, by Compose override
-      - built: "POST /v1/faults adds slow and bad prompt; /faults/jev for mock Jev"
+      - built: "POST /v1/faults adds hang, slow and bad prompt; /faults/jev for mock Jev"
 
   jev_intent:
     title: Jev intent question

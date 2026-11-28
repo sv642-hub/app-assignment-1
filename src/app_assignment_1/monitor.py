@@ -24,6 +24,7 @@ from app_assignment_1.schemas import (
 )
 
 Outcome = Literal["ok", "format_failure", "call_error"]
+DetectReason = Literal["timeout", "call_error", "format_failure", "failure"]
 # Interventions that start or end a cooldown. Both kinds of enable clear the
 # window; an operator enable also ends a running cooldown.
 WINDOW_EVENTS = ("disabled", "re-enabled", "operator_enabled")
@@ -58,6 +59,7 @@ class Controller:
         settings: Settings,
         clock: Callable[[], float] = time.monotonic,
     ):
+        names = list(names)
         self.windows: dict[BackendName, deque[Outcome]] = {
             name: deque(maxlen=settings.monitor_window) for name in names
         }
@@ -65,7 +67,27 @@ class Controller:
         self.min_samples = settings.monitor_min_samples
         self.threshold = settings.monitor_failure_threshold
         self.cooldown = settings.controller_cooldown_seconds
+        self.timeout_streak = settings.monitor_timeout_streak
         self.clock = clock
+        # Timeouts in a row per model; any other outcome resets it. A hang
+        # fills the window slowly (each call waits out its timeout), so a
+        # streak disables the model before monitor_min_samples calls.
+        self.timeouts: Counter[BackendName] = Counter()
+        # When the current timeout streak's first call started. Kept apart
+        # from the window, which evicts old calls while the streak goes on.
+        self.streak_start: dict[BackendName, float | None] = {
+            name: None for name in names
+        }
+        # When each call in a model's window started (None for an answer),
+        # kept in step with the window, so a disable can report how long the
+        # fault went undetected: from the earliest failure still in the window,
+        # or from the start of the timeout streak when that tripped it.
+        self.starts: dict[BackendName, deque[float | None]] = {
+            name: deque(maxlen=settings.monitor_window) for name in names
+        }
+        # Called with a model's name, the reason and the seconds from the
+        # first failure to the disable.
+        self.on_detect: list[Callable[[BackendName, DetectReason, float], None]] = []
         self.disabled_until: dict[BackendName, float] = {}
         # Why each disabled model is out. One disabled only for wrong intents
         # still answers as a last resort (see `last_resort`).
@@ -103,6 +125,12 @@ class Controller:
         self.on_watched: list[Callable[[BackendName, int], None]] = []
         self.on_confirm: list[Callable[[BackendName], None]] = []
 
+    def _clear_window(self, name: BackendName) -> None:
+        self.windows[name].clear()
+        self.timeouts[name] = 0
+        self.streak_start[name] = None
+        self.starts[name].clear()
+
     def _note(
         self,
         name: BackendName,
@@ -131,7 +159,7 @@ class Controller:
         self.held.discard(name)
         self.disabled_until.pop(name, None)
         self.disabled_for.pop(name, None)
-        self.windows[name].clear()
+        self._clear_window(name)
         self.warned.discard(name)
         self.semantic_warned.discard(name)
         # Like a re-enable at the end of a cooldown: the semantic window
@@ -145,7 +173,7 @@ class Controller:
         """Start watching a new release, with a fresh window: calls to the
         version before it say nothing about this one."""
         self.watching[name] = 0
-        self.windows[name].clear()
+        self._clear_window(name)
         self.warned.discard(name)
         self.semantic_warned.discard(name)
 
@@ -153,7 +181,7 @@ class Controller:
         """End a watch after a rollback, with a fresh window for the version
         the model serves now."""
         self.watching.pop(name, None)
-        self.windows[name].clear()
+        self._clear_window(name)
         self.warned.discard(name)
         self.semantic_warned.discard(name)
 
@@ -207,7 +235,7 @@ class Controller:
         # Re-enabling happens on the next check; log when the cooldown ended.
         del self.disabled_until[name]
         self.disabled_for.pop(name, None)
-        self.windows[name].clear()
+        self._clear_window(name)
         for reset in self.on_reenable:
             reset(name)
         self._clear_kept(name)
@@ -234,13 +262,28 @@ class Controller:
         return self._record(name, outcome, can_disable, own_route)
 
     def record_error(
-        self, name: BackendName, can_disable: bool, own_route: bool = True
+        self,
+        name: BackendName,
+        can_disable: bool,
+        own_route: bool = True,
+        timed_out: bool = False,
+        call_seconds: float = 0,
     ) -> str | None:
-        """Record one call that raised; return the action taken, if any."""
-        return self._record(name, "call_error", can_disable, own_route)
+        """Record one call that raised; return the action taken, if any.
+        `call_seconds` is how long the call ran, so a hang's first failure is
+        dated from when that call started."""
+        return self._record(
+            name, "call_error", can_disable, own_route, timed_out, call_seconds
+        )
 
     def _record(
-        self, name: BackendName, outcome: Outcome, can_disable: bool, own_route: bool
+        self,
+        name: BackendName,
+        outcome: Outcome,
+        can_disable: bool,
+        own_route: bool,
+        timed_out: bool = False,
+        call_seconds: float = 0,
     ) -> str | None:
         # A cooldown that has ended is processed before this sample counts, so
         # a reply from a call still in flight is not cleared by the re-enable.
@@ -249,6 +292,18 @@ class Controller:
         self._cooling_down(name)
         window = self.windows[name]
         window.append(outcome)
+        self.starts[name].append(
+            None if outcome == "ok" else self.clock() - call_seconds
+        )
+        if timed_out:
+            began = self.clock() - call_seconds
+            first = self.streak_start[name]
+            # Hung calls can finish out of order: keep the earliest start.
+            self.streak_start[name] = began if first is None else min(first, began)
+            self.timeouts[name] += 1
+        else:
+            self.timeouts[name] = 0
+            self.streak_start[name] = None
         self.unsaved_samples.append(
             MonitorSample(
                 at=datetime.now(UTC), model=name, monitor="failure", outcome=outcome
@@ -256,7 +311,9 @@ class Controller:
         )
         failures = sum(item != "ok" for item in window)
         rate = failures / len(window)
-        if len(window) < self.min_samples or rate < self.threshold:
+        window_trips = len(window) >= self.min_samples and rate >= self.threshold
+        streak = self.timeouts[name] >= self.timeout_streak
+        if not window_trips and not streak:
             self.warned.discard(name)
             if own_route:
                 self._count_watch(name)
@@ -272,6 +329,17 @@ class Controller:
             else "failure"
         )
         reason = f"{kind} rate {rate:.0%} over last {len(window)} calls"
+        detect: DetectReason = (
+            "format_failure"
+            if not errors
+            else "call_error"
+            if errors == failures
+            else "failure"
+        )
+        if streak and not window_trips:
+            reason = f"{self.timeouts[name]} timeouts in a row; {reason}"
+        if streak:
+            detect = "timeout"
         if name in self.watching:
             action = self._roll_back(name, reason)
             if action is not None:
@@ -279,7 +347,7 @@ class Controller:
             self.watching.pop(name, None)
             if name in self.disabled_until:
                 return None
-        return self._disable(name, reason, can_disable, self.warned, "failure")
+        return self._disable(name, reason, can_disable, self.warned, "failure", detect)
 
     def _failing(self, name: BackendName) -> bool:
         window = self.windows[name]
@@ -331,6 +399,7 @@ class Controller:
         can_disable: bool,
         warned: set[BackendName],
         kind: DisabledFor,
+        detect: DetectReason | None = None,
     ) -> str | None:
         if not can_disable:
             # Log once per run above the threshold, not on every failing request.
@@ -342,6 +411,17 @@ class Controller:
         self.disabled_until[name] = self.clock() + self.cooldown
         self.disabled_for[name] = kind
         self._note(name, "disabled", reason)
+        if detect == "timeout":
+            # A streak disable is dated from the first call of the streak, not
+            # from an older failure in the window, and not from the window's
+            # oldest call: a short window has evicted the streak's start.
+            started = self.streak_start[name]
+        else:
+            failed_at = [t for t in self.starts[name] if t is not None]
+            started = min(failed_at) if failed_at else None
+        if detect is not None and started is not None:
+            for hook in self.on_detect:
+                hook(name, detect, max(0.0, self.clock() - started))
         return f"disabled {name}: {reason}"
 
     def restore(
@@ -413,6 +493,14 @@ class Controller:
             ]
             window.clear()
             window.extend(o for o in outcomes if o in OUTCOMES)
+            # Keep the start times in step with the window. A restored sample
+            # has only a wall-clock time, so it gets no start: restored
+            # failures do not count toward detection time, which understates it
+            # rather than inventing one.
+            self.starts[name].clear()
+            self.starts[name].extend(None for _ in window)
+            self.timeouts[name] = 0
+            self.streak_start[name] = None
             cutoffs[name] = cutoff
         return cutoffs
 

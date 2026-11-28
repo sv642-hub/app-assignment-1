@@ -677,3 +677,17 @@ def test_a_saved_but_not_applied_deploy_does_not_cut_the_window():
         return await store.latest_release_changes()
 
     assert asyncio.run(go()) == []
+
+
+def test_restored_start_times_stay_in_step_with_the_window():
+    c = Controller([SMALL, LARGE], Settings(_env_file=None), clock=lambda: 0.0)
+    samples = [
+        failure(NOW - timedelta(minutes=3), "format_failure"),
+        failure(NOW - timedelta(minutes=2), "ok"),
+        failure(NOW - timedelta(minutes=1), "call_error"),
+    ]
+    c.restore([], samples, NOW)
+    assert len(c.starts[SMALL]) == len(c.windows[SMALL]) == 3
+    # Restored failures carry no start, so they do not date a later disable.
+    assert all(start is None for start in c.starts[SMALL])
+    assert c.timeouts[SMALL] == 0

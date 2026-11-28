@@ -517,6 +517,34 @@ def build() -> dict:
     prom_table("Release now (per model)", "gateway_model_release == 1",
                w=9, h=7, desc="Version each model serves and whether the "
                               "release is stable, watching or rolled back.")  # fmt: skip
+    stat("Slowest time to detect a fault",
+         "histogram_quantile(1, sum by (le) (increase("
+         "gateway_fault_detection_seconds_bucket[$__range])))",
+         unit="s", w=4, h=7, decimals=1,
+         thresholds=_steps(("green", None), ("orange", 30)),
+         desc="Seconds from a model's first failure to the controller "
+              "disabling it, the worst in the time range (upper bucket "
+              "bound; no data when nothing was disabled). Orange above the "
+              "30 s draft target. Semantic disables are not counted.")  # fmt: skip
+    stat("Median time to detect a fault",
+         "histogram_quantile(0.5, sum by (le) (increase("
+         "gateway_fault_detection_seconds_bucket[$__range])))",
+         unit="s", w=4, h=7, decimals=1,
+         thresholds=_steps(("green", None), ("orange", 30)))  # fmt: skip
+    prom_table("Time to detect a fault (per model and reason)",
+               "sum by (model, reason) (increase(gateway_fault_detection_seconds_count"
+               "[$__range])) > 0",
+               w=8, h=7,
+               desc="Faults the controller disabled a model for in the time "
+                    "range, by reason: timeout (a hang), call_error, "
+                    "format_failure or failure. Bucket detail is in the "
+                    "gateway_fault_detection_seconds histogram.")  # fmt: skip
+    timeseries("Time to detect a fault (average, per model and reason)",
+               [("sum by (model, reason) (increase("
+                 "gateway_fault_detection_seconds_sum[$__interval])) / "
+                 "sum by (model, reason) (increase("
+                 "gateway_fault_detection_seconds_count[$__interval]))",
+                 "{{model}} {{reason}}")], unit="s", minimum=0, w=8, h=7)  # fmt: skip
     sql_table(
         "Time models stayed disabled",
         "WITH e AS (SELECT at, backend, action, "

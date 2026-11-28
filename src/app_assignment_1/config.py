@@ -120,6 +120,15 @@ class Settings(BaseSettings):
     escalation_threshold: float = Field(default=0.5, ge=0, le=1)
     request_deadline_seconds: float = Field(default=45, gt=0, le=600)
     alternate_reserve_seconds: float = Field(default=15, gt=0, le=600)
+    # Longest one call to a model may take while the other model could still
+    # answer. Real medians are 0.37 s (small) and 0.85 s (large), so 6 s is
+    # several times the slowest healthy reply; a hung model costs the customer
+    # this long, not the whole first-attempt budget.
+    attempt_timeout_seconds: float = Field(default=6, gt=0, le=600)
+    # This many timeouts in a row disable the model without waiting for
+    # monitor_min_samples, so a hang is caught in about
+    # attempt_timeout_seconds x monitor_timeout_streak.
+    monitor_timeout_streak: int = Field(default=3, ge=1, le=1000)
 
     @model_validator(mode="after")
     def min_samples_fit_window(self) -> "Settings":
