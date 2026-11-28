@@ -1,0 +1,11 @@
+# Run published images instead of building. Use it on top of compose.yml:
+#   IMAGE_TAG=v1.0.0 docker compose -f compose.yml -f compose.release.yml up -d
+# deploy/deploy.sh does this for you. IMAGE_TAG is a release version or a commit
+# sha; the images are the ones the release workflow pushes to GHCR.
+services:
+  gateway:
+    image: ${IMAGE_REPO:-ghcr.io/sv642-hub/app-assignment-1}/gateway:${IMAGE_TAG:?Set IMAGE_TAG to a release version or commit sha}
+    pull_policy: missing
+  proxy:
+    image: ${IMAGE_REPO:-ghcr.io/sv642-hub/app-assignment-1}/proxy:${IMAGE_TAG:?Set IMAGE_TAG to a release version or commit sha}
+    pull_policy: missing

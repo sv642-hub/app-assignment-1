@@ -1,0 +1,31 @@
+# HTTPS for the public host. Use it on top of compose.yml:
+#   SITE_ADDRESS=gateway.example.org docker compose -f compose.yml -f compose.https.yml up -d
+# deploy/deploy.sh does this for you (set SITE_ADDRESS in env/deploy.env).
+#
+# Caddy then answers on ports 80 and 443 only (port 8080 is no longer
+# published), gets a certificate for SITE_ADDRESS from Let's Encrypt, and
+# redirects HTTP to HTTPS. SITE_ADDRESS must be a public DNS name that points at
+# this host, and ports 80 and 443 must be open to the internet.
+services:
+  proxy:
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?Set SITE_ADDRESS to the public host name}
+    # !override replaces the 8080 mapping instead of adding to it.
+    ports: !override
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Certificates and the ACME account. Without this volume every container
+      # recreate asks Let's Encrypt for a new certificate, and its rate limit
+      # then blocks the site for days.
+      - caddy-data:/data
+    # The site only answers its own host name over TLS, so the check asks
+    # Caddy's admin endpoint, which listens inside the container only.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  caddy-data:

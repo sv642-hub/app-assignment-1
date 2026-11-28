@@ -437,6 +437,16 @@ class SemanticRules(StrictModel):
     actions_enabled: bool
 
 
+class ReadyResponse(StrictModel):
+    """The readiness check: can this gateway serve a customer right now?"""
+
+    status: Literal["ready", "not_ready"]
+    # "ok" or "failed" for the database; "ok", "unreachable" or "disabled" for
+    # each model. A disabled model was taken out by the controller or config.
+    database: Literal["ok", "failed"]
+    models: dict[str, Literal["ok", "unreachable", "disabled"]]
+
+
 class HealthResponse(StrictModel):
     recent_requests: list[RecentRequest] = Field(default_factory=list)
     releases: list[ModelRelease] = Field(default_factory=list)

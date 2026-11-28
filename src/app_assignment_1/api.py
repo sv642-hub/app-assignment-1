@@ -1,5 +1,6 @@
 """Smart AI Gateway mocked midpoint API."""
 
+import asyncio
 import math
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -32,6 +33,7 @@ from app_assignment_1.schemas import (
     JevFaultRequest,
     ModelRelease,
     OperatorRequest,
+    ReadyResponse,
     RecentRequest,
     ReleaseRequest,
 )
@@ -46,6 +48,46 @@ from app_assignment_1.service import (
     ReleasesNotLoaded,
 )
 from app_assignment_1.store import Store, create_store
+
+READY_PROBE_SECONDS = 3
+
+
+async def _database_ok(store: Store) -> bool:
+    """True if the store answers within the probe budget."""
+    try:
+        await asyncio.wait_for(store.ping(), READY_PROBE_SECONDS)
+    except Exception:  # Any failure means not ready; the type is not needed.
+        return False
+    return True
+
+
+async def _model_state(gateway: Gateway, backend: Any) -> str:
+    """ok, unreachable or disabled for one backend."""
+    if not gateway.usable(backend):
+        return "disabled"
+    try:
+        up = await asyncio.wait_for(backend.ping(), READY_PROBE_SECONDS)
+    except Exception:
+        return "unreachable"
+    return "ok" if up else "unreachable"
+
+
+async def check_ready(gateway: Gateway) -> ReadyResponse:
+    """Probe the database and every model at the same time."""
+    backends = list(gateway.backends)
+    database, *states = await asyncio.gather(
+        _database_ok(gateway.store), *(_model_state(gateway, b) for b in backends)
+    )
+    models: dict[str, Any] = {
+        b.config.name: state for b, state in zip(backends, states, strict=True)
+    }
+    serving = database and "ok" in models.values()
+    return ReadyResponse(
+        status="ready" if serving else "not_ready",
+        database="ok" if database else "failed",
+        models=models,
+    )
+
 
 UNKNOWN_SAVE = (
     "Could not confirm the release change was saved, so it was not made. The "
@@ -147,6 +189,22 @@ def create_app(
         if result is None:
             raise HTTPException(404, "Request not found or no longer retained")
         return result
+
+    @app.get(
+        "/v1/ready",
+        response_model=ReadyResponse,
+        responses={503: {"model": ReadyResponse, "description": "Not ready"}},
+    )
+    async def ready(request: Request) -> JSONResponse:
+        """Readiness: the database answers and at least one model is reachable.
+        Unlike /v1/health it checks the resources, so a deploy script or load
+        balancer can wait on it. It sends no chat and costs no Jev call."""
+        gateway: Gateway = request.app.state.gateway
+        result = await check_ready(gateway)
+        return JSONResponse(
+            status_code=200 if result.status == "ready" else 503,
+            content=result.model_dump(),
+        )
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health(request: Request) -> HealthResponse:

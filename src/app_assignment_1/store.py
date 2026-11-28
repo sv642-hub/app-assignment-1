@@ -49,6 +49,11 @@ class Store(Protocol):
 
     async def close(self) -> None: ...
 
+    async def ping(self) -> None:
+        """Return if the store answers a trivial query; raise if it cannot.
+        The readiness check calls it."""
+        ...
+
     async def save_request(
         self, response: ChatResponse, jev: Sequence[JevAssessment] = ()
     ) -> None:
@@ -147,6 +152,9 @@ class MemoryStore:
 
     async def close(self) -> None:
         pass
+
+    async def ping(self) -> None:
+        """Memory is always there."""
 
     async def save_request(
         self, response: ChatResponse, jev: Sequence[JevAssessment] = ()
@@ -272,6 +280,12 @@ class PostgresStore:
 
     async def close(self) -> None:
         await self.pool.close()
+
+    async def ping(self) -> None:
+        """Run `SELECT 1` on a pooled connection (the pool's own timeout
+        applies), so a database that is down or full raises."""
+        async with self.pool.connection() as conn:
+            await conn.execute("SELECT 1")
 
     async def save_request(
         self, response: ChatResponse, jev: Sequence[JevAssessment] = ()

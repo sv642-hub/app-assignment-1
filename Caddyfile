@@ -1,4 +1,7 @@
-:8080 {
+# SITE_ADDRESS picks the site. Unset, it is :8080: plain HTTP for local use and
+# CI. A hostname (compose.https.yml) makes Caddy get a Let's Encrypt certificate
+# for it and redirect port 80 to HTTPS on its own.
+{$SITE_ADDRESS::8080} {
     encode zstd gzip
 
     @gateway path /v1 /v1/* /docs /docs/* /openapi.json /redoc

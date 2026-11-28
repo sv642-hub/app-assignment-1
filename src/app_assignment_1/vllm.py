@@ -62,6 +62,15 @@ class VLLMBackend:
         self.reply_schema = BackendReply.model_json_schema()
         self.reply_schema["properties"]["intent"]["enum"] = sorted(labels.names)
 
+    async def ping(self) -> bool:
+        """True if the vLLM server lists its models. No tokens are generated,
+        so the readiness check can call it often."""
+        try:
+            response = await self.client.get("/v1/models", timeout=2)
+        except httpx.HTTPError:
+            return False
+        return response.status_code == 200
+
     async def generate(self, message: str) -> BackendReply:
         try:
             response = await self.client.post(
