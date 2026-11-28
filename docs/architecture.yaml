@@ -238,6 +238,7 @@ components:
       - todo: Results on the real models; fresh set as a check
       - todo: 300 messages, 150 grades; split not agreed
       - built: Banking77 dev split (seeded, 20% per intent)
+      - built: "Jev route-order script; not run yet"
 
   reports:
     title: Reports and artifacts
@@ -281,7 +282,7 @@ layout:
     probe: [1420, 1080, 370, 222]
     ci: [45, 1395, 465, 205]
     chaos: [530, 1395, 465, 200]
-    evaluation: [1015, 1395, 460, 200]
+    evaluation: [1015, 1395, 460, 210]
     reports: [1495, 1395, 455, 200]
 
   notes:
