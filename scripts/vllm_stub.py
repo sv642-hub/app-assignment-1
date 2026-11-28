@@ -1,3 +1,5 @@
+"""A stand-in vLLM server for local tests."""
+
 import asyncio
 import json
 
@@ -8,6 +10,7 @@ app = FastAPI()
 
 @app.post("/v1/chat/completions")
 async def chat_completions(simulate: str = "ok") -> dict:
+    """Answer like vLLM, or fail or stall when `simulate` says so."""
     if simulate == "unavailable":
         raise HTTPException(status_code=503, detail="Simulated backend outage")
     if simulate == "slow":

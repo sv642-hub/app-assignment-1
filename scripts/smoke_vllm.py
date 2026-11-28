@@ -1,3 +1,5 @@
+"""Smoke test for one real vLLM server."""
+
 import argparse
 import asyncio
 import os
@@ -21,6 +23,7 @@ CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
 
 
 async def main() -> None:
+    """Call a vLLM server once and check the reply."""
     parser = argparse.ArgumentParser(description="Verify one live vLLM endpoint.")
     parser.add_argument("--route", choices=("standard", "complex"), required=True)
     parser.add_argument("--base-url", required=True, help="Server URL without /v1")

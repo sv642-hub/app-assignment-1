@@ -28,6 +28,7 @@ CONDITIONS = ("both", "difference", "chance")
 
 
 def false_pass(seed: int, correct: int, wrong: int, condition: str) -> bool:
+    """Simulate one run of the probe gate on random scores."""
     rng = random.Random(seed)
     labels = [True] * correct + [False] * wrong
     probe = [rng.random() for _ in labels]
@@ -43,6 +44,7 @@ def false_pass(seed: int, correct: int, wrong: int, condition: str) -> bool:
 
 
 def main() -> None:
+    """Print how often the gate passes with no signal."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--correct", type=int, default=20)
     parser.add_argument("--wrong", type=int, default=20)

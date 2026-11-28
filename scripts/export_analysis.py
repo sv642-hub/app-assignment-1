@@ -31,6 +31,7 @@ REQUEST_FIELDS = ("id", "completed_at", "intent")
 
 
 def request_row(response: dict[str, Any], settings_version: str | None) -> dict:
+    """Build one analysis row from a saved response, without reply text."""
     row = {key: response[key] for key in REQUEST_FIELDS}
     row["settings_version"] = settings_version
     row["trace"] = response["trace"]
@@ -59,6 +60,7 @@ def export(url: str, out: Path) -> tuple[int, int]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Export requests and Jev assessments from Postgres as JSON Lines."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--out", type=Path, required=True, help="output folder")
     args = parser.parse_args(argv)

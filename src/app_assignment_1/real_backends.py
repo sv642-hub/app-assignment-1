@@ -15,6 +15,7 @@ from app_assignment_1.vllm import VLLMBackend, build_system_prompt
 
 
 def vllm_base_url(settings: Settings, name: BackendName) -> AnyHttpUrl:
+    """Return the configured vLLM base URL for a model."""
     url = (
         settings.vllm_small_base_url
         if name == "qwen3-1.7b"

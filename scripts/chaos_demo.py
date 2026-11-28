@@ -58,10 +58,14 @@ class DemoError(Exception):
 
 
 class Api:
+    """A small HTTP client for the gateway's chat and operator routes."""
+
     def __init__(self, base: str, token: str) -> None:
+        """Keep the base URL and the operator token."""
         self.base, self.token = base.rstrip("/"), token
 
     def call(self, path: str, payload: dict[str, Any] | None = None) -> Any:
+        """Send a GET, or a POST with a JSON payload, and return the parsed JSON."""
         headers = {"Content-Type": "application/json"}
         if payload is not None and path != "/v1/chat":
             headers["Authorization"] = "Bearer " + self.token
@@ -79,11 +83,13 @@ class Api:
 
 
 def monitor(api: Any, name: str) -> dict[str, Any]:
+    """Return one model's monitor entry from `/v1/health`."""
     health = api.call("/v1/health")
     return {m["name"]: m for m in health["monitor"]}[name]
 
 
 def send(api: Any, message: str) -> dict[str, Any]:
+    """Send one chat message and return the response."""
     trace = api.call("/v1/chat", {"message": message})["trace"]
     return {
         "model": trace["model"],
@@ -94,6 +100,7 @@ def send(api: Any, message: str) -> dict[str, Any]:
 
 
 def show(step: int, kind: str, reply: dict[str, Any], out: Callable[[str], None]):
+    """Print one demo step."""
     line = f"  {step:>2}. {kind:<8} -> {reply['model']:<10} format {reply['format']}"
     if reply["fallback"]:
         line += f" | {reply['fallback']}"
@@ -223,6 +230,7 @@ SCRAPED_QUERY = f'timestamp(gateway_model_disabled{{model="{SMALL}"}})'
 
 
 def scraped_at(rows: list[dict[str, Any]]) -> str | None:
+    """Return the time of the newest metrics scrape, if any."""
     return rows[0]["value"][1] if rows else None
 
 
@@ -258,6 +266,7 @@ def prometheus(
 
 
 def summary(results: list[dict[str, Any]], out: Callable[[str], None] = print) -> None:
+    """Print what the controller did during the demo."""
     out("\nMeasured in this run (one run each; not an average)")
     out("  to recover: from the disable until the small model answers again")
     out(f"  {'scenario':<12} {'messages':>8} {'to disable':>11} {'to recover':>11}")
@@ -269,6 +278,7 @@ def summary(results: list[dict[str, Any]], out: Callable[[str], None] = print) -
 
 
 def main(argv: list[str]) -> int:
+    """Inject each fault, watch the controller act and print a summary."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("url", nargs="?", default=DEFAULT_URL)
     parser.add_argument("--scenario", choices=[*SCENARIOS, "all"], default="all")

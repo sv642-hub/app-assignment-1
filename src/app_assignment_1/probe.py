@@ -59,6 +59,7 @@ class ProbeExample(StrictModel):
     @classmethod
     def _prompt_has_text(cls, prompt: str) -> str:
         # The prompt is kept as given, because the extractor reads it.
+        """Reject a blank prompt."""
         if not normalize_prompt(prompt):
             raise ValueError("prompt must contain visible text.")
         return prompt
@@ -101,6 +102,7 @@ class GateReport(StrictModel):
 
     @model_validator(mode="after")
     def _check_consistency(self) -> Self:
+        """Check the report's numbers agree with each other."""
         if self.difference_low > self.difference_high:
             raise ValueError("difference_low must not exceed difference_high.")
         if self.probe_auroc_low > self.probe_auroc_high:
@@ -119,7 +121,8 @@ class ActivationExtractor(Protocol):
 
     mocked: bool
 
-    def extract(self, prompt: str, reply: str) -> list[float]: ...
+    def extract(self, prompt: str, reply: str) -> list[float]:
+        """Return the activation vector for a prompt and reply."""
 
 
 class MockActivationExtractor:
@@ -128,9 +131,11 @@ class MockActivationExtractor:
     mocked = True
 
     def __init__(self, size: int = 8):
+        """Set the length of the fake activation vector."""
         self.size = size
 
     def extract(self, prompt: str, reply: str) -> list[float]:
+        """Return a fixed fake vector derived from the text."""
         features = []
         for index in range(self.size):
             text = f"{index}\0{prompt}\0{reply}".encode()
@@ -141,6 +146,8 @@ class MockActivationExtractor:
 
 @dataclass(frozen=True)
 class LinearProbe:
+    """A logistic-regression probe trained on activation vectors."""
+
     weights: tuple[float, ...]
     bias: float
 
@@ -161,6 +168,7 @@ class LinearProbe:
 
 
 def _sigmoid(value: float) -> float:
+    """Return the logistic function of `value`, safe for large inputs."""
     if value >= 0:
         return 1 / (1 + math.exp(-value))
     exponent = math.exp(value)
@@ -205,6 +213,7 @@ def train_probe(
 
 
 def _class_indices(labels: Sequence[bool]) -> tuple[list[int], list[int]]:
+    """Return the indices of the negative and positive examples."""
     positives = [index for index, label in enumerate(labels) if label]
     negatives = [index for index, label in enumerate(labels) if not label]
     if not positives or not negatives:
@@ -215,6 +224,7 @@ def _class_indices(labels: Sequence[bool]) -> tuple[list[int], list[int]]:
 def _check_finite(scores: Sequence[float]) -> None:
     # NaN never equals itself, so the tie loop in `auroc` would never advance.
     # Infinities sort, but a score that reaches one is a broken input too.
+    """Reject scores that are NaN or infinite."""
     if not all(math.isfinite(score) for score in scores):
         raise ValueError("Scores must be finite numbers.")
 
@@ -286,6 +296,7 @@ _INVISIBLE = frozenset(
 
 
 def _is_invisible(char: str) -> bool:
+    """Return True for a character that does not show on screen."""
     category = unicodedata.category(char)
     if category == "Cf" or ord(char) in _INVISIBLE:
         return True
@@ -310,6 +321,7 @@ def normalize_prompt(prompt: str) -> str:
 
 
 def _check_no_repeats(examples: Sequence[ProbeExample], name: str) -> set[str]:
+    """Reject repeated prompts in a set and return the normalised prompts."""
     counts = Counter(normalize_prompt(example.prompt) for example in examples)
     repeated = sorted(prompt for prompt, count in counts.items() if count > 1)
     if repeated:

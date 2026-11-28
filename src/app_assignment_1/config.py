@@ -20,6 +20,8 @@ PUBLIC_DEMO_OPERATOR_TOKEN = "chaos-demo-token-not-for-deployment"
 
 
 class Settings(BaseSettings):
+    """Every gateway setting, read from `APP_` variables and checked at startup."""
+
     model_config = SettingsConfigDict(
         env_prefix="APP_",
         env_file=(".env", "env/.env"),
@@ -44,6 +46,7 @@ class Settings(BaseSettings):
     @classmethod
     def blank_limit_keeps_everything(cls, value: object) -> object:
         # Uncommenting the template line and leaving it blank means "no limit".
+        """Treat a blank request-history limit as no limit."""
         return None if isinstance(value, str) and not value.strip() else value
 
     jev_timeout_seconds: float = Field(default=2, gt=0, le=30)
@@ -132,6 +135,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def min_samples_fit_window(self) -> "Settings":
+        """Reject a minimum sample count larger than the monitor window."""
         if self.monitor_min_samples > self.monitor_window:
             raise ValueError("monitor_min_samples cannot exceed monitor_window")
         if self.semantic_min_samples > self.semantic_window:
@@ -140,6 +144,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def postgres_needs_url(self) -> "Settings":
+        """Require a database URL when the store is Postgres."""
         if self.database_url is not None and not self.database_url.get_secret_value():
             self.database_url = None
         if self.store == "postgres" and self.database_url is None:
@@ -167,6 +172,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def operator_token_is_long(self) -> "Settings":
+        """Reject an operator token that is set but too short."""
         if self.operator_token is None:
             return self
         # The header value is stripped before the compare, so strip the token.
@@ -186,6 +192,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def deadline_leaves_time_for_both_attempts(self) -> "Settings":
+        """Reject a deadline too short for the first attempt plus the reserve."""
         if (
             self.jev_timeout_seconds + self.alternate_reserve_seconds
             >= self.request_deadline_seconds
@@ -198,6 +205,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def real_jev_needs_a_key_and_https(self) -> "Settings":
+        """Require an API key and an https URL when Jev is real."""
         if self.jev_mode != "real":
             return self
         if self.jev_api_key is None or not self.jev_api_key.get_secret_value():
@@ -209,6 +217,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def real_qwen_needs_both_urls_and_a_key(self) -> "Settings":
+        """Require both vLLM URLs and the key when the backends are real."""
         if self.provider_mode != "real":
             return self
         if self.vllm_small_base_url is None or self.vllm_large_base_url is None:

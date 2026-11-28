@@ -45,9 +45,11 @@ class Store(Protocol):
     their schema is agreed.
     """
 
-    async def open(self) -> None: ...
+    async def open(self) -> None:
+        """Open the connection and run pending migrations."""
 
-    async def close(self) -> None: ...
+    async def close(self) -> None:
+        """Close the store."""
 
     async def save_request(
         self, response: ChatResponse, jev: Sequence[JevAssessment] = ()
@@ -62,13 +64,15 @@ class Store(Protocol):
         own, so a failure here never touches the request."""
         ...
 
-    async def get_request(self, request_id: UUID) -> ChatResponse | None: ...
+    async def get_request(self, request_id: UUID) -> ChatResponse | None:
+        """Return a saved request, or None."""
 
     async def recent_requests(self, limit: int) -> list[ChatResponse]:
         """Up to `limit` retained requests, newest first."""
         ...
 
-    async def save_interventions(self, items: Sequence[Intervention]) -> None: ...
+    async def save_interventions(self, items: Sequence[Intervention]) -> None:
+        """Save controller interventions."""
 
     async def recent_interventions(self, limit: int) -> list[Intervention]:
         """The last `limit` interventions, oldest first."""
@@ -80,7 +84,8 @@ class Store(Protocol):
         of newer interventions on the other model can't hide them."""
         ...
 
-    async def save_monitor_samples(self, items: Sequence[MonitorSample]) -> None: ...
+    async def save_monitor_samples(self, items: Sequence[MonitorSample]) -> None:
+        """Save monitor window samples; a sample saved twice is kept once."""
 
     async def recent_monitor_samples(self, per_window: int) -> list[MonitorSample]:
         """The newest `per_window` samples of each model's window (per model,
@@ -116,6 +121,7 @@ class RevisionTaken(Exception):
     """Another release change was already saved under these revisions."""
 
     def __init__(self, events: Sequence[ReleaseEvent]):
+        """Keep the events that conflict with saved ones."""
         super().__init__(f"{len(events)} release revision(s) already taken")
         self.events = list(events)
 
@@ -124,6 +130,7 @@ class MemoryStore:
     """Bounded, process-local history. Resets when the gateway restarts."""
 
     def __init__(self, limit: int, intervention_limit: int = INTERVENTION_LIMIT):
+        """Keep up to `limit` requests and interventions in memory."""
         self.limit = limit
         self.requests: OrderedDict[UUID, ChatResponse] = OrderedDict()
         self.interventions: deque[Intervention] = deque(maxlen=intervention_limit)
@@ -143,35 +150,44 @@ class MemoryStore:
         self.voided: set[tuple[str, int]] = set()
 
     async def open(self) -> None:
+        """Nothing to open."""
         pass
 
     async def close(self) -> None:
+        """Nothing to close."""
         pass
 
     async def save_request(
         self, response: ChatResponse, jev: Sequence[JevAssessment] = ()
     ) -> None:
+        """Keep a request and its Jev assessments."""
         self.requests[response.id] = response
         self.jev_assessments.extend(jev)
         while len(self.requests) > self.limit:
             self.requests.popitem(last=False)
 
     async def save_reply_check(self, check: ReplyCheck) -> None:
+        """Keep a second-call record."""
         self.reply_checks.append(check)
 
     async def get_request(self, request_id: UUID) -> ChatResponse | None:
+        """Return a kept request, or None."""
         return self.requests.get(request_id)
 
     async def recent_requests(self, limit: int) -> list[ChatResponse]:
+        """Return the newest kept requests, newest first."""
         return list(self.requests.values())[::-1][:limit]
 
     async def save_interventions(self, items: Sequence[Intervention]) -> None:
+        """Keep interventions."""
         self.interventions.extend(items)
 
     async def recent_interventions(self, limit: int) -> list[Intervention]:
+        """Return the newest interventions, oldest first."""
         return list(self.interventions)[-limit:] if limit > 0 else []
 
     async def latest_interventions(self, actions: Sequence[str]) -> list[Intervention]:
+        """Return each model's newest intervention of each action."""
         latest: dict[tuple[str, str], int] = {}
         items = list(self.interventions)
         for index, item in enumerate(items):
@@ -180,6 +196,7 @@ class MemoryStore:
         return [items[index] for index in sorted(latest.values())]
 
     async def save_monitor_samples(self, items: Sequence[MonitorSample]) -> None:
+        """Keep monitor samples, skipping ones already kept."""
         for item in items:
             if item.id in self.monitor_sample_ids:
                 continue  # a retried save
@@ -189,6 +206,7 @@ class MemoryStore:
             self.monitor_sample_ids.add(item.id)
 
     async def recent_monitor_samples(self, per_window: int) -> list[MonitorSample]:
+        """Return the newest samples of each window, oldest first."""
         kept: list[MonitorSample] = []
         counts: Counter[tuple[str, str, str | None]] = Counter()
         for sample in reversed(self.monitor_samples):
@@ -199,6 +217,7 @@ class MemoryStore:
         return kept[::-1]
 
     async def save_release_events(self, items: Sequence[ReleaseEvent]) -> None:
+        """Keep release events; raise RevisionTaken on a conflict."""
         taken = []
         for item in items:
             key = (item.backend, item.revision)
@@ -220,9 +239,11 @@ class MemoryStore:
             raise RevisionTaken(taken)
 
     async def recent_release_events(self, limit: int) -> list[ReleaseEvent]:
+        """Return the newest release events, oldest first."""
         return list(self.release_events)[-limit:] if limit > 0 else []
 
     async def latest_release_changes(self) -> list[ReleaseEvent]:
+        """Return each model's newest change that was not kept."""
         newest = []
         for backend, by_revision in self.changes.items():
             live = [
@@ -233,6 +254,7 @@ class MemoryStore:
         return newest
 
     async def latest_release_events(self) -> list[ReleaseEvent]:
+        """Return each model's newest release event."""
         return list(self.latest_releases.values())
 
 
@@ -251,6 +273,7 @@ class PostgresStore:
         connect_timeout: float = 30,
         timeout: float = 2,
     ):
+        """Keep the URL and timeouts; the pool opens in `open`."""
         self.limit = limit
         self.connect_timeout = connect_timeout
         # psycopg_pool logs libpq's connection errors at WARNING, and those can
@@ -266,11 +289,13 @@ class PostgresStore:
         )
 
     async def open(self) -> None:
+        """Open the pool and run pending migrations."""
         await self.pool.open(wait=True, timeout=self.connect_timeout)
         async with self.pool.connection() as conn:
             await migrate(conn)
 
     async def close(self) -> None:
+        """Close the pool."""
         await self.pool.close()
 
     async def save_request(
@@ -278,6 +303,7 @@ class PostgresStore:
     ) -> None:
         # The pool commits once when the block ends, so the request and its
         # assessments are saved together or not at all.
+        """Insert a request and its Jev assessments in one transaction."""
         async with self.pool.connection() as conn:
             await conn.execute(
                 """
@@ -337,6 +363,7 @@ class PostgresStore:
                 )
 
     async def save_reply_check(self, check: ReplyCheck) -> None:
+        """Insert a second-call record."""
         async with self.pool.connection() as conn:
             await conn.execute(
                 """
@@ -369,6 +396,7 @@ class PostgresStore:
             )
 
     async def get_request(self, request_id: UUID) -> ChatResponse | None:
+        """Read a saved request, or None."""
         async with self.pool.connection() as conn:
             cur = await conn.execute(
                 "SELECT response FROM requests WHERE id = %s", (request_id,)
@@ -377,6 +405,7 @@ class PostgresStore:
         return None if row is None else ChatResponse.model_validate(row[0])
 
     async def recent_requests(self, limit: int) -> list[ChatResponse]:
+        """Read the newest requests, newest first."""
         async with self.pool.connection() as conn:
             cur = await conn.execute(
                 "SELECT response FROM requests ORDER BY seq DESC LIMIT %s", (limit,)
@@ -385,6 +414,7 @@ class PostgresStore:
         return [ChatResponse.model_validate(row[0]) for row in rows]
 
     async def save_interventions(self, items: Sequence[Intervention]) -> None:
+        """Insert interventions."""
         if not items:
             return
         async with self.pool.connection() as conn:
@@ -396,6 +426,7 @@ class PostgresStore:
                 )
 
     async def recent_interventions(self, limit: int) -> list[Intervention]:
+        """Read the newest interventions, oldest first."""
         async with self.pool.connection() as conn:
             cur = await conn.execute(
                 """
@@ -412,6 +443,7 @@ class PostgresStore:
         ]
 
     async def latest_interventions(self, actions: Sequence[str]) -> list[Intervention]:
+        """Read each model's newest intervention of each action."""
         async with self.pool.connection() as conn:
             cur = await conn.execute(
                 """
@@ -431,6 +463,7 @@ class PostgresStore:
         ]
 
     async def save_monitor_samples(self, items: Sequence[MonitorSample]) -> None:
+        """Insert monitor samples, skipping ones already saved."""
         if not items:
             return
         async with self.pool.connection() as conn:
@@ -446,6 +479,7 @@ class PostgresStore:
                 )
 
     async def recent_monitor_samples(self, per_window: int) -> list[MonitorSample]:
+        """Read the newest samples of each window, oldest first."""
         async with self.pool.connection() as conn:
             cur = await conn.execute(
                 """
@@ -474,6 +508,7 @@ class PostgresStore:
         ]
 
     async def save_release_events(self, items: Sequence[ReleaseEvent]) -> None:
+        """Insert release events; raise RevisionTaken on a conflict."""
         if not items:
             return
         taken = []
@@ -525,6 +560,7 @@ class PostgresStore:
             raise RevisionTaken(taken)
 
     async def recent_release_events(self, limit: int) -> list[ReleaseEvent]:
+        """Read the newest release events, oldest first."""
         async with self.pool.connection() as conn:
             cur = await conn.execute(
                 f"""
@@ -538,6 +574,7 @@ class PostgresStore:
         return [_release_event(row) for row in rows]
 
     async def latest_release_changes(self) -> list[ReleaseEvent]:
+        """Read each model's newest change that was not kept."""
         async with self.pool.connection() as conn:
             cur = await conn.execute(
                 f"""
@@ -557,6 +594,7 @@ class PostgresStore:
         return [_release_event(row) for row in rows]
 
     async def latest_release_events(self) -> list[ReleaseEvent]:
+        """Read each model's newest release event."""
         async with self.pool.connection() as conn:
             cur = await conn.execute(
                 f"""
@@ -582,6 +620,7 @@ RELEASE_COLUMNS = (
 
 
 def _release_event(row: Sequence[object]) -> ReleaseEvent:
+    """Build a ReleaseEvent from a database row."""
     return ReleaseEvent.model_validate(
         dict(zip(RELEASE_COLUMNS.split(", "), row, strict=True))
     )
@@ -633,6 +672,7 @@ async def migrate(conn: AsyncConnection) -> list[str]:
 
 
 def create_store(settings: Settings) -> Store:
+    """Build the store the settings ask for."""
     if settings.store == "postgres":
         if settings.database_url is None:  # Settings already rejects this.
             raise ValueError("APP_DATABASE_URL is required when APP_STORE=postgres")

@@ -51,14 +51,17 @@ class ArchitectureError(ValueError):
 
 
 def num(value: float) -> str:
+    """Format a number for SVG."""
     return str(int(value)) if float(value).is_integer() else f"{value:.1f}"
 
 
 def width(text: str, size: float, bold: bool = False) -> float:
+    """Estimate the width of text in the SVG font."""
     return len(text) * size * (BOLD_CHAR if bold else CHAR)
 
 
 def wrap(text: str, max_width: float, size: float, bold: bool = False) -> list[str]:
+    """Wrap text to a maximum width."""
     lines: list[str] = []
     line = ""
     for word in text.split():
@@ -81,6 +84,7 @@ def text(
     anchor: str = "start",
     extra: str = "",
 ) -> str:
+    """Return an SVG text element."""
     weight = ' font-weight="700"' if bold else ""
     return (
         f'<text x="{num(x)}" y="{num(y)}" font-size="{num(size)}" fill="{fill}"'
@@ -89,6 +93,7 @@ def text(
 
 
 def mark(kind: str, cx: float, cy: float) -> str:
+    """Return the SVG mark for a status."""
     if kind == "built":
         return (
             f'<circle cx="{num(cx)}" cy="{num(cy)}" r="9" fill="#16a34a"/>'
@@ -109,11 +114,13 @@ def mark(kind: str, cx: float, cy: float) -> str:
 
 
 def item_mark(item: dict[str, str]) -> tuple[str, str]:
+    """Return the mark and label for one item."""
     ((kind, label),) = item.items()
     return kind, label
 
 
 def box_status(items: list[dict[str, str]]) -> str:
+    """Return the status a box shows, from its items."""
     kinds = [item_mark(item)[0] for item in items]
     if all(kind == "built" for kind in kinds):
         return "built"
@@ -125,6 +132,7 @@ def box_status(items: list[dict[str, str]]) -> str:
 def check_keys(
     where: str, value: Any, required: set[str], optional: set[str]
 ) -> list[str]:
+    """Return errors for missing or unknown keys."""
     if not isinstance(value, dict):
         return [f"{where}: expected a mapping"]
     errors = [f"{where}: missing `{key}`" for key in sorted(required - set(value))]
@@ -136,6 +144,7 @@ def check_keys(
 
 
 def is_numbers(value: Any, count: int) -> bool:
+    """Return True for a list of `count` numbers."""
     return (
         isinstance(value, list)
         and len(value) == count
@@ -144,6 +153,7 @@ def is_numbers(value: Any, count: int) -> bool:
 
 
 def validate(doc: Any) -> None:
+    """Raise if the architecture YAML is malformed."""
     errors = check_keys(
         "file", doc, {"title", "subtitle", "components", "layout"}, set()
     )
@@ -230,6 +240,7 @@ def validate(doc: Any) -> None:
 
 
 def render_box(name: str, comp: dict[str, Any], at: list[float]) -> str:
+    """Return the SVG for one component box."""
     x, y, w, h = at
     status = box_status(comp["items"])
     label, stroke, fill, label_color, dashed = STATUS[status]
@@ -286,6 +297,7 @@ def render_box(name: str, comp: dict[str, Any], at: list[float]) -> str:
 
 
 def render_area(area: dict[str, Any]) -> str:
+    """Return the SVG for one area."""
     x, y, w, h = area["at"]
     style = area["style"]
     if style == "band":
@@ -312,6 +324,7 @@ def render_area(area: dict[str, Any]) -> str:
 
 
 def render_arrow(arrow: dict[str, Any]) -> str:
+    """Return the SVG for one arrow."""
     color, dashed = ARROW_KINDS[arrow["kind"]]
     points = " ".join(f"{num(px)},{num(py)}" for px, py in arrow["points"])
     dash = ' stroke-dasharray="7 5"' if dashed else ""
@@ -336,6 +349,7 @@ def render_arrow(arrow: dict[str, Any]) -> str:
 
 
 def render_legend(y: float) -> str:
+    """Return the SVG legend."""
     parts: list[str] = []
     x = 32.0
     for kind, label in (
@@ -373,6 +387,7 @@ def render_legend(y: float) -> str:
 
 
 def render(doc: dict[str, Any]) -> str:
+    """Return the whole diagram as SVG."""
     validate(doc)
     layout = doc["layout"]
     w, h = layout["size"]
@@ -410,6 +425,7 @@ def render(doc: dict[str, Any]) -> str:
 
 
 def load(path: Path = SOURCE) -> dict[str, Any]:
+    """Read the architecture YAML."""
     try:
         doc = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
@@ -419,6 +435,7 @@ def load(path: Path = SOURCE) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Write the SVG, or with `--check` fail if it differs."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--check", action="store_true", help="fail if the SVG is out of date"

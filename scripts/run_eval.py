@@ -98,6 +98,7 @@ Call = Callable[[Message], Awaitable[Item]]
 
 
 def load_config() -> tuple[LabelSet, dict[str, PolicyCard], list[BackendConfig]]:
+    """Load the labels, policy cards and backend configs."""
     labels = load_labels(CONFIG / "labels.json")
     cards = TypeAdapter(dict[str, PolicyCard]).validate_json(
         (CONFIG / "policy_cards.json").read_text()
@@ -109,6 +110,7 @@ def load_config() -> tuple[LabelSet, dict[str, PolicyCard], list[BackendConfig]]
 
 
 def banking77_test(labels: LabelSet, cache: Path = ROOT / CACHE_DIR) -> Dataset:
+    """Load the Banking77 test set, downloading it to the cache if needed."""
     expected = BANKING77_SHA256["test"]
     path = cache / f"banking77-test-{expected[:12]}.csv"
     if path.exists() and sha256(path.read_bytes()) == expected:
@@ -126,6 +128,7 @@ def banking77_test(labels: LabelSet, cache: Path = ROOT / CACHE_DIR) -> Dataset:
 
 
 def csv_dataset(path: Path, labels: LabelSet, split: str | None = None) -> Dataset:
+    """Load a `text,intent` CSV as a dataset."""
     body = path.read_bytes()
     try:
         messages = parse_labelled_csv(body, labels, split)
@@ -136,6 +139,7 @@ def csv_dataset(path: Path, labels: LabelSet, split: str | None = None) -> Datas
 
 
 def git_commit() -> str:
+    """Return the current commit, or `unknown`."""
     try:
         commit = (
             subprocess.run(
@@ -158,9 +162,12 @@ def git_commit() -> str:
 def backend_call(
     backend: MockBackend | VLLMBackend, labels: LabelSet, cards: dict[str, PolicyCard]
 ) -> Call:
+    """Build the call that sends a message to one backend."""
+
     async def call(message: Message) -> Item:
         # The gateway's own input check, so both targets score the same rows:
         # it refuses an empty or over-long message, and strips the rest.
+        """Send one message to the backend and return the item."""
         try:
             text = ChatRequest(message=message.text).message
         except ValidationError:
@@ -183,7 +190,10 @@ def backend_call(
 
 
 def gateway_call(client: httpx.AsyncClient) -> Call:
+    """Build the call that sends a message through `/v1/chat`."""
+
     async def call(message: Message) -> Item:
+        """Send one message through the gateway and return the item."""
         start = time.perf_counter()
         response = await client.post("/v1/chat", json={"message": message.text})
         if response.status_code in GatewayAnswered.STATUSES:
@@ -220,6 +230,7 @@ class GatewayAnswered(Exception):
     STATUSES = (413, 422, 503)
 
     def __init__(self, status: int) -> None:
+        """Keep the HTTP status the gateway answered with."""
         super().__init__(status)
         self.code = "unavailable" if status == 503 else f"HTTP{status}"
 
@@ -241,12 +252,14 @@ FINAL_ERRORS: tuple[type[Exception], ...] = (
 
 def error_code(exc: Exception) -> str:
     # The type or status only: provider messages can echo the input.
+    """Return a short code for an exception, never its text."""
     if isinstance(exc, GatewayAnswered | MessageRejected):
         return exc.code
     return type(exc).__name__
 
 
 def read_results(path: Path) -> tuple[dict[str, Any], list[Item]]:
+    """Read a results file: its header and its items."""
     header: dict[str, Any] | None = None
     items: dict[int, Item] = {}
     lines = path.read_text(encoding="utf-8").splitlines()
@@ -277,10 +290,12 @@ async def run_items(
     concurrency: int,
     model: str | None = None,
 ) -> None:
+    """Send every message with a bounded number in flight and write each item."""
     limit = asyncio.Semaphore(concurrency)
     done = 0
 
     async def one(message: Message) -> None:
+        """Send one message and write its item."""
         nonlocal done
         async with limit:
             item: Item = {"type": "item", "row": message.row, "gold": message.gold}
@@ -325,6 +340,7 @@ def vllm_key() -> str:
 
 
 async def run(args: argparse.Namespace) -> int:
+    """Run the `run` command: send messages to one target and save the results."""
     labels, cards, backends = load_config()
     dataset = (
         csv_dataset(args.dataset_csv, labels, args.split)
@@ -444,6 +460,7 @@ async def run(args: argparse.Namespace) -> int:
             file.write(json.dumps(header) + "\n")
 
         def write(item: Item) -> None:
+            """Append one result item to the output file."""
             file.write(json.dumps(item) + "\n")
             file.flush()
 
@@ -458,6 +475,7 @@ async def run(args: argparse.Namespace) -> int:
 
 
 def _fmt(value: float | None, digits: int = 3) -> str:
+    """Format a number, or a dash if it is None."""
     return "-" if value is None else f"{value:.{digits}f}"
 
 
@@ -467,6 +485,7 @@ def is_direct(header: dict[str, Any]) -> bool:
 
 
 def print_scores(paths: list[Path], top: int = 0) -> None:
+    """Print the scores of one or more result files."""
     labels, _, _ = load_config()
     for path in paths:
         header, items = read_results(path)
@@ -513,6 +532,7 @@ def print_scores(paths: list[Path], top: int = 0) -> None:
 
 
 def cmd_score(args: argparse.Namespace) -> int:
+    """Run the `score` command."""
     if args.json:
         labels, _, _ = load_config()
         report = {}
@@ -532,6 +552,7 @@ def cmd_score(args: argparse.Namespace) -> int:
 
 
 def cmd_oracle(args: argparse.Namespace) -> int:
+    """Run the `oracle` command."""
     labels, _, _ = load_config()
     small_header, small = read_results(args.small)
     large_header, large = read_results(args.large)
@@ -571,6 +592,7 @@ def cmd_oracle(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Parse the arguments and run the chosen command."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
 

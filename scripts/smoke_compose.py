@@ -20,6 +20,7 @@ base = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8080"
 
 
 def fetch(path, payload=None):
+    """GET, or POST a JSON payload to, a path on the proxy and return the body."""
     data = None if payload is None else json.dumps(payload).encode()
     request = Request(
         base + path, data=data, headers={"Content-Type": "application/json"}

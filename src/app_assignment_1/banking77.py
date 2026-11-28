@@ -22,6 +22,8 @@ SPLITS = ("train", "dev")
 
 
 class Example(NamedTuple):
+    """One Banking77 message with its intent label."""
+
     text: str
     intent: str  # our label from config/labels.json, not the Banking77 spelling
     split: str
@@ -76,6 +78,7 @@ def make_split(
 
 
 def load_split(split: str, path: Path = SPLIT_PATH) -> list[Example]:
+    """Read the committed development split rows for `split` from the CSV."""
     if split not in SPLITS:
         raise ValueError(f"split must be one of {SPLITS}")
     with path.open(newline="", encoding="utf-8") as file:

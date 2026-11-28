@@ -140,6 +140,7 @@ def _jev_error_type(exc: Exception) -> str:
 
 
 def _agreement(first: str | None, second: str | None) -> str:
+    """Return agree, disagree or no_signal for two intent answers."""
     if first is None or second is None:
         return "no_signal"
     return "agree" if first == second else "disagree"
@@ -151,6 +152,7 @@ def _assessment(
     answer: JevAnswer,
     option_order: list[str] | None = None,
 ) -> JevAssessment:
+    """Build the Jev assessment record for one question of a call."""
     if answer.error_type is not None:
         return JevAssessment(
             **call,
@@ -198,6 +200,8 @@ class _Shaped:
 
 
 class Gateway:
+    """The request flow: route, choose a backend, check the reply, save, monitor."""
+
     def __init__(
         self,
         settings: Settings,
@@ -206,6 +210,7 @@ class Gateway:
         clock: Callable[[], float] = time.monotonic,
         store: Store | None = None,
     ):
+        """Build the monitors, controller and releases from the settings."""
         if settings.provider_mode == "real" and (
             backends is None or any(getattr(b, "mocked", True) for b in backends)
         ):
@@ -326,6 +331,7 @@ class Gateway:
         self.semantic.reset(event.backend)
 
     def jev_usage(self) -> JevUsage:
+        """Return counts of Jev calls for `/v1/health`."""
         cost = (
             None
             if self.jev_input_price is None
@@ -340,6 +346,7 @@ class Gateway:
         )
 
     def reply_check_usage(self) -> ReplyCheckUsage:
+        """Return counts of the second Jev call for `/v1/health`."""
         cost = (
             None
             if self.jev_input_price is None
@@ -373,6 +380,7 @@ class Gateway:
         )
 
     def others_usable(self, backend: Backend) -> bool:
+        """Return True if a backend other than this one can answer."""
         return any(self.usable(b) for b in self.backends if b is not backend)
 
     def others_answering(self, backend: Backend) -> bool:
@@ -388,6 +396,7 @@ class Gateway:
         )
 
     def backend(self, name: BackendName) -> Backend:
+        """Return the backend with this name."""
         return next(b for b in self.backends if b.config.name == name)
 
     def operator_disable(self, name: BackendName, reason: str) -> None:
@@ -398,6 +407,7 @@ class Gateway:
         self.controller.operator_disable(name, reason)
 
     def operator_enable(self, name: BackendName, reason: str) -> None:
+        """Let an operator end a model's disable and log it."""
         self.controller.operator_enable(name, reason)
 
     def _settings_version(self) -> str:
@@ -548,6 +558,7 @@ class Gateway:
         raise ReleaseNotSaved
 
     def _keep_release(self, event: ReleaseEvent) -> None:
+        """Keep the current version after a change that did not go through."""
         current = self.releases.state[event.backend].version
         self.releases.kept(
             event.backend,
@@ -609,6 +620,7 @@ class Gateway:
         await self._save_samples()
 
     async def _save_release_events(self) -> None:
+        """Save release events not yet in the store, keeping any that fail."""
         if not self.releases.unsaved:
             return
         async with self.save_lock:
@@ -708,6 +720,7 @@ class Gateway:
         return {event.backend: event.at for event in events}
 
     async def _save_interventions(self) -> None:
+        """Save interventions not yet in the store, keeping any that fail."""
         if not self.controller.unsaved:
             return
         # One save at a time: a failed batch goes back in front of newer ones,
@@ -732,6 +745,7 @@ class Gateway:
 
     async def chat(self, message: str) -> ChatResponse:
         # Counted until the reply is ready; saving it afterwards is not in flight.
+        """Answer a message, then save it in the background."""
         self.metrics.chat_in_flight.inc()
         try:
             response, jev, pending = await self._chat(message)
@@ -760,6 +774,7 @@ class Gateway:
         jev: Sequence[JevAssessment],
         pending: PendingCheck,
     ) -> None:
+        """Save the request, its checks and any new monitor data."""
         await self.save_interventions()
         pending.request_saved = await self._save_request(response, jev)
 
@@ -799,6 +814,7 @@ class Gateway:
     async def _save_request(
         self, response: ChatResponse, jev: Sequence[JevAssessment]
     ) -> bool:
+        """Save a request with its Jev assessments; return False if it failed."""
         try:
             # The Jev assessments are saved with their request or not at all, so
             # every saved assessment has a request to join to. A request that
@@ -919,6 +935,7 @@ class Gateway:
         error_type: str | None = None,
         result: ReplyCheckResult | None = None,
     ) -> ReplyCheck | None:
+        """Build the record of a second Jev call."""
         fields: dict[str, Any] = {
             **base,
             "status": status,
@@ -1146,6 +1163,7 @@ class Gateway:
         return generated, action, False, generation
 
     def _finish_release_watch(self, backend: Backend) -> None:
+        """Confirm a release once enough requests have passed."""
         name = backend.config.name
         count = self.controller.watching.get(name)
         if count is None or count < self.controller.watch_samples:
@@ -1294,6 +1312,7 @@ class Gateway:
         self, message: str
     ) -> tuple[ChatResponse, list[JevAssessment], PendingCheck]:
         # Created before any provider call, so later records can share it.
+        """Run the chat flow and return the response and what to save."""
         request_id = uuid4()
         start = perf_counter()
         reasons: list[str] = []

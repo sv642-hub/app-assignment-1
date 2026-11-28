@@ -20,8 +20,9 @@ dependencies = [
     "uvicorn[standard]>=0.52.4",
 ]
 
-# Dev extra. Install with `uv sync --extra dev`.
-[project.optional-dependencies]
+# Dev tools. `uv sync --frozen` installs this group by default; the Docker
+# image skips it with `--no-dev`.
+[dependency-groups]
 dev = [
     "pytest>=8.0",
     "pytest-cov",
@@ -30,9 +31,12 @@ dev = [
     "pre-commit>=3.7",
     "pyyaml>=6.0",
 ]
+
+# Optional extras.
+[project.optional-dependencies]
 # Offline probe extra: ModelLens (with torch and transformers) for reading
 # Qwen3-1.7B activations. Kept out of the gateway image; see docs/PROBE.md.
-# Install with `uv sync --extra dev --extra probe`.
+# Install with `uv sync --extra probe`.
 probe = [
     "modellens @ git+https://github.com/SebastianVillalobosAlva/ModelLens@0d900a56f7766e494da5a2f5bf5a4dcbe76a29f5",
 ]

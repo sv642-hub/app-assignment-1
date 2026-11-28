@@ -28,7 +28,7 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 - `src/app_assignment_1/evaluation.py`: offline evaluation: loads the official Banking77 test set (pinned download) or a `text,intent` CSV, mirrors the gateway's format checks, scores accuracy and macro F1 over the 77 intents, and builds the oracle router from the small and large results.
 - `src/app_assignment_1/releases.py`: model releases: the version each model serves (`base` or one from `config/releases.json`), the rollback target, and the release events saved through `Store` and reloaded at startup.
 - `src/app_assignment_1/probe.py`: offline linear probe skeleton and gate check; not used by the gateway. See `docs/PROBE.md`.
-- `src/app_assignment_1/probe_modellens.py`: `ModelLensExtractor`, the real activation extractor for the probe, built on ModelLens. Needs the optional `probe` extra (`uv sync --extra dev --extra probe`); not used by the gateway.
+- `src/app_assignment_1/probe_modellens.py`: `ModelLensExtractor`, the real activation extractor for the probe, built on ModelLens. Needs the optional `probe` extra (`uv sync --extra probe`); not used by the gateway.
 - `src/app_assignment_1/records.py`: `JevAssessment` records for the semantic monitor and the checks on them. The gateway builds two records per request and saves them with the request through `Store`.
 - `src/app_assignment_1/semantic.py`: in-memory semantic monitor; scores each model's intent against Jev's intent answer, per model, with coverage and a baseline; only when Jev and the model are both mocks or both real (`Backend.mocked`). The controller acts on it only with `APP_SEMANTIC_ACTIONS_ENABLED` (off by default).
 - `src/app_assignment_1/metrics_catalog.py`: loads and renders the metrics catalog, `config/metrics.yaml` (targets, metric definitions and PromQL, kept once). Not read by the gateway; needs PyYAML from the `dev` extra. `docs/METRICS.md` is generated from the YAML by `scripts/build_metrics_docs.py` (`--check` fails if stale). `tests/test_metrics_catalog.py` fails when the dashboard, alerts, settings defaults or docs drift from it. Thresholds that are `APP_` settings stay in `config.py`; the catalog only names them.
@@ -69,7 +69,7 @@ Run from the repo root unless noted. CI uses Python 3.13 and Node 22.
 
 ```bash
 # Install
-uv sync --extra dev --frozen
+uv sync --frozen
 
 # Python tests (Postgres store tests are skipped unless TEST_DATABASE_URL is set)
 uv run pytest
@@ -124,6 +124,9 @@ docker compose down
 - Only port 8080 (Caddy) is published. Never publish gateway, database, Prometheus or vLLM ports. The one exception is vLLM on the GPU host (`compose.gpu.yml`): it binds only to that host's private IP, so only the CPU instance can reach it. Never bind it to 0.0.0.0 or the public IP.
 - The vLLM API key lives only in `env/gpu.env` on the GPU host and `~/.vllm_api_key` on the CPU instance. Never commit it, print it, or ask anyone to paste it into a PR, issue or chat; to use it, run `export VLLM_API_KEY=$(cat ~/.vllm_api_key)` on the CPU instance.
 - Settings come from Pydantic Settings and env/ files. Never commit secrets or a real .env. Only `APP_` keys belong in `env/.env`; the Postgres container's password goes in `env/postgres.env`.
+- Every module, class, function and method in `src/` and `scripts/` has a docstring (`tests/test_docstrings.py` checks).
+- User-visible changes go under `[Unreleased]` in `CHANGELOG.md`. The version lives only in `pyproject.toml`; see `docs/RELEASING.md`.
+- Pin GitHub Actions by commit hash and container images by digest. CI scans the Git history with gitleaks (`.gitleaks.toml`); pre-commit runs it too. CI publishes the gateway image to `ghcr.io` (`gateway` and `proxy`, tagged with the commit sha and, on a release tag, the version) after all checks pass, then smoke-tests it.
 - Never store the customer's message text. `ChatResponse` has no message field; keep it that way.
 - Mocks sit behind interfaces (router, backends). Replace them by adding a real implementation, not by editing callers.
 - Do not edit the frozen evaluation set or human grades once they exist.

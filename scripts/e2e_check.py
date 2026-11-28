@@ -71,12 +71,16 @@ METRIC_LINE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+(\S+)")
 
 
 class Results:
+    """Counts of passed, failed and skipped checks."""
+
     def __init__(self):
+        """Start with no results."""
         self.failed = 0
         self.passed = 0
         self.skipped = 0
 
     def check(self, ok, label, detail=""):
+        """Record a pass or a failure and print it."""
         status = "PASS" if ok else "FAIL"
         self.passed += bool(ok)
         self.failed += not ok
@@ -84,11 +88,13 @@ class Results:
         return ok
 
     def skip(self, label, why):
+        """Record a skipped check and print why."""
         self.skipped += 1
         print(f"SKIP: {label} ({why})")
 
 
 def get_json(base, path, payload=None, timeout=90):
+    """GET, or POST a JSON payload to, a gateway path and return the JSON."""
     data = None if payload is None else json.dumps(payload).encode()
     request = Request(
         base + path, data=data, headers={"Content-Type": "application/json"}
@@ -117,6 +123,7 @@ def parse_metrics(text):
 
 
 def read_metrics(url=None, command=None):
+    """Read the Prometheus metrics from a URL or a command."""
     if command:
         done = subprocess.run(
             shlex.split(command), capture_output=True, text=True, timeout=60
@@ -129,14 +136,17 @@ def read_metrics(url=None, command=None):
 
 
 def usage_by_model(health):
+    """Index the health usage list by model name."""
     return {item["name"]: item for item in health["usage"]}
 
 
 def monitor_by_model(health):
+    """Index the health monitor list by model name."""
     return {item["name"]: item for item in health["monitor"]}
 
 
 def run(base, metrics_url=None, metrics_cmd=None, auto_metrics=False):
+    """Run every check against the gateway and return the results."""
     results = Results()
 
     try:
@@ -291,6 +301,7 @@ def run(base, metrics_url=None, metrics_cmd=None, auto_metrics=False):
     # /v1/health lists only the latest interventions, so compare entries, not
     # list lengths, which stop changing once the list is full.
     def keys(health):
+        """Return the set of model names in a health response."""
         return {(i["at"], i["backend"], i["action"]) for i in health["interventions"]}
 
     new_actions = keys(after) - keys(before)
@@ -372,6 +383,7 @@ def run(base, metrics_url=None, metrics_cmd=None, auto_metrics=False):
 
 
 def main(argv=None):
+    """Parse the arguments, run the checks and exit non-zero on a failure."""
     parser = argparse.ArgumentParser(description="End-to-end check of a gateway.")
     parser.add_argument("--base-url", default="http://127.0.0.1:8080")
     parser.add_argument("--metrics-url", help="gateway /metrics, for example :8000")

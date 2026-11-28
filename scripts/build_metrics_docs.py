@@ -20,6 +20,7 @@ STATUS_TEXT = {
 
 
 def _value(target) -> str:
+    """Format a target's value with its unit."""
     value = target.value
     if isinstance(value, dict):
         return ", ".join(f"{size} {number:g}" for size, number in value.items())
@@ -27,6 +28,7 @@ def _value(target) -> str:
 
 
 def _promql(catalog: Catalog, name: str) -> str:
+    """Return a metric's PromQL, filled in for each model size."""
     metric = catalog.metrics[name]
     if metric.per_model:
         return catalog.render(name, "5m", model="small")
@@ -34,6 +36,7 @@ def _promql(catalog: Catalog, name: str) -> str:
 
 
 def build(catalog: Catalog) -> str:
+    """Render the metrics docs Markdown from the catalog."""
     lines = [
         "# Metric definitions",
         "",
@@ -90,6 +93,7 @@ def build(catalog: Catalog) -> str:
 
 
 def main() -> int:
+    """Write docs/METRICS.md, or with `--check` fail if it is stale."""
     text = build(load_catalog())
     if "--check" in sys.argv:
         if not OUT.exists() or OUT.read_text() != text:

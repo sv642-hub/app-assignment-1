@@ -60,7 +60,7 @@ uv run --no-sync python scripts/benchmark_requests.py fixed
 The label controls the output filename; it does not switch the endpoint implementation. Stop the server and install the appropriate code version before each run. For the local non-editable installation used in this experiment:
 
 ```bash
-uv sync --extra dev --frozen --no-editable --reinstall-package app-assignment-1
+uv sync --frozen --no-editable --reinstall-package app-assignment-1
 ```
 
 Saved evidence:

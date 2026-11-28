@@ -11,15 +11,20 @@ BackendName = Literal["qwen3-1.7b", "qwen3-4b"]
 
 
 class StrictModel(BaseModel):
+    """Base model that rejects fields it does not define."""
+
     model_config = ConfigDict(extra="forbid")
 
 
 class ChatRequest(StrictModel):
+    """The body of `POST /v1/chat`."""
+
     message: str = Field(min_length=1, max_length=2000)
 
     @field_validator("message")
     @classmethod
     def strip_message(cls, value: str) -> str:
+        """Strip the message and reject a blank one."""
         value = value.strip()
         if not value:
             raise ValueError("Enter a banking message.")
@@ -34,6 +39,8 @@ class RoutingDecision(StrictModel):
 
 
 class BackendReply(StrictModel):
+    """What a backend returns: intent, reply text and policy facts."""
+
     intent: str = Field(min_length=1)
     reply: str
     policy_facts: list[str]
@@ -41,6 +48,8 @@ class BackendReply(StrictModel):
 
 class Trace(StrictModel):
     # jev: the real TypeSafe Jev answered the route question.
+    """How a request was routed and answered, shown under Show details."""
+
     router: Literal["mock_jev", "jev", "rule_router"]
     jev_choice: Route | None
     route: Route
@@ -78,6 +87,8 @@ class Trace(StrictModel):
 
 
 class ChatResponse(StrictModel):
+    """The reply to a chat request, with its route and trace."""
+
     completed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     id: UUID
     intent: str
@@ -97,6 +108,8 @@ class LabelConfig(StrictModel):
 
 
 class IntentConfig(StrictModel):
+    """One configured intent: keywords and complexity."""
+
     intent: str = Field(min_length=1)
     keywords: list[str] = Field(min_length=1)
     complexity: Route
@@ -104,18 +117,22 @@ class IntentConfig(StrictModel):
     @field_validator("keywords")
     @classmethod
     def nonempty_keywords(cls, values: list[str]) -> list[str]:
+        """Reject an empty or blank keyword."""
         if any(not value.strip() for value in values):
             raise ValueError("Keywords cannot be blank")
         return values
 
 
 class PolicyCard(StrictModel):
+    """A fictional policy card: reply template and facts."""
+
     facts: list[str] = Field(min_length=2, max_length=3)
     reply_template: str = Field(min_length=1)
 
     @field_validator("reply_template")
     @classmethod
     def facts_placeholder(cls, value: str) -> str:
+        """Require the template to contain the `{facts}` placeholder."""
         if "{facts}" not in value:
             raise ValueError("Reply template must contain {facts}")
         if "{" in value.replace("{facts}", "") or "}" in value.replace("{facts}", ""):
@@ -124,6 +141,8 @@ class PolicyCard(StrictModel):
 
 
 class BackendConfig(StrictModel):
+    """A mock backend's name, delay and fault rates."""
+
     name: BackendName
     route: Route
     latency_ms: int = Field(ge=0, le=5000)
@@ -167,6 +186,7 @@ class FaultRequest(StrictModel):
 
     @model_validator(mode="after")
     def seconds_only_for_slow(self) -> "FaultRequest":
+        """Allow `seconds` only for the slow fault."""
         if self.fault == "slow" and self.seconds is None:
             raise ValueError("The slow fault needs seconds")
         if self.fault != "slow" and "seconds" in self.model_fields_set:
@@ -199,6 +219,7 @@ class JevFaultRequest(StrictModel):
 
     @model_validator(mode="after")
     def seconds_only_for_slow(self) -> "JevFaultRequest":
+        """Allow `seconds` only for the slow fault."""
         if (self.fault == "slow") != (self.seconds is not None):
             raise ValueError("seconds is required for slow and only allowed for slow")
         return self
@@ -206,10 +227,14 @@ class JevFaultRequest(StrictModel):
 
 class OperatorRequest(StrictModel):
     # Saved in the intervention log; never put customer data here.
+    """The body of an operator disable or enable request."""
+
     reason: str = Field(default="operator request", min_length=1, max_length=200)
 
 
 class BackendMonitor(StrictModel):
+    """One model's failure window and controller state."""
+
     name: BackendName
     samples: int = Field(ge=0)
     format_failures: int = Field(ge=0)
@@ -258,6 +283,8 @@ class MonitorSample(StrictModel):
 
 
 class Intervention(StrictModel):
+    """One action the controller or an operator took on a model."""
+
     at: datetime
     backend: BackendName
     action: InterventionAction
@@ -287,6 +314,8 @@ class ReleaseChanges(StrictModel):
 
 
 class ReleaseVersion(StrictModel):
+    """A version a model can be deployed to."""
+
     description: str = Field(min_length=1, max_length=200)
     changes: ReleaseChanges
 
@@ -330,12 +359,16 @@ class ReleaseEvent(StrictModel):
 
 
 class ReleaseRequest(StrictModel):
+    """The body of an operator release request."""
+
     version: str = Field(pattern=VERSION_PATTERN)
     # Saved in the release history; never put customer data here.
     reason: str = Field(default="operator request", min_length=1, max_length=200)
 
 
 class ControllerRules(StrictModel):
+    """The controller's thresholds, as shown in `/v1/health`."""
+
     window: int = Field(ge=1)
     min_samples: int = Field(ge=1)
     failure_threshold: float = Field(gt=0, le=1)
@@ -345,6 +378,8 @@ class ControllerRules(StrictModel):
 class RecentRequest(StrictModel):
     # No request id: /v1/requests/{id} has no login, so listing ids would expose
     # other customers' replies.
+    """A recent request, as shown on the Health screen."""
+
     completed_at: datetime
     route: Route
     model: BackendName
@@ -358,6 +393,8 @@ BackendErrorCode = Literal["timeout", "call_failed", "invalid_output", "other"]
 
 
 class ModelUsage(StrictModel):
+    """How often a model was selected, failed or was skipped."""
+
     name: BackendName
     attempted_calls: int = Field(ge=0)
     completed_calls: int = Field(ge=0)
@@ -428,6 +465,8 @@ class SemanticStatus(StrictModel):
 
 
 class SemanticRules(StrictModel):
+    """The semantic monitor's thresholds, as shown in `/v1/health`."""
+
     window: int = Field(ge=1)
     min_samples: int = Field(ge=1)
     min_coverage: float = Field(ge=0, le=1)
@@ -438,6 +477,8 @@ class SemanticRules(StrictModel):
 
 
 class HealthResponse(StrictModel):
+    """The body of `GET /v1/health`."""
+
     recent_requests: list[RecentRequest] = Field(default_factory=list)
     releases: list[ModelRelease] = Field(default_factory=list)
     # The last release changes, oldest first.

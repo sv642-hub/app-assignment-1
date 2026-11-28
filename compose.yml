@@ -53,7 +53,7 @@ services:
   # Scrapes the gateway's internal /metrics on the Compose network. No port is
   # published; see the README for how to look at it locally.
   prometheus:
-    image: prom/prometheus:v3.15.1
+    image: prom/prometheus:v3.15.1@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2
     # 30 days, so the dashboard's error budget has a month of data to read.
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -101,7 +101,7 @@ services:
   # anonymous viewer, and the React app embeds it. Nobody can log in, so there
   # is no admin to reach; dashboards and data sources come from ./grafana.
   grafana:
-    image: grafana/grafana:12.3.0
+    image: grafana/grafana:12.3.0@sha256:70d9599b186ce287be0d2c5ba9a78acb2e86c1a68c9c41449454d0fc3eeb84e8
     env_file:
       - path: env/compose.defaults.env
       - path: env/grafana.env

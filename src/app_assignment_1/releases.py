@@ -76,12 +76,15 @@ def load_catalog(path: Path) -> Catalog:
 
 
 class Releases:
+    """The version each model serves, the rollback target and the release events."""
+
     def __init__(
         self,
         backends: Sequence[Backend],
         catalog: Catalog,
         watch_samples: int,
     ):
+        """Start every model on the base version, with the catalog of other versions."""
         self.backends = {b.config.name: b for b in backends}
         unknown = set(catalog) - set(self.backends)
         if unknown:
@@ -116,13 +119,16 @@ class Releases:
         self.on_change: list[Callable[[ReleaseEvent], None]] = []
 
     def _next_revision(self, name: BackendName) -> int:
+        """Return the model's next release revision number."""
         self.revision[name] += 1
         return self.revision[name]
 
     def versions(self, name: BackendName) -> list[str]:
+        """List the versions a model can be deployed to, base first."""
         return [BASE_VERSION, *self.catalog.get(name, {})]
 
     def config_for(self, name: BackendName, version: str) -> BackendConfig:
+        """Return a copy of the model's config for a version."""
         base = self.base[name]
         if version == BASE_VERSION:
             return base.model_copy(deep=True)
@@ -165,6 +171,7 @@ class Releases:
     def plan_rollback(
         self, name: BackendName, reason: str, actor: ReleaseActor
     ) -> ReleaseEvent:
+        """Build the event that returns a model to its rollback target."""
         current = self.state[name]
         if current.rollback_target is None:
             raise NoRollbackTarget(name)
@@ -236,6 +243,7 @@ class Releases:
         )
 
     def watched(self, name: BackendName, samples: int) -> None:
+        """Record how many samples of the current release have been watched."""
         self.state[name].watched_samples = samples
 
     def apply(self, event: ReleaseEvent, restoring: bool = False) -> None:
@@ -288,4 +296,5 @@ class Releases:
             self.apply(event, restoring=True)
 
     def stats(self) -> list[ModelRelease]:
+        """Return each model's release state for `/v1/health`."""
         return [self.state[name].model_copy() for name in self.backends]
