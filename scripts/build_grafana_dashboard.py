@@ -437,7 +437,7 @@ def build() -> dict:
          "this yet. The controller's own timing is in the *Time models stayed "
          "disabled* table below (from the stored interventions), and "
          "`scripts/measure_recovery.py` (PR #104) measures detection and "
-         "recovery per fault. The real-Qwen hang run took 186 s to disable, "
+         "recovery per fault. A real-Qwen hang was estimated at 186 s to disable, "
          "which misses this target.", w=24, h=4)  # fmt: skip
 
     # --- Quality ------------------------------------------------------------
