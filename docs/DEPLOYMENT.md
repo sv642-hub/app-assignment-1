@@ -10,7 +10,7 @@ The stack testers use.
 
 | | |
 | --- | --- |
-| Checkout | `~/app-assignment-1`, on `main` at `bb39928`. The running images were built from it on 2026-11-27 |
+| Checkout | `~/app-assignment-1`, on `main` at `50c8f57`. The running images were built from `bb39928` on 2026-11-27; the commits since change only scripts, tests and docs |
 | Compose project | `app-assignment-1`, as in the README. Use `docker compose -p app-assignment-1 ...` |
 | Services | `gateway`, `postgres`, `proxy`, `prometheus`, `grafana` (at `/grafana` through the proxy), and `grafana-db-setup`, which runs once at each start and exits. Only the proxy publishes a port, 8080 |
 | Settings | `env/.env`: `APP_ENVIRONMENT=production`, `APP_DATABASE_URL`, `APP_JEV_MODE`, `APP_JEV_API_KEY`, `APP_PROVIDER_MODE`, `APP_VLLM_SMALL_BASE_URL` and `APP_VLLM_LARGE_BASE_URL`. `env/postgres.env`: `POSTGRES_PASSWORD`. `env/grafana.env`: `GRAFANA_DB_PASSWORD`, for the read-only `grafana_ro` role. All three are mode 600 and ignored by Git. `env/compose.defaults.env` still supplies the non-secret defaults |
@@ -44,6 +44,11 @@ The two vLLM servers. Only the CPU instance can reach them, over the private net
 ## Change log
 
 Newest first. Times are UTC.
+
+### 2026-11-28
+
+- **CPU: checkout pulled to `main` at `50c8f57`, no rebuild.** It brings #140–#143, which change only scripts, tests and docs, so the running images are unchanged.
+- **CPU: the smoke test passes with real Jev** (#141). `scripts/smoke_compose.py` now reads the modes from `/v1/health` and printed "Jev real, Qwen mock". All three chats came through Jev, each from the model on the route Jev chose (standard, complex, standard), with the format check passed. Its other checks passed too: the app, `/docs`, health, `/metrics` not exposed, Grafana read-only, and request history. That's three paid TypeSafe calls.
 
 ### 2026-11-27
 
@@ -92,7 +97,7 @@ Newest first. Times are UTC.
 ## Next changes, and who makes them
 
 - **Each update to the CPU stack:** back up the database to `~/backups/` first. If the update adds an image the stack did not have, `up --build` pulls it; the boot unit never pulls.
-- **A smoke test for this stack:** `scripts/smoke_compose.py` checks the all-mock stack only, so it cannot pass with real Jev. It needs a real-Jev mode before it can check a deployment.
+- **After each update:** run `python3 scripts/smoke_compose.py http://localhost:8080` on the instance. With real Jev it costs three TypeSafe calls.
 - **GPU: move the checkout to `main`.** The unit there is already the new version; only `git checkout main && git pull` is left.
 - **Real models on the deployment:** main can call vLLM (#117). Both `APP_VLLM_*_BASE_URL` are already in `env/.env`. The key is never written there: start the stack with `compose.real.yml`, which sets `APP_PROVIDER_MODE=real` and passes the key in from `~/.vllm_api_key` (README, "Real Qwen in Compose"), and change the boot unit to do the same, or a reboot brings back mock Qwen. Pavlos does this, because he holds the key, once the team agrees testers should get the real models. #137 updates `USER_BRIEF.md` for it and should merge at the same time. The rerun on #109 had format failures of 0.8% (Qwen3-1.7B) and 0.03% (Qwen3-4B), against the controller's 0.5 threshold. The GPU host must then be up whenever the CPU stack is, or every chat answers 503.
 - **The operator token:** if operators need the routes on the deployment, set a long random `APP_OPERATOR_TOKEN` in `env/.env`. Never use the demo token; the gateway refuses it in production.
