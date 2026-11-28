@@ -38,8 +38,8 @@ components:
     tag: ":8080"
     owner: Pavlos
     items:
-      - built: Caddy; the one published port
-      - built: / goes to the React app; /v1 and /docs go to the gateway
+      - built: Caddy, the one port; routes / and /v1
+      - todo: HTTPS on 80 and 443
 
   frontend:
     title: frontend
@@ -80,7 +80,7 @@ components:
     title: Backend client
     owner: "Verness · Yanzhen: vLLM client"
     items:
-      - built: "Fallback with budgets; both down: 503"
+      - built: "Fallback; 6 s a call, 45 s total"
       - built: vLLM client with error codes
       - simulated: "Default: mocks"
       - todo: First live run in the app
@@ -148,6 +148,7 @@ components:
       - built: "All requests kept, with settings version and route order; export"
       - built: Versioned SQL migrations at startup; no published port
       - built: Monitor windows and cooldowns reload after a restart
+      - todo: Backup and restore scripts
       - built: Release history; reloaded after a restart
       - simulated: "Tests and native runs: memory store, resets on restart"
 
@@ -217,6 +218,7 @@ components:
       - built: pytest, ruff, mypy, frontend tests and Compose smoke on every push
       - built: Routing, Jev failure, fallback, neither backend available
       - built: Architecture diagram matches docs/architecture.yaml
+      - todo: Image in the registry (GHCR); deploy and rollback script
       - built: Prometheus reports the gateway target up
       - todo: Probe smoke test (stretch)
 
@@ -248,11 +250,11 @@ components:
       - todo: Evaluation reports
 
 layout:
-  size: [2000, 1630]
+  size: [2000, 1665]
 
   # Dashed hosts, solid groups and the testing band, drawn behind the boxes.
   areas:
-    - {at: [22, 1345, 1956, 270], style: band, title: Testing and evaluation, note: "Smoke tests prove the parts connect; correctness and probe accuracy need offline evaluation"}
+    - {at: [22, 1345, 1956, 305], style: band, title: Testing and evaluation, note: "Smoke tests prove the parts connect; correctness and probe accuracy need offline evaluation"}
     - {at: [270, 150, 1075, 1170], style: host, title: Jetstream2 CPU instance, note: "Compose runs proxy, gateway, postgres and prometheus: 4 of 6 planned services · starts at boot · host: Pavlos"}
     - {at: [1395, 150, 420, 640], style: host, title: Jetstream2 GPU instance, note: "A100X-20C · Pavlos"}
     - {at: [605, 190, 715, 565], style: group, title: gateway, note: "FastAPI · :8000 · monitor state in memory, saved to Postgres · owner: Verness"}
@@ -273,14 +275,14 @@ layout:
     semantic_monitor: [855, 850, 225, 222]
     controller: [1090, 850, 225, 222]
     prometheus: [300, 690, 270, 265]
-    postgres: [300, 962, 270, 345]
+    postgres: [300, 962, 270, 373]
     configuration: [620, 1100, 685, 212]
     vllm_small: [1420, 225, 370, 145]
     vllm_large: [1420, 385, 370, 145]
     model_volume: [1420, 545, 370, 105]
     jev_api: [1420, 840, 370, 230]
     probe: [1420, 1080, 370, 222]
-    ci: [45, 1395, 465, 205]
+    ci: [45, 1395, 465, 245]
     chaos: [530, 1395, 465, 200]
     evaluation: [1015, 1395, 460, 200]
     reports: [1495, 1395, 455, 200]
