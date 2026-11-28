@@ -156,6 +156,7 @@ components:
     owner: "Verness: label file · Pavlos: secrets, URLs"
     items:
       - built: Pydantic Settings, private env file, thresholds; no secrets in Git or the image
+      - built: "Metrics catalog: targets and definitions, tested against alerts and docs"
       - simulated: 10 intents and 10 policy cards
       - built: One 78-label file; replies only for the 10 carded intents
       - built: Jev key and model, vLLM URLs and key, operator token
@@ -224,8 +225,8 @@ components:
       - built: "Three faults by hand: outage, bad format, label swap"
       - built: Tester walkthrough for outage and bad format
       - built: "Demo script (docs/CHAOS_DEMO.md); recovery times over many runs (mocks)"
-      - built: "Scenarios A-E (20) in the recovery script (mocks)"
-      - todo: "Runs of A-E on a stack; F-H"
+      - built: "Scenarios A-E (20), measured on a local stack (mocks)"
+      - todo: "F-H: parts around the models, new hooks, real models"
 
   evaluation:
     title: Offline evaluation harness

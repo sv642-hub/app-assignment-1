@@ -104,6 +104,11 @@ How to read it:
 
 These are mock models with simulated latency, so the numbers show how the loop behaves. They say nothing about real models.
 
+Groups A–E were measured on November 27, 2026, on a local Compose stack (A, B, D and E once each, C ten times per scenario). Every run of A, B, D and E showed what its scenario expects. The full tables and what they show are in [`docs/CHAOS_SCENARIOS.md`](docs/CHAOS_SCENARIOS.md#measured-on-november-27-2026). In short:
+- **Partial faults:** no disable at 10%, 5 of 10 runs at 30%, and every run at 50% and 70%. Every 30% trip came with a full 20-call window, so `APP_MONITOR_MIN_SAMPLES` doesn't cause them.
+- **One model down, one malformed (D3):** the controller disables the malformed model and keeps the dead one, so customers get 503s, not apologies.
+- **After an operator hold (D4):** releasing the hold disables the other model on the failures still in its window, though its fault is gone.
+
 ### Semantic monitor
 
 A model can return a well-formed reply for the wrong intent, which the format check cannot see. The semantic monitor compares each model's intent with Jev's answer to the intent question, from the same request:
@@ -302,6 +307,7 @@ The `grafana` service (Grafana 12.3.0) shows the metrics as plots. Open the **Me
 - The latency targets (small under 2 s, large under 4 s at p95) are proposals chosen from the real-Qwen medians; p95 has not been measured. The availability target is 99% answered.
 - The gateway makes one Jev call per request, before the model answers. The agreement panels compare the model's intent label with Jev's intent answer; Jev does not score the model's reply. The standard-first vs complex-first panel shows one bar until requests are sent with both option orders (the order-swap run, PRs #89 and #90).
 - Edit panels in `scripts/build_grafana_dashboard.py` and run it; the JSON is generated and a test fails if it is stale.
+- Targets and metric definitions are in the metrics catalog, [`config/metrics.yaml`](config/metrics.yaml), with a generated page, [docs/METRICS.md](docs/METRICS.md). A test fails if the dashboard, the alert rules or these docs disagree with it. It defines the "answer latency" p95 (answered requests, per model, the 2 s and 4 s targets) and the "request latency" p95 (503s included, the alert's 10 s) as two different metrics.
 
 ### Alerts
 
@@ -316,7 +322,7 @@ The `grafana` service (Grafana 12.3.0) shows the metrics as plots. Open the **Me
 | `ChatRequestsFailing` | warning | Any chat request got a 503 in the last 5 minutes |
 | `ChatMostlyFailing` | critical | More than 20% of chat requests get a 503 for 5 minutes |
 | `JevMostlySkipped` | warning | The rule router routes more than half of messages for 5 minutes, because Jev fails or its breaker is open |
-| `ChatLatencyHigh` | warning | p95 chat latency is above 10 s for 10 minutes |
+| `ChatLatencyHigh` | warning | The request latency p95 (503s included) is above 10 s for 10 minutes |
 
 **Hard failures and slow drift.** `ModelFailureRateRising` and `PossibleWrongIntents` are for problems the controller does not act on: a model failing some calls but below the 50% threshold, or wrong intents while semantic actions are off or the other model can't take over. For a hard failure, the controller disables the model within a few requests, and `ModelDisabledByController` fires. The re-enable then clears the window, which restarts the `for:` timer of the two slower alerts, so they may never fire during a hard failure. `PossibleWrongIntents` also needs `APP_SEMANTIC_BASELINE_DISAGREEMENT_RATE`: without a baseline, its gauge stays 0 at any disagreement rate.
 
