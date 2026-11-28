@@ -2,11 +2,18 @@
 # CI. A hostname (compose.https.yml) makes Caddy get a Let's Encrypt certificate
 # for it and redirect port 80 to HTTPS on its own.
 {$SITE_ADDRESS::8080} {
-    encode zstd gzip
+    # Not the answer stream: compression would hold events back until a buffer
+    # fills, and the page would see no progress.
+    @compressible not path /v1/chat/stream
+    encode @compressible zstd gzip
 
     @gateway path /v1 /v1/* /docs /docs/* /openapi.json /redoc
     handle @gateway {
-        reverse_proxy gateway:8000
+        # -1 sends each write on at once, so the SSE events of
+        # /v1/chat/stream reach the browser as they happen.
+        reverse_proxy gateway:8000 {
+            flush_interval -1
+        }
     }
 
     # Grafana, viewer only (see compose.yml). The React app embeds it. Nothing

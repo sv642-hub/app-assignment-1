@@ -71,6 +71,8 @@ start_and_wait() {
     wait_ready "${READY_WAIT:-120}"
 }
 
+# The golden set sends 7 chats, under the rate limit's burst of 30, so the
+# running gateway never answers it with a 429.
 golden_check() {
     [ "$golden" = yes ] || return 0
     if [ -n "${DEPLOY_GOLDEN_CMD:-}" ]; then

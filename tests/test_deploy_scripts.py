@@ -414,3 +414,20 @@ def test_deploy_env_example_lists_every_setting_the_scripts_read():
         assert f"{key}=" in example, key
     # No real secret or address: templates only.
     assert json.dumps(example).count("password") == 0
+
+
+def test_golden_set_fits_inside_the_rate_limit_burst():
+    # The deploy runs it against the live gateway, whose limit is on. Its
+    # chats must fit in the default burst so none is answered with a 429.
+    source = (ROOT / "scripts/e2e_check.py").read_text()
+    start = source.index("MESSAGES = [")
+    chats = source[start : source.index("]\n", start)].count('\n    ("')
+    assert 0 < chats <= 30
+
+
+def test_the_proxy_streams_and_the_gateway_trusts_only_the_proxy():
+    caddyfile = (ROOT / "Caddyfile").read_text()
+    assert "flush_interval -1" in caddyfile
+    assert "@compressible not path /v1/chat/stream" in caddyfile
+    gateway = _load("compose.yml")["services"]["gateway"]
+    assert gateway["environment"]["APP_TRUST_FORWARDED_FOR"] == "true"
