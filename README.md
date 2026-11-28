@@ -1,6 +1,6 @@
 # Smart AI Gateway
 
-**Team:** Sebastian Villalobos, Verness Chin, Pavlos Baffes, Yanzhen Gao, Jackson Howes, Eric (GitHub `glglvn12`; surname to add).
+**Team:** Sebastian Villalobos, Verness Chin, Pavlos Baffes, Yanzhen Gao, Jackson Howes, Eric Kim.
 
 
 Who owns what: [docs/TEAM_PLAN.md](docs/TEAM_PLAN.md) · What is built: [docs/architecture.svg](docs/architecture.svg) · Beta testers: [USER_BRIEF.md](USER_BRIEF.md)
