@@ -921,6 +921,12 @@ class Gateway:
                 )
                 or action
             )
+            if action is None:
+                for other in self.backends:
+                    if other is not backend:
+                        action = (
+                            self.controller.swap_out(name, other.config.name) or action
+                        )
             self._finish_release_watch(backend)
             return None, action, False, generation
         usage.completed_calls += 1
