@@ -889,3 +889,23 @@ def test_latest_release_changes_use_revision_and_skip_voided_deploys(
         assert await store.latest_release_changes() == [second]
 
     run(make_store(), body)
+
+
+def test_ping_answers_on_an_open_store(make_store: MakeStore) -> None:
+    async def body(store: Store) -> None:
+        await store.ping()
+
+    run(make_store(), body)
+
+
+def test_postgres_ping_raises_when_the_database_is_gone() -> None:
+    # Nothing listens on port 9, so the pool cannot hand out a connection.
+    store = PostgresStore(
+        "postgresql://u:p@127.0.0.1:9/db", connect_timeout=1, timeout=0.5
+    )
+
+    async def main() -> None:
+        with pytest.raises(Exception):  # noqa: B017, PT011
+            await store.ping()
+
+    asyncio.run(main())

@@ -5,7 +5,12 @@ from app_assignment_1.config import Settings
 
 
 def test_usage_survives_window_and_counts_fallbacks():
-    settings = Settings(_env_file=None, monitor_min_samples=30, monitor_window=30)
+    settings = Settings(
+        _env_file=None,
+        monitor_min_samples=30,
+        monitor_window=30,
+        rate_limit_per_minute=0,
+    )
     with TestClient(create_app(settings)) as c:
         gateway = c.app.state.gateway
         for b in gateway.backends:

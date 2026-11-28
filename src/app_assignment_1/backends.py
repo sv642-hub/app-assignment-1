@@ -44,6 +44,10 @@ class Backend(Protocol):
 
     async def generate(self, message: str) -> BackendReply: ...
 
+    async def ping(self) -> bool:
+        """True if the model server answers, without running a chat."""
+        ...
+
 
 class MockBackend:
     """Both mock models share one keyword classifier; only the delay differs."""
@@ -60,6 +64,10 @@ class MockBackend:
         self.intents = intents
         self.cards = cards
         self.rng = random.Random()
+
+    async def ping(self) -> bool:
+        """A mock is up when its config says it is available."""
+        return self.config.available
 
     async def generate(self, message: str) -> BackendReply:
         # The call runs on the config it started with, as a real call runs on

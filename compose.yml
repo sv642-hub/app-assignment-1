@@ -7,6 +7,10 @@ services:
       - path: env/compose.defaults.env
       - path: env/.env
         required: false
+    environment:
+      # Only Caddy reaches the gateway, so the last X-Forwarded-For address is
+      # the real client, which the rate limit needs.
+      APP_TRUST_FORWARDED_FOR: "true"
     volumes:
       - ./config:/app/config:ro
     depends_on:

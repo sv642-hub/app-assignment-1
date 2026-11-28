@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from app_assignment_1.api import create_app
 from app_assignment_1.config import Settings
 from app_assignment_1.schemas import ChatResponse
+from app_assignment_1.store import MemoryStore
 
 
 @pytest.fixture
@@ -228,3 +229,60 @@ def test_health_has_documented_response_model(settings):
         assert response["content"]["application/json"]["schema"]["$ref"].endswith(
             "/HealthResponse"
         )
+
+
+def test_ready_reports_the_database_and_both_models(settings):
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/v1/ready")
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ready",
+        "database": "ok",
+        "models": {"qwen3-1.7b": "ok", "qwen3-4b": "ok"},
+    }
+
+
+def test_ready_is_503_when_the_database_fails(settings):
+    class BrokenStore(MemoryStore):
+        async def ping(self) -> None:
+            raise ConnectionError("down")
+
+    with TestClient(create_app(settings, store=BrokenStore(limit=10))) as client:
+        response = client.get("/v1/ready")
+        # Health still answers: the process is alive, it is just not ready.
+        assert client.get("/v1/health").status_code == 200
+    assert response.status_code == 503
+    body = response.json()
+    assert body["status"] == "not_ready" and body["database"] == "failed"
+
+
+def test_ready_needs_one_reachable_model(settings, tmp_path):
+    backends = json.loads(settings.backends_path.read_text())
+    backends[0]["available"] = False
+    path = tmp_path / "one_down.json"
+    path.write_text(json.dumps(backends))
+    one_down = Settings(_env_file=None, backends_path=path)
+    with TestClient(create_app(one_down)) as client:
+        response = client.get("/v1/ready")
+    # One model is enough to serve: the gateway falls back to the other.
+    assert response.status_code == 200
+    assert response.json()["models"] == {"qwen3-1.7b": "disabled", "qwen3-4b": "ok"}
+
+    for backend in backends:
+        backend["available"] = False
+    path.write_text(json.dumps(backends))
+    with TestClient(create_app(Settings(_env_file=None, backends_path=path))) as client:
+        assert client.get("/v1/ready").status_code == 503
+
+
+def test_ready_marks_an_unreachable_model(settings):
+    with TestClient(create_app(settings)) as client:
+        gateway = client.app.state.gateway
+
+        async def down() -> bool:
+            raise ConnectionError("no route")
+
+        gateway.backends[0].ping = down
+        response = client.get("/v1/ready")
+    assert response.status_code == 200
+    assert response.json()["models"]["qwen3-1.7b"] == "unreachable"

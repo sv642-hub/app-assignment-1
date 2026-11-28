@@ -198,3 +198,29 @@ def test_positive_logprob_keeps_the_reply_and_loses_the_score(bad: float) -> Non
     # The validated reply still reaches the caller; only the score is lost.
     assert reply.intent == REPLY.intent
     assert reply.label_confidence is None
+
+
+@pytest.mark.parametrize("status,expected", [(200, True), (401, False), (500, False)])
+def test_ping_reads_the_models_list(status, expected):
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path))
+        return httpx.Response(status)
+
+    async def run() -> bool:
+        config = BackendConfig(name="qwen3-1.7b", route="standard", latency_ms=0)
+        async with httpx.AsyncClient(
+            base_url="http://vllm.test", transport=httpx.MockTransport(handler)
+        ) as client:
+            backend = VLLMBackend(
+                config,
+                client,
+                model="served-qwen",
+                system_prompt=build_system_prompt(LABELS, {}),
+                labels=LABELS,
+            )
+            return await backend.ping()
+
+    assert asyncio.run(run()) is expected
+    assert seen == [("GET", "/v1/models")]

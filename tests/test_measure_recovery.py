@@ -43,6 +43,7 @@ def settings(tmp_path: Path, **overrides: Any) -> Settings:
         "controller_cooldown_seconds": 1,
         "semantic_actions_enabled": True,
         "semantic_baseline_disagreement_rate": 0.0,
+        "rate_limit_per_minute": 0,
     } | overrides
     return Settings(_env_file=None, **values)
 
