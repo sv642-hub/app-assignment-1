@@ -20,6 +20,21 @@ from app_assignment_1.vllm import (
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
 
 
+def clean_key(key: str | None) -> str | None:
+    """The key stripped, as the gateway stores it (#132): vLLM compares
+    "Bearer <key>" exactly, and a CRLF key file read with $(cat file) keeps
+    its "\\r". None if blank. Never put the key in an error message."""
+    key = (key or "").strip()
+    if not key:
+        return None
+    if not all("!" <= char <= "~" for char in key):
+        raise SystemExit(
+            "The vLLM API key must be printable ASCII with no spaces or control "
+            "characters inside it"
+        )
+    return key
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Verify one live vLLM endpoint.")
     parser.add_argument("--route", choices=("standard", "complex"), required=True)
@@ -36,6 +51,7 @@ async def main() -> None:
         help="Select a local stub response. Failure modes exit with an error.",
     )
     args = parser.parse_args()
+    api_key = clean_key(args.api_key)
     base_url = httpx.URL(args.base_url)
     if base_url.query:
         parser.error("Pass the stub mode with --simulate instead of a URL query.")
@@ -53,9 +69,7 @@ async def main() -> None:
         async with httpx.AsyncClient(
             base_url=base_url,
             params={"simulate": args.simulate} if args.simulate else None,
-            headers=(
-                {"Authorization": f"Bearer {args.api_key}"} if args.api_key else None
-            ),
+            headers={"Authorization": f"Bearer {api_key}"} if api_key else None,
             timeout=0.5 if args.simulate == "slow" else 60.0,
         ) as client:
             backend = VLLMBackend(
