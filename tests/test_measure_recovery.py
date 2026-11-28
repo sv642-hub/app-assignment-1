@@ -541,12 +541,28 @@ def test_both_faulted_disables_one_and_keeps_the_other(tmp_path, name):
     result = run_named(tmp_path, name)
     assert result.ok, result.problems
     other = mr.LARGE if result.disabled_model == mr.SMALL else mr.SMALL
-    assert result.kept_last == [other]
+    if name != "D3":  # D3 swaps, so both are noted as kept at some point
+        assert result.kept_last == [other]
     assert result.restored  # both serve again once the faults clear
     if name == "D1":
         assert result.unavailable > 0  # neither model answers
     if name == "D2":
         assert result.unavailable == 0  # apologies, not 503s
+
+
+def test_d3_the_dead_model_goes_and_the_malformed_one_keeps_answering(tmp_path):
+    result = run_named(tmp_path, "D3")
+    assert result.ok, result.problems
+    # The malformed large model trips first and is disabled. When the dead
+    # small model then reaches the threshold it is the last model, so the
+    # controller swaps: large comes back, small is disabled. Before, small was
+    # kept and 10 of 13 requests got a 503. Now only the requests before the
+    # swap do.
+    faulted = [r for r in result.replies if r.phase == "fault"]
+    assert result.unavailable <= 3
+    assert all(r.status == 200 for r in faulted[-5:])
+    assert all(r.model == mr.LARGE for r in faulted[-5:])
+    assert result.restored
 
 
 def test_d4_an_operator_hold_makes_the_faulted_model_the_last_one(tmp_path):

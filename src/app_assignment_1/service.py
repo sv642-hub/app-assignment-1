@@ -307,6 +307,17 @@ class Gateway:
     def others_usable(self, backend: Backend) -> bool:
         return any(self.usable(b) for b in self.backends if b is not backend)
 
+    def others_replying(self, backend: Backend) -> bool:
+        """For a format-failure disable: another model is usable and is not
+        failing on calls that raise. A model that only fails the format check
+        still sends the customer an apology, while one whose calls raise sends
+        a 503, so the first is the one to keep as the last model."""
+        return any(
+            self.usable(b) and not self.controller.erroring(b.config.name)
+            for b in self.backends
+            if b is not backend
+        )
+
     def others_answering(self, backend: Backend) -> bool:
         """For a semantic disable: another model is usable and has answered
         recently without failing. "Usable" alone is not enough: a model that
@@ -907,6 +918,12 @@ class Gateway:
                 )
                 or action
             )
+            if action is None:
+                for other in self.backends:
+                    if other is not backend:
+                        action = (
+                            self.controller.swap_out(name, other.config.name) or action
+                        )
             self._finish_release_watch(backend)
             return None, action, False, generation
         usage.completed_calls += 1
@@ -1114,7 +1131,7 @@ class Gateway:
                 self.controller.record(
                     backend.config.name,
                     bool(format_errors),
-                    can_disable=self.others_usable(backend),
+                    can_disable=self.others_replying(backend),
                     own_route=backend is selected,
                 )
                 or action

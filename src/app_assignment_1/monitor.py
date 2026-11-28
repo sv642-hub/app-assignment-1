@@ -280,6 +280,42 @@ class Controller:
         threshold. An empty window, as after a re-enable, is not evidence."""
         return bool(self.windows[name]) and not self._failing(name)
 
+    def erroring(self, name: BackendName) -> bool:
+        """The model is failing and some of its failures are calls that raised.
+        Such a model gives no reply at all, where one that only fails the
+        format check still gives an apology."""
+        return self._failing(name) and "call_error" in self.windows[name]
+
+    def swap_out(self, name: BackendName, other: BackendName) -> str | None:
+        """`name` fails on calls that raise but is the last model, because
+        `other`, which still gives replies, was disabled first. Bring `other`
+        back and disable `name` instead, so customers get an apology, not a
+        503. Does nothing unless `name` is over the threshold with enough
+        calls, and `other` is out only for format failures."""
+        window = self.windows[name]
+        if (
+            len(window) < self.min_samples
+            or not self.erroring(name)
+            or name in self.disabled_until
+            or other not in self.disabled_until
+            or other in self.held
+            or self.disabled_for.get(other) != "failure"
+            or "call_error" in self.windows[other]
+        ):
+            return None
+        del self.disabled_until[other]
+        self.disabled_for.pop(other, None)
+        self.windows[other].clear()
+        for reset in self.on_reenable:
+            reset(other)
+        self._note(other, "re-enabled", f"{name} fails on calls; window reset")
+        failures = sum(item != "ok" for item in window)
+        reason = (
+            f"call error rate {failures / len(window):.0%} "
+            f"over last {len(window)} calls"
+        )
+        return self._disable(name, reason, True, self.warned, "failure")
+
     def last_resort(self, name: BackendName) -> bool:
         """The model is disabled only because its intents differ from Jev's.
         The gateway still calls it when no other model answers: a reply with a

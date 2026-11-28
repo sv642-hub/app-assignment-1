@@ -77,7 +77,7 @@ The controller checks from the 5th call, when the window holds only 5 calls. So 
 |---|---|---|---|---|
 | D1 | Both down | `outage`, rate 1, both | Every request gets a 503. The first model to trip is disabled, then the other is kept (`kept_last_backend`). Both back once the faults clear | existing |
 | D2 | Both malformed | `bad_format`, rate 1, both | No 503s, but every reply is the apology. One model disabled, the other kept | existing |
-| D3 | One down, one malformed | `outage` on small, `bad_format` on large | Customers get apologies from the large model, since it's the only one left. Check which one the controller disables first | existing |
+| D3 | One down, one malformed | `outage` on small, `bad_format` on large | Customers get apologies from the large model, since it's the only one left. The malformed large model can trip first and be disabled; when the dead small model then trips with nobody else left, the controller brings the large one back and disables the small one (a 503 for a few requests, then apologies). Measured by the D3 test | existing |
 | D4 | Operator hold, then a fault | Operator disables the large model, then `outage` on small | The small model is never disabled, because it's the last usable one, so every request gets a 503. Checks that an operator hold counts as "not usable" | existing |
 
 ### E. Timing and flapping
