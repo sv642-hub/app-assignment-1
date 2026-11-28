@@ -781,3 +781,36 @@ def test_replies_between_a_deploys_write_and_its_apply_do_not_come_back():
     asyncio.run(again.restore_releases())
     asyncio.run(again.restore())
     assert len(again.controller.windows[SMALL]) == len(live.controller.windows[SMALL])
+
+
+def test_rerouted_samples_during_a_deploy_hold_are_kept_after_restart():
+    # A release change clears the model's own window but keeps its rerouted
+    # history, so a rerouted sample taken while the change is held must be
+    # saved, and a restart must see the same window as the running gateway.
+    settings = Settings(
+        _env_file=None, backends_path=Path("config/backends.chaos.json")
+    )
+    store = PausedAfterCommitStore(settings.request_store_limit)
+
+    async def go() -> tuple[Gateway, Gateway]:
+        live = gateway(settings, store)
+        await live.restore_releases()
+        deploy = asyncio.create_task(live.deploy_release(SMALL, "v2-faster", "test"))
+        await store.written.wait()
+        live.semantic.record(SMALL, "agree", rerouted=True)
+        live.semantic.record(SMALL, "agree", rerouted=False)
+        await live.save_interventions()  # a save while the deploy waits
+        store.resume.set()
+        await deploy
+        await live.save_interventions()
+        restarted = gateway(settings, store)
+        await restarted.restore_releases()
+        await restarted.restore()
+        return live, restarted
+
+    live, restarted = asyncio.run(go())
+    assert list(live.semantic.rerouted[SMALL]) == ["agree"]
+    assert list(restarted.semantic.rerouted[SMALL]) == ["agree"]
+    # The own sample is from the old version, so neither side keeps it.
+    assert list(live.semantic.windows[SMALL]) == []
+    assert list(restarted.semantic.windows[SMALL]) == []

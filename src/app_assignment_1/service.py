@@ -4,7 +4,7 @@ import asyncio
 import logging
 import re
 import time
-from collections.abc import Callable, Coroutine, Sequence
+from collections.abc import Callable, Collection, Coroutine, Sequence
 from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any, Literal
@@ -41,6 +41,7 @@ from app_assignment_1.schemas import (
     JevUsage,
     ModelRelease,
     ModelUsage,
+    MonitorSample,
     PolicyCard,
     ReleaseEvent,
     RoutingDecision,
@@ -575,11 +576,20 @@ class Gateway:
                     "Could not save release changes (%s)", type(exc).__name__
                 )
 
+    @staticmethod
+    def _is_held(sample: MonitorSample, held: Collection[BackendName]) -> bool:
+        """Samples of a model in a release change wait, except rerouted
+        semantic ones: a release change keeps that history (`reset` only
+        clears the model's own window), so they are saved at once."""
+        return sample.model in held and sample.traffic != "rerouted"
+
     def _drop_held_samples(self, name: BackendName) -> None:
         self.controller.unsaved_samples = [
-            s for s in self.controller.unsaved_samples if s.model != name
+            s for s in self.controller.unsaved_samples if not self._is_held(s, {name})
         ]
-        self.semantic.unsaved = [s for s in self.semantic.unsaved if s.model != name]
+        self.semantic.unsaved = [
+            s for s in self.semantic.unsaved if not self._is_held(s, {name})
+        ]
 
     async def _save_samples(self) -> None:
         """Save new window samples, one batch at a time so the store keeps
@@ -591,8 +601,8 @@ class Gateway:
             return
         async with self.sample_lock:
             samples = self.controller.unsaved_samples + self.semantic.unsaved
-            held = [s for s in samples if s.model in self.sample_hold]
-            samples = [s for s in samples if s.model not in self.sample_hold]
+            held = [s for s in samples if self._is_held(s, self.sample_hold)]
+            samples = [s for s in samples if not self._is_held(s, self.sample_hold)]
             self.controller.unsaved_samples, self.semantic.unsaved = held, []
             if not samples:
                 return
