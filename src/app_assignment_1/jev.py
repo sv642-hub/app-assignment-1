@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, ValidationError
 from app_assignment_1.config import Settings
 from app_assignment_1.labels import LabelSet
 from app_assignment_1.records import ROUTE_OPTIONS, check_probabilities
-from app_assignment_1.router import JevAnswer, JevResult
+from app_assignment_1.router import FIT_OPTIONS, JevAnswer, JevResult, ReplyCheckResult
 
 SYSTEM_ONE_PATH = "/v1/systemone"
 REQUEST_ID_HEADER = "x-typesafe-request-id"
@@ -37,6 +37,18 @@ ROUTE_CRITERIA = {
     ),
 }
 INTENT_INSTRUCTIONS = "Which banking support request is the customer making?"
+FIT_INSTRUCTIONS = (
+    "The text has a customer's banking support message and then the reply the "
+    "customer received. Does the reply answer what the customer asked?"
+)
+FIT_CRITERIA = {
+    "fits": "The reply is about what the customer asked and is a sensible answer.",
+    "does_not_fit": (
+        "The reply is about something else, ignores the question, or is a "
+        "generic no-match or error reply."
+    ),
+}
+REPLY_MARKER = "\n\nReply the customer received:\n"
 
 # Status codes TypeSafe documents. Others are grouped as http_5xx or http_other.
 DOCUMENTED_STATUSES = frozenset({400, 401, 413, 415, 422, 429, 529})
@@ -85,6 +97,17 @@ def build_questions(labels: LabelSet) -> dict[str, Any]:
     }
 
 
+def build_reply_questions(labels: LabelSet) -> dict[str, Any]:
+    """The second call's questions: route and intent again, and reply fit."""
+    return build_questions(labels) | {
+        "fit": {
+            "type": "choice",
+            "instructions": FIT_INSTRUCTIONS,
+            "criteria": FIT_CRITERIA,
+        }
+    }
+
+
 def create_jev_http_client(
     settings: Settings, transport: httpx.AsyncBaseTransport | None = None
 ) -> httpx.AsyncClient:
@@ -115,12 +138,22 @@ class TypeSafeJevRouter:
         self.client = client
         self.model = model
         self.questions = build_questions(labels)
+        self.reply_questions = build_reply_questions(labels)
         self.intent_options = frozenset(item.label for item in labels.items)
 
-    async def route(self, message: str) -> JevResult:
-        body = {"model": self.model, "state": message, "questions": self.questions}
+    async def _post(
+        self, state: str, questions: dict[str, Any], timeout: float | None = None
+    ) -> tuple[_SystemOneResponse, str | None]:
+        """One System One call. Returns the checked body and the request ID.
+        `timeout` replaces the shared client's timeout for this call."""
+        body = {"model": self.model, "state": state, "questions": questions}
         try:
-            response = await self.client.post(SYSTEM_ONE_PATH, json=body)
+            if timeout is None:
+                response = await self.client.post(SYSTEM_ONE_PATH, json=body)
+            else:
+                response = await self.client.post(
+                    SYSTEM_ONE_PATH, json=body, timeout=timeout
+                )
         except httpx.TimeoutException:
             raise JevTimeout("timeout") from None
         except httpx.RequestError:
@@ -135,15 +168,39 @@ class TypeSafeJevRouter:
             parsed = _SystemOneResponse.model_validate(payload)
         except ValidationError:
             raise JevCallError("bad_body") from None
+        return parsed, response.headers.get(REQUEST_ID_HEADER) or None
+
+    async def route(self, message: str) -> JevResult:
+        parsed, request_id = await self._post(message, self.questions)
         return JevResult(
             route=_answer(parsed.answers.get("route"), ROUTE_OPTIONS),
             intent=_answer(parsed.answers.get("intent"), self.intent_options),
             mocked=False,
             jev_model=parsed.model,
-            provider_request_id=response.headers.get(REQUEST_ID_HEADER) or None,
+            provider_request_id=request_id,
             input_tokens=parsed.usage.input_tokens,
             output_tokens=parsed.usage.output_tokens,
             route_order=list(self.questions["route"]["criteria"]),
+        )
+
+    async def check_reply(
+        self, message: str, reply: str, timeout: float | None = None
+    ) -> ReplyCheckResult:
+        """The second call: the message and the reply the customer got. It
+        sends both, so it is the slower call: `timeout` is its own limit, not
+        the routing call's."""
+        parsed, request_id = await self._post(
+            f"{message}{REPLY_MARKER}{reply}", self.reply_questions, timeout
+        )
+        return ReplyCheckResult(
+            route=_answer(parsed.answers.get("route"), ROUTE_OPTIONS),
+            intent=_answer(parsed.answers.get("intent"), self.intent_options),
+            fit=_answer(parsed.answers.get("fit"), FIT_OPTIONS),
+            mocked=False,
+            jev_model=parsed.model,
+            provider_request_id=request_id,
+            input_tokens=parsed.usage.input_tokens,
+            output_tokens=parsed.usage.output_tokens,
         )
 
 

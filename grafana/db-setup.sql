@@ -12,4 +12,4 @@ ALTER ROLE grafana_ro SET statement_timeout = '5s';
 ALTER ROLE grafana_ro CONNECTION LIMIT 5;
 SELECT format('GRANT CONNECT ON DATABASE %I TO grafana_ro', current_database()) \gexec
 GRANT USAGE ON SCHEMA public TO grafana_ro;
-GRANT SELECT ON requests, jev_assessments, interventions, model_releases TO grafana_ro;
+GRANT SELECT ON requests, jev_assessments, jev_reply_checks, interventions, model_releases TO grafana_ro;
