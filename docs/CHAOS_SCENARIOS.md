@@ -2,7 +2,7 @@
 
 The list of faults the gateway should survive, what it should do in each, and what to measure. It turns the diagram's "About 20 scenarios; detection and recovery times over many runs; false interventions" into a plan.
 
-**Status: groups A to E are built; none is measured on a stack yet, except B1–B3 (README, "Measure detection and recovery").** `scripts/measure_recovery.py` runs each of A1–E4 by name (`--scenario D4`, or `--group C`); `scripts/chaos_demo.py` still runs the three original faults once each, for the demo. F, G and H are still a plan. The notes under [What building A–E showed](#what-building-ae-showed) come from the script's tests, which run the gateway in process with mocks and a 1 s cooldown. They show how the controller's rules play out, not timings.
+**Status: groups A to E are built and measured once on a local stack with the mock models (C ten times); see [Measured on November 27](#measured-on-november-27-2026).** `scripts/measure_recovery.py` runs each of A1–E4 by name (`--scenario D4`, or `--group C`); `scripts/chaos_demo.py` still runs the three original faults once each, for the demo. F, G and H are still a plan.
 
 Owner: Pavlos (scenarios and fault hooks). The other owners are named where a scenario touches their area.
 
@@ -123,22 +123,56 @@ That's 33 scenarios. 23 need only what exists today, 5 need a new fault hook, an
 
 ## Order
 
-1. ~~After #104 merges: add A, B4–B5, C, D and E to its script as named scenarios.~~ Done. Next, run them on a local stack: groups A, B, D and E once each, and C with `--runs 10`.
+1. ~~After #104 merges: add A, B4–B5, C, D and E to its script as named scenarios.~~ Done, and run once on a local stack (C ten times). More runs of C2 and C5 would narrow their rates.
 2. **F1–F3** are Docker commands around the same measurement loop.
 3. **New hooks for G1–G3**, in `MockBackend` and `/v1/faults`. These are Pavlos's. F4–F5 need a fault in the Jev mock, so check with Verness first.
 4. **H**, once Verness has the gateway calling vLLM.
 
-## What building A–E showed
+## Measured on November 27, 2026
 
-From the tests in `tests/test_measure_recovery.py`, with the default window, 5-sample minimum and 50% threshold. Not measured on a stack.
+Local Compose stack on a Mac, mock models and mock Jev, `compose.measure.yml` (semantic actions on, baseline 0), default controller settings (window 20, 5 samples minimum, 50% threshold, 60 s cooldown), one message every 0.5 s. Groups A, B, D and E ran once each and every run showed what its scenario expects; group C ran 10 times per scenario. "Requests" counts the requests on the faulted model's route, from the fault to the disable. These are mocks: the numbers show how the controller's rules play out, not how real models behave.
 
-- **"Disabled after 5 calls" holds only from an empty window.** Each run sends 8 healthy messages first. That leaves 6 good calls on the faulted model's route (B1, B2, B4, B5 and E4), so it takes 6 failures to reach 50%. The README's B1–B3 numbers already show 6.
-- **E1: the second disable takes 4 failures.** The reply that showed the model was back is a good call in the fresh window. 1 good call plus 4 failures reaches the 5-call minimum at 80%.
-- **D1: the disable is not on any reply.** With both models down, the request that disables one still ends in a 503, which has no trace. The script finds the disable in the intervention log instead.
-- **D4: releasing the hold disables the small model.** While the large model is held, the small one is kept as the last usable model (`kept_last_backend`), and every request gets a 503, as expected. But the hold is released after the fault clears, and the small model's window is still full of outage failures. A call soon after disables it, with the fault already gone, and it stays out for the cooldown. Customers are answered by the large model meanwhile. Whether the window should be cleared when the other model comes back is the monitor's call (Sebastian).
+| # | Disabled | Requests | Time to disable | Bad replies before it | 503s | Back after the clear | Notes |
+|---|---|---|---|---|---|---|---|
+| A1 | none | | | 0 | 0 | | 1,199 healthy messages in 10 minutes, no intervention |
+| A2 | small | 6 | 3.2 s | 6 | 0 | 58.1 s | Then 60 healthy messages, no intervention |
+| B1 | small | 6 | 3.5 s | 0 | 0 | 58.2 s | The large model answered every failed call |
+| B2 | small | 6 | 3.2 s | 6 | 0 | 57.8 s | |
+| B3 | small | 4 | 2.2 s | 4 | 0 | 58.3 s | Semantic monitor |
+| B4 | large | 6 | 3.5 s | 0 | 0 | 58.5 s | The small model answered every failed call |
+| B5 | large | 6 | 3.4 s | 6 | 0 | 58.7 s | |
+| D1 | large first | 3 | 1.5 s | 3 | 13 of 13 | 55.8 s | Small kept as the last model; every request a 503 |
+| D2 | small first | 7 | 3.2 s | 7 | 0 | 55.0 s | Large kept; 17 apologies, no 503s |
+| D3 | large first | 3 | 1.5 s | 3 | 10 of 13 | 55.7 s | Small (down) kept. **Not as expected**, see below |
+| D4 | none during the hold | | | 20 | 20 of 20 | | Small kept; then disabled 0.1 s after the hold was released, see below |
+| E1 | small, twice | 6, then 4 | 3.2 s | 6 | 0 | 58.1 s | |
+| E2 | small | 6 | 3.5 s | 0 | 0 | 48.0 s | Cleared 10 s into the cooldown: back only when it ended |
+| E3 | small, 5 times | 6 | 3.2 s | 33 in all | 0 | 28.8 s | Out 90% of the 5 minutes of flapping (272 of 302 s) |
+| E4 | small | 6 | 124.3 s | 0 | 0 | 58.0 s | No disable in the 2 minutes with no standard traffic; then 6 requests |
+
+Group C, 10 runs each, a fixed 60 messages (45 to the small model):
+
+| # | Fault | Runs with a disable | Median requests to it | Fault rate the mock drew, until any disable |
+|---|---|---|---|---|
+| C1 | `bad_format` 10% | 0 of 10 | | 9.8% |
+| C2 | `bad_format` 30% | 5 of 10 | 30 (19 to 41) | 35% |
+| C3 | `bad_format` 50% | 10 of 10 | 28 (16 to 44) | 47% |
+| C4 | `bad_format` 70% | 10 of 10 | 12 (6 to 17) | 73% |
+| C5 | `outage` 30% | 5 of 10 | 40 (33 to 45) | 31% |
+
+How to read them:
+- **"Disabled after 5 calls" holds only from an empty window.** Each run sends 8 healthy messages first, which leaves 6 good calls on the faulted route, so it takes 6 failures. E1's second disable takes 4: the reply that showed the model was back is a good call in the fresh window, and 1 good plus 4 failures reaches the 5-call minimum at 80%.
+- **C2 and C5 answer the open question on `APP_MONITOR_MIN_SAMPLES`.** At 30% faults, every disable came after 19 or more requests, once the 20-call window was full, never in the first calls. So raising the minimum to 10 would not change them; the window, the threshold and how long the fault lasts do. Replaying each run's failures through the rule gave the same disable, at the same request, in all 20 runs. The runs that tripped drew more faults than 30%: 43–53% in 4 of the 5 C2 runs, and 33–39% in the C5 runs. A simulation of the rule at exactly 30% gives about 22% of 45-call runs; 5 of 10 runs is too few to tell the two apart.
+- **D1: which model goes first depends on the traffic, not the fault.** Both models fail every request, but mixed traffic left the large model only 2 good calls, against 6 for the small one, so it reached 50% first. The request that disabled it still ended in a 503, which has no trace; the script found the disable in the intervention log.
+- **D3: the controller keeps the dead model.** The doc expected customers to get apologies from the malformed large model, the last one left. Instead, every failed call on the small model is retried on the large one, so the large model's window filled with failures twice as fast. It was disabled first, the small model (down) was kept as the last one, and customers got 503s: 10 of 13 requests. For Sebastian (controller): is a 503 better than an apology here?
+- **D4: releasing the hold disables the small model with its fault gone.** During the hold the small model is kept as the last usable one and every request gets a 503, as expected. After the fault clears and the hold is released, the small model's window is still full of outage failures, so the next call to it disables it (0.1 s after the release), and it stays out for the full cooldown while the large model answers. Whether the window should be cleared when the other model becomes usable again is the monitor's call (Sebastian).
+- **E2 and E3: recovery is about the cooldown.** Clearing a fault early doesn't bring the model back sooner. With a fault flapping every 10 s, the model is disabled again about 3 s after each return while the fault is on, so it was out 90% of the time.
+
+The tests in `tests/test_measure_recovery.py` check the same rules in process, with a 1 s cooldown.
 
 ## Open questions
 
-- **C2:** if 30% faults trip the controller often, should `APP_MONITOR_MIN_SAMPLES` rise to 10? The answer needs C1–C4 measured first. Sebastian owns the monitor.
+- **C2:** ~~should `APP_MONITOR_MIN_SAMPLES` rise to 10?~~ Measured: the 30% trips all came with a full window, so the minimum is not what causes them. If 30% faults should never disable a model, that needs a longer window or a higher threshold. Sebastian owns the monitor.
+- **D3 and D4:** see the notes under the measurements. Both are about which model the controller keeps; Sebastian's call.
 - **F2:** losing state on restart is known. Is it acceptable for this release, or should disables be saved to Postgres and read back at start? It's the gateway's and the monitor's call.
 - **H5:** real format failures may be common enough to matter more than any injected fault. Decide after the full real-model run.
