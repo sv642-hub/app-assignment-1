@@ -18,7 +18,7 @@ from prometheus_client import (
 from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily, Metric
 from prometheus_client.registry import Collector
 
-from app_assignment_1.schemas import BackendErrorCode, InterventionAction, Route
+from app_assignment_1.schemas import BackendErrorCode, InterventionAction, Route, Trace
 from app_assignment_1.semantic import SAMPLES
 
 if TYPE_CHECKING:
@@ -37,6 +37,9 @@ JEV_FALLBACK_REASONS = (
 # Includes 2 s and 4 s, the latency targets in docs/MONITORING.md, so the
 # dashboard can count requests under each target exactly.
 LATENCY_BUCKETS = (0.05, 0.1, 0.25, 0.5, 1, 2, 4, 8, 15, 30, 60)
+# The label values of gateway_chat_requests, read from the Trace fields.
+REPLY_SOURCES = get_args(Trace.model_fields["reply_source"].annotation)
+FORMAT_CHECKS = get_args(Trace.model_fields["format_check"].annotation)
 JEV_OUTCOMES = ("ok", "timeout", "error")
 CALL_OUTCOMES = ("ok", "failed")
 AUTH_FAILURE_REASONS = ("operator_disabled", "missing_or_wrong_token")
@@ -51,6 +54,16 @@ class GatewayMetrics:
             ["route", "model", "reply_source", "format_check"],
             registry=self.registry,
         )
+        # Create every label set at 0, so rate() and increase() count a burst
+        # that lands before the first scrape. Combinations that cannot happen
+        # stay at 0.
+        for route in get_args(Route):
+            for backend in gateway.backends:
+                for source in REPLY_SOURCES:
+                    for check in FORMAT_CHECKS:
+                        self.chat_requests.labels(
+                            route, backend.config.name, source, check
+                        )
         self.chat_unavailable = Counter(
             "gateway_chat_unavailable",
             "Chat requests that got a 503 because no backend could answer.",
