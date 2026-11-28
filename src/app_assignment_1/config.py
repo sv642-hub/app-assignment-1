@@ -130,6 +130,42 @@ class Settings(BaseSettings):
     # attempt_timeout_seconds x monitor_timeout_streak.
     monitor_timeout_streak: int = Field(default=3, ge=1, le=1000)
 
+    # Logging (logs.py). json: one JSON object per line; text: for people.
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    log_format: Literal["json", "text"] = "json"
+    # Rate limit on the model routes (/v1/chat and /v1/chat/stream), per
+    # client: this many requests a minute on average, with `rate_limit_burst`
+    # allowed at once. 0 turns it off. Over the limit: 429 and Retry-After.
+    rate_limit_per_minute: float = Field(default=120, ge=0, le=100000)
+    rate_limit_burst: int = Field(default=30, ge=1, le=100000)
+    # Behind the Caddy proxy every request arrives from the proxy's address.
+    # On: the client is the last address in X-Forwarded-For, the one Caddy
+    # added. Turn it on only when the gateway is reachable through the proxy
+    # alone (the Compose stack); otherwise a caller could pick its own.
+    trust_forwarded_for: bool = False
+    # Largest request body in bytes, checked before it is read: 413 above it.
+    # A message is at most 2000 characters (422 above that), which is at most
+    # 8000 bytes of UTF-8 plus the JSON around it.
+    max_body_bytes: int = Field(default=16384, ge=512, le=1048576)
+    # A call to a model server is repeated after a timeout, a refused or reset
+    # connection, a 502/503/504 or a 429 (waiting out its Retry-After), up to
+    # this many tries in all, inside the attempt's time budget (retry.py). 1
+    # turns retries off. Waits grow as base x 2^n with full jitter, capped at
+    # backend_retry_max_seconds; a Retry-After above the cap is not waited for.
+    backend_retry_attempts: int = Field(default=3, ge=1, le=10)
+    backend_retry_base_seconds: float = Field(default=0.25, gt=0, le=30)
+    backend_retry_max_seconds: float = Field(default=2, gt=0, le=60)
+    # While a streamed answer is pending, a progress event this often.
+    stream_heartbeat_seconds: float = Field(default=2, gt=0, le=60)
+
+    @model_validator(mode="after")
+    def retry_base_fits_cap(self) -> "Settings":
+        if self.backend_retry_base_seconds > self.backend_retry_max_seconds:
+            raise ValueError(
+                "backend_retry_base_seconds cannot exceed backend_retry_max_seconds"
+            )
+        return self
+
     @model_validator(mode="after")
     def min_samples_fit_window(self) -> "Settings":
         if self.monitor_min_samples > self.monitor_window:
