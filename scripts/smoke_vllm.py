@@ -6,8 +6,9 @@ from pathlib import Path
 import httpx
 from pydantic import TypeAdapter
 
-from app_assignment_1.labels import load_labels
-from app_assignment_1.schemas import BackendConfig, PolicyCard
+from app_assignment_1.evaluation import reply_format_errors
+from app_assignment_1.labels import LabelSet, load_labels
+from app_assignment_1.schemas import BackendConfig, BackendReply, PolicyCard
 from app_assignment_1.service import check_reply
 from app_assignment_1.vllm import (
     BackendCallError,
@@ -18,6 +19,42 @@ from app_assignment_1.vllm import (
 )
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
+
+
+def clean_key(key: str | None) -> str | None:
+    """The key stripped, as the gateway stores it (#132): vLLM compares
+    "Bearer <key>" exactly, and a CRLF key file read with $(cat file) keeps
+    its "\\r". None if blank. Never put the key in an error message."""
+    key = (key or "").strip()
+    if not key:
+        return None
+    if not all("!" <= char <= "~" for char in key):
+        raise SystemExit(
+            "The vLLM API key must be printable ASCII with no spaces or control "
+            "characters inside it"
+        )
+    return key
+
+
+def check(
+    route: str, reply: BackendReply, labels: LabelSet, cards: dict[str, PolicyCard]
+) -> list[str]:
+    """Fail as the gateway would; return notes on what the gateway discards.
+
+    The gateway's format check (`reply_format_errors`, the same rules the eval
+    runner uses) decides: the intent, the facts and the reply built from the
+    card. The model's own text is never shown, so since #131 a blank, long or
+    placeholder text does not fail the reply; it is only noted here, as the
+    gateway counts it in gateway_discarded_text_problems_total."""
+    if reply.intent != "card_arrival":
+        raise SystemExit(f"{route}: expected card_arrival, got {reply.intent!r}")
+    errors = reply_format_errors(reply, labels, cards)
+    if errors:
+        raise SystemExit(f"{route}: the gateway would fail it: {', '.join(errors)}")
+    problems = check_reply(reply.reply)
+    if problems:
+        return [f"the model's own text has {', '.join(problems)} (discarded)"]
+    return []
 
 
 async def main() -> None:
@@ -36,6 +73,7 @@ async def main() -> None:
         help="Select a local stub response. Failure modes exit with an error.",
     )
     args = parser.parse_args()
+    api_key = clean_key(args.api_key)
     base_url = httpx.URL(args.base_url)
     if base_url.query:
         parser.error("Pass the stub mode with --simulate instead of a URL query.")
@@ -53,9 +91,7 @@ async def main() -> None:
         async with httpx.AsyncClient(
             base_url=base_url,
             params={"simulate": args.simulate} if args.simulate else None,
-            headers=(
-                {"Authorization": f"Bearer {args.api_key}"} if args.api_key else None
-            ),
+            headers={"Authorization": f"Bearer {api_key}"} if api_key else None,
             timeout=0.5 if args.simulate == "slow" else 60.0,
         ) as client:
             backend = VLLMBackend(
@@ -69,15 +105,10 @@ async def main() -> None:
     except (BackendCallError, BackendTimeoutError, BackendOutputError) as exc:
         raise SystemExit(f"{args.route}: {type(exc).__name__}: {exc}") from None
 
-    if reply.intent != "card_arrival":
-        raise SystemExit(f"{args.route}: expected card_arrival, got {reply.intent!r}")
-    errors = check_reply(reply.reply)
-    if errors:
-        raise SystemExit(f"{args.route}: invalid reply: {', '.join(errors)}")
-    if any(fact not in cards[reply.intent].facts for fact in reply.policy_facts):
-        raise SystemExit(f"{args.route}: reply listed a fact outside the policy card")
-
-    print(f"{args.route}: {args.model} returned a valid BackendReply.")
+    notes = check(args.route, reply, labels, cards)
+    print(f"{args.route}: {args.model} returned a reply the gateway accepts.")
+    for note in notes:
+        print(f"{args.route}: note: {note}")
     print(reply.model_dump_json(indent=2))
 
 
