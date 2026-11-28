@@ -1,0 +1,299 @@
+# The metrics catalog: what each metric means, how it is computed and what it
+# should be. One place for the numbers the dashboard, the alerts and the docs
+# all repeat. tests/test_metrics_catalog.py fails when they stop agreeing.
+#
+# This is not the list of Prometheus series (src/app_assignment_1/metrics.py is),
+# and it does not replace APP_ settings (config.py): those differ per
+# deployment. An entry names the settings it relates to under `config` and
+# never copies their values. docs/METRICS.md is generated from this file:
+#   uv run python scripts/build_metrics_docs.py
+#
+# status:  served  = a series the gateway exposes, read as it is
+#          derived = computed from served series in PromQL
+#          offline = measured by a script, not scraped; there is no live panel
+# Target status: proposal (picked from medians, not measured p95s),
+#          starting_point (a prototype alert threshold, to revisit with real
+#          traffic), goal (a stated aim, not yet met in every run).
+# PromQL placeholders are listed in src/app_assignment_1/metrics_catalog.py.
+
+version: 1
+
+# The two Qwen models. A test checks these against config/backends.json:
+# small answers the standard route and large the complex route.
+models:
+  small: qwen3-1.7b
+  large: qwen3-4b
+
+targets:
+  availability:
+    value: 0.99
+    status: proposal
+    meaning: Share of chat requests answered without a 503.
+  answer_latency_p95_seconds:
+    value: {small: 2, large: 4}
+    status: proposal
+    meaning: >-
+      p95 time to answer a request, per model, 503s left out. Chosen from the
+      real-Qwen medians; p95 has not been measured.
+  request_latency_p95_alert_seconds:
+    value: 10
+    status: starting_point
+    meaning: >-
+      p95 time to handle any request, 503s included, above which ChatLatencyHigh
+      fires. A looser bound than the answer target, because a 503 can wait out
+      a model timeout.
+  model_failure_early_warning:
+    value: 0.25
+    status: starting_point
+    meaning: >-
+      Monitor failure rate at which ModelFailureRateRising fires. It must stay
+      below the controller threshold, APP_MONITOR_FAILURE_THRESHOLD.
+  model_failure_min_samples:
+    value: 5
+    status: starting_point
+    meaning: >-
+      Calls in the monitor window before ModelFailureRateRising fires. It
+      repeats APP_MONITOR_MIN_SAMPLES: a test checks it equals the default, but
+      a deployment that changes the setting must change the alert too.
+  chat_unavailable_alert:
+    value: 0.2
+    status: starting_point
+    meaning: Share of requests that get a 503 above which ChatMostlyFailing fires.
+  jev_skipped_alert:
+    value: 0.5
+    status: starting_point
+    meaning: Share of requests routed by the rule router above which JevMostlySkipped fires.
+  detect_faulty_model_seconds:
+    value: 30
+    status: goal
+    meaning: >-
+      Seconds from a model's fault starting to the controller disabling it. The
+      real-Qwen hang run took 186 s, so a hung model misses it.
+
+metrics:
+  chat_unavailable_ratio:
+    description: >-
+      503s over all chat requests (answered plus 503). Zero-filled, because the
+      answered counter has no series until the first reply.
+    unit: ratio
+    kind: ratio
+    status: derived
+    promql: >-
+      ((sum($fn(gateway_chat_unavailable_total[$window]))) or vector(0))
+        / (((sum($fn(gateway_chat_unavailable_total[$window]))) or vector(0))
+           + ((sum($fn(gateway_chat_requests_total[$window]))) or vector(0)))
+    target: chat_unavailable_alert
+    direction: max
+    used_by: [alert:ChatMostlyFailing, "docs:README.md", "docs:docs/MONITORING.md"]
+
+  chat_availability:
+    description: Share of chat requests answered without a 503.
+    unit: ratio
+    kind: ratio
+    status: derived
+    promql: 1 - <<chat_unavailable_ratio>>
+    target: availability
+    direction: min
+    used_by: ["grafana:Answered, no 503"]
+
+  error_budget_burn_rate:
+    description: >-
+      How fast the 503 allowance is spent: the 503 share over what the
+      availability target allows. 1 spends it at exactly the budgeted pace.
+    unit: ratio
+    kind: ratio
+    status: derived
+    promql: <<chat_unavailable_ratio>> / $error_budget
+    used_by: ["grafana:Availability burn rate (target 99% answered)"]
+
+  error_budget_left:
+    description: >-
+      1 means no 503s, 0 means the allowance is used up, below 0 means the
+      availability target is missed. Over the window given, not 30 days.
+    unit: ratio
+    kind: ratio
+    status: derived
+    promql: 1 - <<error_budget_burn_rate>>
+    used_by: ["grafana:Error budget left"]
+
+  answer_latency_p95_seconds:
+    description: >-
+      p95 time to answer a request, per model, measured inside the gateway.
+      503s are not in it. Not the same as request_latency_p95_seconds.
+    unit: seconds
+    kind: latency
+    status: derived
+    per_model: true
+    promql: >-
+      histogram_quantile(0.95, sum by (le) (rate(
+        gateway_chat_answer_latency_seconds_bucket{model="$for_model"}[$window])))
+    target: answer_latency_p95_seconds
+    direction: max
+    used_by: ["grafana:p95 latency vs target (small 2 s, large 4 s)", "docs:README.md", "docs:docs/MONITORING.md"]
+
+  answer_latency_within_target:
+    description: >-
+      Share of a model's answered requests faster than its p95 target. Exact
+      only because the target is a histogram bucket edge (a test checks).
+    unit: ratio
+    kind: ratio
+    status: derived
+    per_model: true
+    promql: >-
+      sum(rate(gateway_chat_answer_latency_seconds_bucket{model="$for_model",le="$target_for_model_le"}[$window]))
+        / sum(rate(gateway_chat_answer_latency_seconds_count{model="$for_model"}[$window]))
+    target: answer_latency_p95_seconds
+    direction: min
+    used_by: ["grafana:Share of requests under the latency target"]
+
+  request_latency_p95_seconds:
+    description: >-
+      p95 time to handle any chat request, 503s included, not split by model.
+      This is the alert's latency. It is not the answer latency target's.
+    unit: seconds
+    kind: latency
+    status: derived
+    promql: >-
+      histogram_quantile(0.95, sum by (le) (rate(
+        gateway_chat_latency_seconds_bucket[$window])))
+    target: request_latency_p95_alert_seconds
+    direction: max
+    used_by: [alert:ChatLatencyHigh, "grafana:Request latency percentiles, all requests incl. 503s"]
+
+  monitor_failure_rate:
+    description: >-
+      Share of a model's last calls (the monitor window) that were format
+      failures or failed calls. This is the controller's input. It is not the
+      share of replies that fail the format check; see format_check_pass_ratio.
+    unit: ratio
+    kind: gauge
+    status: served
+    promql: gateway_monitor_failure_rate
+    target: model_failure_early_warning
+    direction: max
+    config: [monitor_failure_threshold, monitor_window, monitor_min_samples]
+    used_by: [alert:ModelFailureRateRising, "grafana:Monitor failure rate and window size", "docs:docs/MONITORING.md"]
+
+  format_check_pass_ratio:
+    description: >-
+      Share of answered requests, per model, whose reply passed the format
+      check. 1 minus this is the format-failure share of requests.
+    unit: ratio
+    kind: ratio
+    status: derived
+    promql: >-
+      sum by (model) (rate(gateway_chat_requests_total{format_check="passed"}[$window]))
+        / sum by (model) (rate(gateway_chat_requests_total[$window]))
+    used_by: ["grafana:Format check pass rate by model"]
+
+  semantic_agreement_ratio:
+    description: >-
+      Share of scored replies, per model, whose intent equals Jev's intent
+      answer. Replies without a usable Jev answer are not scored.
+    unit: ratio
+    kind: ratio
+    status: derived
+    promql: >-
+      sum by (model) (rate(gateway_semantic_samples_total{sample="agree"}[$window]))
+        / sum by (model) (rate(gateway_semantic_samples_total{sample=~"agree|disagree"}[$window]))
+    used_by: ["grafana:Qwen vs Jev intent agreement by model"]
+
+  semantic_disagreement_rate:
+    description: >-
+      The semantic monitor's window, as the controller sees it: the share of
+      scored replies whose intent differs from Jev's. Absent until a reply is
+      scored. The threshold is the baseline plus the margin, both settings.
+    unit: ratio
+    kind: gauge
+    status: served
+    promql: gateway_semantic_disagreement_rate
+    config:
+      - semantic_baseline_disagreement_rate
+      - semantic_alert_margin
+      - semantic_window
+      - semantic_min_samples
+    used_by: ["grafana:Semantic window: disagreement and coverage"]
+
+  jev_skipped_ratio:
+    description: >-
+      Share of requests routed by the rule router because the Jev call failed,
+      its route answer was invalid, or the circuit breaker was open.
+    unit: ratio
+    kind: ratio
+    status: derived
+    promql: >-
+      sum($fn(gateway_jev_fallbacks_total[$window]))
+        / (((sum($fn(gateway_chat_requests_total[$window]))) or vector(0))
+           + sum($fn(gateway_chat_unavailable_total[$window])))
+    target: jev_skipped_alert
+    direction: max
+    used_by: [alert:JevMostlySkipped]
+
+  escalation_rate:
+    description: >-
+      Share of answered requests the router sent down the complex route. This
+      is the router's decision (Jev, or the rule router when Jev is skipped),
+      not which model answered: a complex request answered by the small model
+      during a fallback still counts. See large_model_share for the other view.
+    unit: ratio
+    kind: ratio
+    status: derived
+    promql: >-
+      sum(rate(gateway_chat_requests_total{route="complex"}[$window]))
+        / sum(rate(gateway_chat_requests_total[$window]))
+    used_by: []
+
+  large_model_share:
+    description: >-
+      Share of answered requests the large model answered, whatever the route.
+      It includes standard requests moved to the large model when the small one
+      is disabled or fails, and leaves out complex requests the small model
+      answered. During self-healing it differs from escalation_rate.
+    unit: ratio
+    kind: ratio
+    status: derived
+    promql: >-
+      sum(rate(gateway_chat_requests_total{model="$large_model"}[$window]))
+        / sum(rate(gateway_chat_requests_total[$window]))
+    used_by: []
+
+  jev_estimated_cost_usd:
+    description: >-
+      Estimated Jev cost over the window: input tokens times
+      APP_JEV_INPUT_PRICE_PER_MILLION_USD. No data while the price is unset, so
+      an unknown price never reads as $0. Mock Jev reports 0 tokens.
+    unit: usd
+    kind: cost
+    status: derived
+    promql: sum(increase(gateway_jev_estimated_cost_usd_total[$window]))
+    config: [jev_input_price_per_million_usd]
+    used_by: ["grafana:Jev est. cost (range)"]
+
+  jev_cost_per_request_usd:
+    description: >-
+      Estimated Jev cost per chat request (answered plus 503; Jev is called
+      before either). Jev only: the Qwen models run on our own GPUs and no
+      per-request Qwen cost is measured.
+    unit: usd
+    kind: cost
+    status: derived
+    promql: >-
+      <<jev_estimated_cost_usd>>
+        / (((sum(increase(gateway_chat_unavailable_total[$window]))) or vector(0))
+           + ((sum(increase(gateway_chat_requests_total[$window]))) or vector(0)))
+    config: [jev_input_price_per_million_usd]
+    used_by: []
+
+  time_to_disable_seconds:
+    description: >-
+      Seconds from a fault starting to the controller disabling the model.
+      Measured per fault by a script; there is no live metric, and no panel
+      can show it. The Health screen and the interventions table show when a
+      model was disabled, not when its fault began.
+    unit: seconds
+    kind: duration
+    status: offline
+    source: scripts/measure_recovery.py#detect_seconds
+    target: detect_faulty_model_seconds
+    direction: max
+    used_by: ["script:scripts/measure_recovery.py", "grafana:Detection target"]
