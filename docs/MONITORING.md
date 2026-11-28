@@ -153,7 +153,7 @@ It clears 5 minutes after the last 503.
 
 ### ChatMostlyFailing
 
-**Critical.** More than 1 in 5 chat requests get a 503, for 5 minutes. Customers are mostly not getting answers. It also fires when no request has succeeded since the gateway started.
+**Critical.** More than 20% of chat requests (1 in 5) get a 503, for 5 minutes. Customers are mostly not getting answers. It also fires when no request has succeeded since the gateway started.
 
 Do, in order:
 1. On Health, find which models are out and why: disabled, held, or unavailable in config.
@@ -180,7 +180,7 @@ It clears when most messages are routed by Jev again.
 
 ### ChatLatencyHigh
 
-**Warning.** p95 chat latency, measured inside the gateway and including 503s, is above 10 s for 10 minutes.
+**Warning.** The request latency p95, measured inside the gateway and including 503s, is above 10 s for 10 minutes. This is not the answer latency the dashboard compares with its 2 s and 4 s targets: that one leaves 503s out and is split by model (see [Metric definitions](#metric-definitions)).
 
 Check which part is slow:
 - **The models:** with the mocks, latency is simulated, 120 ms for the small model and 350 ms for the large one. So in mock mode, high latency points elsewhere. With real models, check their servers.
@@ -218,4 +218,14 @@ curl -fsS -X POST -H "$H" -H 'Content-Type: application/json' \
 
 ## Dashboard
 
-The Metrics screen (Grafana, at `/grafana`) plots the same series the alerts use, plus per-model latency percentiles, in-flight requests, Jev call latency and auth failures. Its rows and targets are listed in the README under Grafana dashboard. A hung model call shows first in *In-flight requests*, because a latency histogram only counts calls that have finished. The latency targets there (small under 2 s, large under 4 s at p95) are proposals, not measured values.
+The Metrics screen (Grafana, at `/grafana`) plots the same series the alerts use, plus per-model latency percentiles, in-flight requests, Jev call latency and auth failures. Its rows and targets are listed in the README under Grafana dashboard. A hung model call shows first in *In-flight requests*, because a latency histogram only counts calls that have finished. The latency targets there (small under 2 s, large under 4 s at p95, answered requests only) and the availability target (99% answered) are proposals, not measured values.
+
+## Metric definitions
+
+The meaning of each metric, its formula and its target are in the metrics catalog, [`config/metrics.yaml`](../config/metrics.yaml), and the generated page [METRICS.md](METRICS.md). The dashboard, the alerts and these docs repeat its numbers, and `tests/test_metrics_catalog.py` fails when they differ. Three terms are easy to mix up:
+
+- **Answer latency p95** (`answer_latency_p95_seconds`): answered requests only, per model. The dashboard's 2 s and 4 s targets use it.
+- **Request latency p95** (`request_latency_p95_seconds`): every request including 503s, not split by model. `ChatLatencyHigh` uses it, with a 10 s threshold.
+- **Monitor failure rate** (`monitor_failure_rate`): format failures plus failed calls over the model's last calls. The controller and `ModelFailureRateRising` use it. It is not the share of replies that fail the format check (`format_check_pass_ratio`).
+
+Two more views of the same traffic differ during self-healing. The **escalation rate** is the share of answered requests the router sent down the complex route. The **large-model share** is the share the large model answered, so a standard request moved to the large model while the small one is disabled raises the second and not the first.
