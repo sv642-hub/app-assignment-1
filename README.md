@@ -58,14 +58,22 @@ Send five standard messages. Each one is still answered, by `qwen3-4b` with `fal
 
 ### Measure detection and recovery
 
-[`scripts/measure_recovery.py`](scripts/measure_recovery.py) times the loop. For each fault on the small model (`outage`, `bad_format`, and `label_swap` when semantic actions are on), it:
+[`scripts/measure_recovery.py`](scripts/measure_recovery.py) times the loop. It runs the scenarios in groups A to E of [`docs/CHAOS_SCENARIOS.md`](docs/CHAOS_SCENARIOS.md). By default it runs B1–B3, the full fault on the small model (`outage`, `bad_format`, and `label_swap` when semantic actions are on). For each run, it:
 1. starts from clean monitor windows: it waits out any cooldown, then disables and enables each model through the operator routes, which clears both models' windows, so each run is an independent sample whatever ran before;
 2. sends 8 normal messages and counts any controller action, a false intervention;
-3. sets the fault with `POST /v1/faults`;
-4. sends a message every 0.5 s, or as soon as the last reply arrives if it took longer (three standard, then one complex), until the controller disables the model, then 4 more;
-5. clears the fault and keeps sending until the small model answers its own route again. The time until it serves again counts from the moment the fault was cleared.
+3. sets the scenario's faults with `POST /v1/faults`;
+4. sends a message every 0.5 s, or as soon as the last reply arrives if it took longer (three standard, then one complex; the other way round for a fault on the large model), until the controller disables the model, then 4 more;
+5. clears the faults and keeps sending until every faulted model answers its own route again. The time until it serves again counts from the moment the fault was cleared.
 
-A run fails if the model is never disabled, never serves again, or the controller acted during the normal messages. A run that stops on an error (a dropped connection, say) is reported as failed, and the other runs go on. `--out` is rewritten after each run, so a crash keeps the runs before it. The fault is cleared on Ctrl-C and on SIGTERM. The script exits 1 if any run failed or none ran.
+The other scenarios change steps 3–5:
+- **A1** sends healthy traffic for 10 minutes, and **A2** adds 60 healthy messages after the recovery. Any controller action in them is a false intervention.
+- **C1–C5** set the fault on a share of calls (10–70%) and send a fixed 60 messages, since whether the model is disabled is random. Run them with `--runs 10` or more: the report gives the share of runs with a disable.
+- **D1–D4** fault both models, or hold the large one with an operator disable (D4). The run checks the controller logged `kept_last_backend`.
+- **E1–E4** are about timing: E1 sets the fault again after the recovery, E2 clears it a sixth of the cooldown after the disable, E3 turns it on and off every 10 s for 5 minutes, and E4 sends only complex messages for the first 2 minutes of the fault.
+
+Pick scenarios with `--scenario B4` or a whole group with `--group C` (both can repeat). `outage`, `bad_format` and `label_swap` still name B1–B3. Each run also reads the interventions in `/v1/health` before and after, because a `kept_last_backend` decision and a disable during a 503 are not on any reply's trace.
+
+A run fails if it doesn't show what its scenario expects: for most, that the model is disabled and then serves again. It also fails if the controller acted during the normal messages, or disabled a model with no fault. A run that stops on an error (a dropped connection, say) is reported as failed, and the other runs go on. `--out` is rewritten after each run, so a crash keeps the runs before it. The fault is cleared on Ctrl-C and on SIGTERM. The script exits 1 if any run failed or none ran.
 
 It needs an operator token, and it changes the running models, so it refuses any host but localhost unless you pass `--allow-remote`. Never run it on the deployment testers use. Set `APP_OPERATOR_TOKEN` in `env/.env` first, then pass the same value to the script (it runs on Python 3.9 or later):
 
@@ -95,6 +103,11 @@ How to read it:
 - **"No false interventions" covers 72 normal requests only.** That's too few to say anything about a false intervention rate.
 
 These are mock models with simulated latency, so the numbers show how the loop behaves. They say nothing about real models.
+
+Groups A–E were measured on November 27, 2026, on a local Compose stack (A, B, D and E once each, C ten times per scenario). Every run of A, B, D and E showed what its scenario expects. The full tables and what they show are in [`docs/CHAOS_SCENARIOS.md`](docs/CHAOS_SCENARIOS.md#measured-on-november-27-2026). In short:
+- **Partial faults:** no disable at 10%, 5 of 10 runs at 30%, and every run at 50% and 70%. Every 30% trip came with a full 20-call window, so `APP_MONITOR_MIN_SAMPLES` doesn't cause them.
+- **One model down, one malformed (D3):** the controller disables the malformed model and keeps the dead one, so customers get 503s, not apologies.
+- **After an operator hold (D4):** releasing the hold disables the other model on the failures still in its window, though its fault is gone.
 
 ### Semantic monitor
 
@@ -546,6 +559,8 @@ docker compose -p app-assignment-1 ps
 curl -fsS http://127.0.0.1:8080/v1/health
 python3 scripts/smoke_compose.py http://127.0.0.1:8080
 ```
+
+The smoke test reads the modes from `/v1/health`. With real Jev, it sends three chats, so three paid TypeSafe calls. It checks that each reply came from Jev, not the rule router, and from the model on the route Jev chose; it does not check which route that was. With real Qwen, it prints each intent and format check instead of checking them, since a real model can be wrong.
 
 These deployment commands target `main` after this PR is merged. For updates:
 
