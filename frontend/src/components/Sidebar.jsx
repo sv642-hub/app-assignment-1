@@ -4,6 +4,7 @@ const SCREENS = [
   { id: "chat", label: "Chat" },
   { id: "health", label: "Health" },
   { id: "jev", label: "Jev" },
+  { id: "deployments", label: "Deployments" },
   { id: "metrics", label: "Metrics" },
 ];
 

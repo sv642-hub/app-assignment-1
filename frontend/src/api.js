@@ -38,3 +38,22 @@ export function sendChat(message) {
 export function getHealth() {
   return request("/v1/health");
 }
+
+export async function changeRelease(model, action, payload, token) {
+  let response;
+  try {
+    response = await fetch(`/v1/operator/models/${encodeURIComponent(model)}/${action}`, {
+      method: "POST",
+      redirect: "error",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    throw new GatewayError("Could not confirm the change. Check release history before trying again.", 0);
+  }
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new GatewayError(typeof body.detail === "string" ? body.detail : `Release request failed (HTTP ${response.status}).`, response.status);
+  }
+  return response.json();
+}

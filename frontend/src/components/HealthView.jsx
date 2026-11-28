@@ -13,7 +13,7 @@ const RELEASE_STATUS = {
   rolled_back: { label: "Rolled back", tone: "watch" },
 };
 
-function ReleasesCard({ releases, history }) {
+export function ReleasesCard({ releases, history }) {
   const log = [...(history ?? [])].reverse();
   return (
     <section className="card">
