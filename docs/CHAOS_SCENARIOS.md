@@ -77,7 +77,7 @@ The controller checks from the 5th call, when the window holds only 5 calls. So 
 |---|---|---|---|---|
 | D1 | Both down | `outage`, rate 1, both | Every request gets a 503. The first model to trip is disabled, then the other is kept (`kept_last_backend`). Both back once the faults clear | existing |
 | D2 | Both malformed | `bad_format`, rate 1, both | No 503s, but every reply is the apology. One model disabled, the other kept | existing |
-| D3 | One down, one malformed | `outage` on small, `bad_format` on large | Customers get apologies from the large model, since it's the only one left. The malformed large model can trip first and be disabled; when the dead small model then trips with nobody else left, the controller brings the large one back and disables the small one (a 503 for a few requests, then apologies). Measured by the D3 test | existing |
+| D3 | One down, one malformed | `outage` on small, `bad_format` on large | Customers get apologies from the large model, since it's the only one left. The malformed large model can trip first and be disabled; when the dead small model then trips with nobody else left, the controller brings the large one back and disables the small one (a 503 for a few requests, then apologies). Checked in process by the D3 test; also run on a local stack, see the D3 note under the measurements | existing |
 | D4 | Operator hold, then a fault | Operator disables the large model, then `outage` on small | The small model is never disabled, because it's the last usable one, so every request gets a 503. Checks that an operator hold counts as "not usable" | existing |
 
 ### E. Timing and flapping
@@ -143,7 +143,7 @@ Local Compose stack on a Mac, mock models and mock Jev, `compose.measure.yml` (s
 | B5 | large | 6 | 3.4 s | 6 | 0 | 58.7 s | |
 | D1 | large first | 3 | 1.5 s | 3 | 13 of 13 | 55.8 s | Small kept as the last model; every request a 503 |
 | D2 | small first | 7 | 3.2 s | 7 | 0 | 55.0 s | Large kept; 17 apologies, no 503s |
-| D3 | large first | 3 | 1.5 s | 3 | 10 of 13 | 55.7 s | Small (down) kept. **Not as expected**, see below |
+| D3 | large first | 3 | 1.5 s | 3 | 10 of 13 | 55.7 s | Small (down) kept. Nov 27 run, before the swap; see below |
 | D4 | none during the hold | | | 20 | 20 of 20 | | Small kept; then disabled 0.1 s after the hold was released, see below |
 | E1 | small, twice | 6, then 4 | 3.2 s | 6 | 0 | 58.1 s | |
 | E2 | small | 6 | 3.5 s | 0 | 0 | 48.0 s | Cleared 10 s into the cooldown: back only when it ended |
@@ -164,7 +164,7 @@ How to read them:
 - **"Disabled after 5 calls" holds only from an empty window.** Each run sends 8 healthy messages first, which leaves 6 good calls on the faulted route, so it takes 6 failures. E1's second disable takes 4: the reply that showed the model was back is a good call in the fresh window, and 1 good plus 4 failures reaches the 5-call minimum at 80%.
 - **C2 and C5 answer the open question on `APP_MONITOR_MIN_SAMPLES`.** At 30% faults, every disable came after 19 or more requests, once the 20-call window was full, never in the first calls. So raising the minimum to 10 would not change them; the window, the threshold and how long the fault lasts do. Replaying each run's failures through the rule gave the same disable, at the same request, in all 20 runs. The runs that tripped drew more faults than 30%: 43–53% in 4 of the 5 C2 runs, and 33–39% in the C5 runs. A simulation of the rule at exactly 30% gives about 22% of 45-call runs; 5 of 10 runs is too few to tell the two apart.
 - **D1: which model goes first depends on the traffic, not the fault.** Both models fail every request, but mixed traffic left the large model only 2 good calls, against 6 for the small one, so it reached 50% first. The request that disabled it still ended in a 503, which has no trace; the script found the disable in the intervention log.
-- **D3: the controller keeps the dead model.** The doc expected customers to get apologies from the malformed large model, the last one left. Instead, every failed call on the small model is retried on the large one, so the large model's window filled with failures twice as fast. It was disabled first, the small model (down) was kept as the last one, and customers got 503s: 10 of 13 requests. For Sebastian (controller): is a 503 better than an apology here?
+- **D3: the controller swaps the dead model out.** The first run (Nov 27) kept the dead small model as the last one: the large model's window filled twice as fast, because every failed small call is retried on it, so it was disabled first and 10 of 13 requests got a 503. The controller now swaps: when the dead small model reaches the threshold as the last model, it brings the large model back and disables the small one. On a local stack (Nov 28, review of #149) that gave 2 of 13 503s, then apologies from the large model.
 - **D4: releasing the hold disables the small model with its fault gone.** During the hold the small model is kept as the last usable one and every request gets a 503, as expected. After the fault clears and the hold is released, the small model's window is still full of outage failures, so the next call to it disables it (0.1 s after the release), and it stays out for the full cooldown while the large model answers. Whether the window should be cleared when the other model becomes usable again is the monitor's call (Sebastian). #144 clears the kept model's window when the other model is usable again, so this no longer happens; the D4 run in this file predates that change.
 - **E2 and E3: recovery is about the cooldown.** Clearing a fault early doesn't bring the model back sooner. With a fault flapping every 10 s, the model is disabled again about 3 s after each return while the fault is on, so it was out 90% of the time.
 
@@ -173,6 +173,6 @@ The tests in `tests/test_measure_recovery.py` check the same rules in process, w
 ## Open questions
 
 - **C2:** ~~should `APP_MONITOR_MIN_SAMPLES` rise to 10?~~ Measured: the 30% trips all came with a full window, so the minimum is not what causes them. If 30% faults should never disable a model, that needs a longer window or a higher threshold. Sebastian owns the monitor.
-- **D3 and D4:** see the notes under the measurements. Both are about which model the controller keeps; Sebastian's call.
+- **D4:** see the note under the measurements. It is about which model the controller keeps; Sebastian's call.
 - **F2:** losing state on restart is known. Is it acceptable for this release, or should disables be saved to Postgres and read back at start? It's the gateway's and the monitor's call.
 - **H5:** real format failures may be common enough to matter more than any injected fault. Decide after the full real-model run.

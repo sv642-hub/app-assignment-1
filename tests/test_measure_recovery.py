@@ -565,6 +565,38 @@ def test_d3_the_dead_model_goes_and_the_malformed_one_keeps_answering(tmp_path):
     assert result.restored
 
 
+def test_a_stale_failed_call_on_the_other_model_does_not_block_a_disable(tmp_path):
+    # Pavlos's review of #149: one raised call left the large model's window as
+    # [call_error]. It got no more traffic, so the window never cleared, and a
+    # small model failing the format check was never disabled.
+    token = "t" * 32
+    auth = {"Authorization": f"Bearer {token}"}
+    root = Path(__file__).resolve().parents[1]
+    backends = json.loads((root / "config" / "backends.json").read_text())
+    for b in backends:
+        b["latency_ms"] = 0
+    path = tmp_path / "backends.json"
+    path.write_text(json.dumps(backends))
+    settings = Settings(_env_file=None, backends_path=path, operator_token=token)
+    with TestClient(create_app(settings)) as c:
+
+        def fault(model, kind):
+            c.post("/v1/faults", json={"model": model, "fault": kind}, headers=auth)
+
+        fault("qwen3-4b", "outage")
+        c.post("/v1/chat", json={"message": "My card was stolen"})
+        fault("qwen3-4b", "none")
+        fault("qwen3-1.7b", "bad_format")
+        disabled_at = None
+        for i in range(1, 41):
+            trace = c.post("/v1/chat", json={"message": "My card has not arrived"})
+            action = trace.json()["trace"]["controller_action"] or ""
+            if action.startswith("disabled qwen3-1.7b"):
+                disabled_at = i
+                break
+        assert disabled_at is not None and disabled_at <= 6
+
+
 def test_d4_an_operator_hold_makes_the_faulted_model_the_last_one(tmp_path):
     result = run_named(tmp_path, "D4")
     assert result.ok, result.problems

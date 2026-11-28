@@ -124,6 +124,8 @@ A model can return a well-formed reply for the wrong intent, which the format ch
 - **Visibility:** `GET /v1/health` has `semantic` (per model: counts, `disagreement_rate`, `coverage`, `status`) and `semantic_rules`. `/metrics` has `gateway_semantic_samples_total`, `gateway_semantic_disagreement_rate`, `gateway_semantic_coverage` and `gateway_semantic_above_baseline`. The rate and coverage gauges are absent while a model has no data, so an empty window never reads as 0%.
 - **Like with like:** a reply is only compared when Jev and the model are both mocks or both real. Real Jev answers over 78 labels while the mock models know 10 intents, so a mix would disagree by design. Those replies are counted in `not_compared` in `/v1/health` and `gateway_semantic_not_compared_total`, and stay out of the windows.
 
+- **Escalation:** the small model's reply carries a token confidence for its intent: the joint probability of the intent label's tokens, from the logprobs vLLM returns (`confidence.py`). The mock models give 0.9 for a keyword match and 0.3 for no match; that measures nothing. When the score is below `APP_ESCALATION_THRESHOLD` (default 0.5, a placeholder) and `APP_ESCALATION_ENABLED=true` (default off), the large model answers the same message within the time left, and its reply is used if it passes the format check. Otherwise the customer keeps the small model's reply. Both replies go to the monitors. The trace has `escalation_score` and `escalated`, and `fallback_reason` includes `low_confidence_escalation`; Postgres copies both into columns. `/metrics` has `gateway_escalation_score` (a histogram, recorded with escalation on or off) and `gateway_escalations_total` by outcome: `escalated`, `shadow` (below the threshold with escalation off), `large_unusable`, `no_time`, `large_failed` and `large_format_failed`. The linear probe would replace token confidence only if it passes its gate (`docs/PROBE.md`).
+
 - **Semantic actions:** off by default (`APP_SEMANTIC_ACTIONS_ENABLED=false`), so the monitor only reports. When they are on and a model's status is `above_baseline`, the controller disables it for `APP_CONTROLLER_COOLDOWN_SECONDS`. It does so only while the other model is serving and has answered recently without failing: its failure window has calls, and its failure rate is below `APP_MONITOR_FAILURE_THRESHOLD`. A model that fails every call stays usable until its own window fills, and an empty window after a re-enable says nothing, so neither counts. Otherwise the controller logs `kept_last_backend` once. The other model can still start failing after the disable. So a model disabled only for its intents stays a last resort: when no other model answers, the gateway calls it anyway, with `fallback_reason` ending in `semantic_last_resort`, because a reply with a possibly wrong intent beats a 503. A model disabled for failures is never a last resort. A last resort keeps being called even if some of its own calls fail, like the last enabled model: a model that answers some calls beats a certain 503. If a model's cooldown ends while another model's call is running, the gateway tries it in the same request. This holds with semantic actions off too: when the only usable model fails, a model whose failure cooldown ended during that call answers the request instead of a 503. `/v1/health` shows `disabled_for` (`failure` or `semantic`) and `answering` for each model. The intervention reason gives the disagreement rate and the baseline. Only replies on the model's own route can trigger an action; a rerouted reply never does. Low coverage and a missing baseline never cause an action. With actions on, any re-enable also starts the model's semantic window again; with actions off, the semantic report keeps its window across a cooldown.
 
 The **Health** screen shows the monitor as a table, one row per model. While a model is above the baseline, a red banner says so, and says whether the controller acted. Keep semantic actions off until the baseline comes from dev data: a wrong baseline would take a healthy model out of service. The defaults are placeholders: the baseline, margin and coverage minimum should be set from dev data before the final test. In mock mode, Jev and both models share one keyword classifier, so a healthy mock always agrees and its baseline is 0. A disagreement rate measured on mocks says nothing about real model quality. With Postgres, the windows are rebuilt after a restart, like the failure monitor's.
@@ -723,6 +725,44 @@ sudo systemctl restart smart-gateway-gpu
 To run the GPU checks by hand, from the checkout: `deploy/autostart/gpu-preflight.sh && echo ready`.
 
 Deploying an update does not change: `git pull` and `docker compose -p app-assignment-1 up -d --build --wait` as above. The next boot starts the newly built images. To stop a stack until the next boot, run `sudo systemctl stop smart-gateway-cpu` (or `-gpu`). To stop it starting at boot, run `sudo systemctl disable smart-gateway-cpu`.
+
+## Offline evaluation
+
+[`scripts/run_eval.py`](scripts/run_eval.py) measures intent accuracy on a fixed set of messages. The primary set is the official [Banking77](https://github.com/PolyAI-LDN/task-specific-datasets) test set (3,080 messages, 40 per intent; PolyAI, CC BY 4.0). The script downloads it at a pinned commit, checks its SHA-256 and caches it in `data/cache/`. `--dataset-csv` takes any CSV with `text` and `intent` columns instead, such as the fresh set once it exists. For a CSV that holds several splits in a `split` column, such as the Banking77 dev split, add `--split dev` to keep only those rows; results keep each row's number in the whole file. The files are sorted by intent, so `--limit N` covers only the first few intents. For a quick check across all of them, use `--sample N`: N messages spread evenly over the intents, the same ones every time for the same `--seed` (6700 by default). `--sample 154` gives two per intent.
+
+Targets:
+
+| Target | What it measures |
+| --- | --- |
+| `small`, `large` | One model called directly: the always-small and always-large baselines. Real vLLM with `--base-url` and `VLLM_API_KEY`, or `--mock` |
+| `gateway` | The whole system through `POST /v1/chat`: routing, fallbacks and format checks. Only a stack you run yourself; it refuses other hosts unless `--allow-remote` |
+| `oracle` | Worked out from the small and large results, with no calls: the large model only where it is right and the small model is wrong. The best any router over these two models could do |
+
+On the real models, from the CPU instance (the GPU servers accept no other host):
+
+```bash
+export VLLM_API_KEY=$(cat ~/.vllm_api_key)
+uv run python scripts/run_eval.py run --target small --base-url http://GPU_PRIVATE_IP:8001 --out eval/test-small.jsonl
+uv run python scripts/run_eval.py run --target large --base-url http://GPU_PRIVATE_IP:8002 --out eval/test-large.jsonl
+uv run python scripts/run_eval.py score eval/test-small.jsonl eval/test-large.jsonl --top 10
+uv run python scripts/run_eval.py oracle eval/test-small.jsonl eval/test-large.jsonl
+```
+
+How it scores, following the integration plan:
+- **Accuracy.** A failed call counts as wrong. A model called directly gets the gateway's format checks, so a reply that fails them counts as the fallback apology a customer would see, which carries `unknown`. `unknown` is wrong for a Banking77 message, and right only where the gold label is `unknown` (the fresh set has some).
+- **Macro F1** averages F1 over the Banking77 intents with at least one gold message in the run; `unknown` is never one of them. On the full official test set that is all 77. On `--limit`, the dev split or the fresh set, the classes depend only on the gold labels, so every target on the same rows is averaged over the same classes, and a wrong guess outside the gold set can't score below answering `unknown`. `score --json` gives the count as `macro_f1_classes`.
+- **Per class:** `score --json` adds recall per intent. With 40 messages per intent in the official test set, one miss moves a class by 2.5 points.
+- Accuracy comes with a 95% Wilson interval, so small runs (`--limit`) show their uncertainty.
+- **What the format check cost.** For the small and large targets, `score` also prints the format failures by type, the intent accuracy before the check (the model's own intent, as if every reply passed), and how many right intents the check turned into the apology. The gateway target only returns the checked intent, so it shows the failures by type alone.
+- **Where it goes wrong:** `score --top N` lists the N intents with the lowest recall and the N most common mistakes, as gold intent and the model's own answer. `score --json` includes the top 20 mistakes (or `--top N`).
+
+Results are JSONL: a `run` line with the dataset's SHA-256, the target, the model, `option_set_version` and the git commit, then one line per message keyed by its row in the dataset. They hold **no message or reply text**. A stopped run continues when you rerun the same command from the same git commit; a different commit is refused, so one file never mixes two versions of the code. A cut-off last line (after a kill or a full disk) is dropped and that message sent again.
+
+Failed calls come in two kinds, and both count as wrong:
+- **Kept**, because they are what a customer would have got: invalid output from the model (`BackendOutputError`), or an error status from the gateway (`unavailable` for a 503, `HTTP422` for a message it refuses). A rerun does not send these again.
+- **Retried**, because they are harness problems: timeouts, refused connections, a 502 from the proxy. `score` says how many are left; rerun the same command to retry them before reporting numbers.
+
+On the mock models, both score about 4% on the official test set: the mock matches keywords for 10 intents and answers `unknown` to the rest. That checks the runner, not the models. No real-model results yet.
 
 ## Tests and project layout
 
