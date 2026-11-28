@@ -15,7 +15,7 @@ Target status: *proposal* was picked from medians and not measured, *starting po
 | `model_failure_min_samples` | 5 | starting_point | Calls in the monitor window before ModelFailureRateRising fires. It repeats APP_MONITOR_MIN_SAMPLES: a test checks it equals the default, but a deployment that changes the setting must change the alert too. |
 | `chat_unavailable_alert` | 0.2 | starting_point | Share of requests that get a 503 above which ChatMostlyFailing fires. |
 | `jev_skipped_alert` | 0.5 | starting_point | Share of requests routed by the rule router above which JevMostlySkipped fires. |
-| `detect_faulty_model_seconds` | 30 | goal | Seconds from a model's fault starting to the controller disabling it. The real-Qwen hang run took 186 s, so a hung model misses it. |
+| `detect_faulty_model_seconds` | 30 | goal | Seconds from a model's fault starting to the controller disabling it. The estimated real-Qwen hang time is 186 s (5 requests at about 31 s each, not a measured run), so a hung model would miss it. |
 
 ## Metrics
 
@@ -237,7 +237,7 @@ Estimated Jev cost per chat request (answered plus 503; Jev is called before eit
 
 ### `time_to_disable_seconds`
 
-Seconds from a fault starting to the controller disabling the model. Measured per fault by a script; there is no live metric, and no panel can show it. The Health screen and the interventions table show when a model was disabled, not when its fault began.
+Seconds from a fault starting to the controller disabling the model. Measured per fault by a script; there is no live metric, and no panel can show it. The Health screen and the interventions table show when a model was disabled, not when its fault began. The seconds depend on the traffic rate: the same fault takes longer when fewer requests reach the model. `requests_to_detect` in the same script's output is the steadier measure.
 
 - **Unit:** seconds; **kind:** duration
 - **Status:** offline: measured by a script, not scraped
