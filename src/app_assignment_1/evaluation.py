@@ -220,10 +220,14 @@ def percentile(values: Sequence[float], q: float) -> float | None:
     return ordered[index]
 
 
-def score(items: Sequence[dict[str, Any]], labels: LabelSet) -> dict[str, Any]:
+def score(
+    items: Sequence[dict[str, Any]], labels: LabelSet, *, direct: bool = False
+) -> dict[str, Any]:
     """Score result items (`gold`, `predicted`, `error`, `latency_ms`, ...).
 
-    `predicted` is None for a failed call; it counts as wrong.
+    `predicted` is None for a failed call; it counts as wrong. `direct` says the
+    results come from a model called directly (target `small` or `large` in the
+    run header), which is what the format breakdown needs.
 
     Macro F1 averages over the intents with at least one gold message, so on a
     partial set every target is averaged over the same classes. A wrong guess
@@ -275,7 +279,55 @@ def score(items: Sequence[dict[str, Any]], labels: LabelSet) -> dict[str, Any]:
         "latency_ms_p95": percentile(latencies, 0.95),
         "per_class_recall": recall,
         "per_class_support": {label: support[label] for label in recall},
+        **format_breakdown(items, direct),
     }
+
+
+def format_breakdown(items: Sequence[dict[str, Any]], direct: bool) -> dict[str, Any]:
+    """What the format check cost, for results from a model called directly.
+
+    `raw_intent` is the model's own answer before the check (None if it was not
+    one of the labels). A failed call's row has none, and counts as wrong, so a
+    run where every call failed gives 0.0, not None. The target comes from the
+    run header, not the rows, for that reason. The gateway only returns the
+    checked intent, so these are None for gateway results.
+    """
+    errors = Counter(e for item in items for e in item.get("format_errors") or [])
+    if not direct:
+        return {
+            "intent_accuracy_before_check": None,
+            "lost_to_format_check": None,
+            "format_errors_by_type": dict(errors),
+        }
+    right = [item.get("raw_intent") == item["gold"] for item in items]
+    lost = sum(
+        ok and item.get("format_ok") is False
+        for ok, item in zip(right, items, strict=True)
+    )
+    return {
+        # Classification alone: what accuracy would be if every reply passed.
+        "intent_accuracy_before_check": sum(right) / len(items) if items else None,
+        # Right intents the customer never saw: the check turned them into the
+        # fallback apology, which carries `unknown`.
+        "lost_to_format_check": lost,
+        "format_errors_by_type": dict(errors.most_common()),
+    }
+
+
+def confusions(
+    items: Sequence[dict[str, Any]], top: int, *, direct: bool = False
+) -> list[tuple[str, str | None, int]]:
+    """The most common (gold, answer, count) mistakes, most frequent first.
+
+    The answer is the model's own intent before the format check where the
+    results come from a model called directly, so a prompt change can target
+    the real confusion; else the delivered intent. None means no valid label
+    (a failed call, or a label outside the set)."""
+    key = "raw_intent" if direct else "predicted"
+    pairs = Counter(
+        (item["gold"], item.get(key)) for item in items if item.get(key) != item["gold"]
+    )
+    return [(gold, answer, n) for (gold, answer), n in pairs.most_common(top)]
 
 
 def oracle(
