@@ -50,8 +50,9 @@ assert b'id="root"' in metrics_page, "/metrics should fall back to the React app
 # and there is no login.
 grafana = json.loads(fetch("/grafana/api/health"))
 assert grafana["database"] == "ok", grafana
-dash = json.loads(fetch("/grafana/api/dashboards/uid/smart-gateway"))
-assert dash["meta"]["canSave"] is False, "anonymous visitors must not edit"
+for uid in ("smart-gateway", "smart-gateway-summary"):
+    dash = json.loads(fetch("/grafana/api/dashboards/uid/" + uid))
+    assert dash["meta"]["canSave"] is False, "anonymous visitors must not edit"
 for message, intent, mock_model in [
     ("My card has not arrived", "card_arrival", "qwen3-1.7b"),
     ("I lost my card", "lost_or_stolen_card", "qwen3-4b"),

@@ -300,4 +300,4 @@ metrics:
     source: scripts/measure_recovery.py#detect_seconds
     target: detect_faulty_model_seconds
     direction: max
-    used_by: ["script:scripts/measure_recovery.py", "grafana:Detection target"]
+    used_by: ["script:scripts/measure_recovery.py"]

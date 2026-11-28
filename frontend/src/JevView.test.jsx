@@ -11,6 +11,7 @@ describe("Jev screen", () => {
     const user = userEvent.setup();
     render(<App />);
     await user.type(screen.getByLabelText("Message"), "My card has not arrived");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(screen.getByRole("button", { name: "Jev", exact: true }));
     expect(await screen.findByRole("heading", { name: "Simulated Jev" })).toBeInTheDocument();
     expect(window.location.hash).toBe("#/jev");

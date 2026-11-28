@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 from fastapi.testclient import TestClient
 from prometheus_client.parser import text_string_to_metric_families
@@ -16,21 +17,26 @@ from app_assignment_1.config import Settings
 
 ROOT = Path(__file__).resolve().parents[1]
 DASHBOARD = ROOT / "grafana/dashboards/smart-gateway.json"
+SUMMARY = ROOT / "grafana/dashboards/smart-gateway-summary.json"
 SERIES = re.compile(r"\b(gateway_[a-z_]+)\b(?:\{([^}]*)\})?")
 MATCHER = re.compile(r"(\w+)\s*(?:=~|!~|!=|=)")
 GROUPING = re.compile(r"\b(?:by|without)\s*\(([^)]*)\)")
 LEGEND_LABEL = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
 
-def dashboard() -> dict:
+def dashboard(path: Path = DASHBOARD) -> dict:
     """The dashboard with panels inside collapsed rows moved to the top level."""
-    data = json.loads(DASHBOARD.read_text())
+    data = json.loads(path.read_text())
     flat = []
     for panel in data["panels"]:
         flat.append(panel)
         flat.extend(panel.get("panels", []))
     data["panels"] = flat
     return data
+
+
+def every_panel() -> list[dict]:
+    return dashboard()["panels"] + dashboard(SUMMARY)["panels"]
 
 
 def served() -> dict[str, set[str]]:
@@ -48,7 +54,7 @@ def served() -> dict[str, set[str]]:
 def prometheus_targets() -> list[dict]:
     return [
         target
-        for panel in dashboard()["panels"]
+        for panel in every_panel()
         for target in panel.get("targets", [])
         if target["datasource"]["type"] == "prometheus"
     ]
@@ -96,24 +102,46 @@ def test_latency_target_buckets_exist():
     assert buckets
 
 
-def test_panel_ids_are_unique_and_every_panel_has_a_source():
-    panels = dashboard()["panels"]
+@pytest.mark.parametrize("path", [DASHBOARD, SUMMARY])
+def test_panel_ids_are_unique_and_every_panel_has_a_source(path):
+    panels = dashboard(path)["panels"]
     ids = [p["id"] for p in panels]
     assert len(ids) == len(set(ids))
     for panel in panels:
-        if panel["type"] not in ("row", "text"):
+        if panel["type"] != "row":
             assert panel["targets"], panel["title"]
 
 
 def test_only_the_first_rows_start_open():
     raw = json.loads(DASHBOARD.read_text())
     rows = [p for p in raw["panels"] if p["type"] == "row"]
-    assert [r["title"] for r in rows if not r["collapsed"]] == [
-        "Overview",
-        "Latency (percentiles, per model)",
-    ]
+    assert [r["title"] for r in rows if not r["collapsed"]] == ["Overview", "Latency"]
     # Collapsed rows carry their panels; open rows leave them at the top level.
     assert all(r["panels"] for r in rows if r["collapsed"])
+    # Eight panels show when the dashboard opens.
+    assert len([p for p in raw["panels"] if p["type"] != "row"]) == 8
+
+
+def test_summary_is_short_and_has_no_rows():
+    panels = json.loads(SUMMARY.read_text())["panels"]
+    assert len(panels) == 8
+    assert all(p["type"] not in ("row", "text") for p in panels)
+    # What the app's Metrics screen embeds.
+    view = (ROOT / "frontend/src/components/MetricsView.jsx").read_text()
+    assert "/grafana/d/smart-gateway-summary/" in view
+
+
+@pytest.mark.parametrize("path", [DASHBOARD, SUMMARY])
+def test_dashboards_open_on_the_last_15_minutes(path):
+    assert json.loads(path.read_text())["time"] == {"from": "now-15m", "to": "now"}
+
+
+def test_intervention_panels_count_saved_events():
+    # A Prometheus increase() over a short step showed "No data".
+    panels = {p["title"]: p for p in dashboard()["panels"]}
+    for title in ("Controller interventions", "Operator actions"):
+        assert panels[title]["interval"] == "1m"
+        assert "FROM interventions" in panels[title]["targets"][0]["rawSql"]
 
 
 def test_dashboard_covers_what_was_asked_for():
@@ -140,7 +168,7 @@ def test_sql_panels_read_only_tables_the_role_may_select():
         re.search(r"GRANT SELECT ON ([\w, ]+) TO grafana_ro", grants)[1].split(", ")  # type: ignore[index]
     )
     used = set()
-    panels = list(dashboard()["panels"])
+    panels = every_panel()
     panels.append({"targets": [dashboard()["annotations"]["list"][0]["target"]]})
     for panel in panels:
         for target in panel.get("targets", []):
@@ -161,6 +189,7 @@ def test_grafana_is_viewer_only_and_not_published():
     assert env["GF_AUTH_DISABLE_LOGIN_FORM"] == "true"
     assert env["GF_AUTH_BASIC_ENABLED"] == "false"
     assert env["GF_SERVER_SERVE_FROM_SUB_PATH"] == "true"
+    assert env["GF_USERS_DEFAULT_THEME"] == "light"
     # A pinned version, not latest.
     assert re.fullmatch(r"grafana/grafana:\d+\.\d+\.\d+", grafana["image"])
     for volume in grafana["volumes"]:
@@ -184,11 +213,7 @@ def test_datasource_uids_match_the_dashboard():
         (ROOT / "grafana/provisioning/datasources/datasources.yml").read_text()
     )["datasources"]
     uids = {s["uid"] for s in sources}
-    used = {
-        t["datasource"]["uid"]
-        for p in dashboard()["panels"]
-        for t in p.get("targets", [])
-    }
+    used = {t["datasource"]["uid"] for p in every_panel() for t in p.get("targets", [])}
     assert used <= uids
     postgres = next(s for s in sources if s["uid"] == "postgres")
     assert postgres["user"] == "grafana_ro"
