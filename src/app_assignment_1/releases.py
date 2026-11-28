@@ -21,12 +21,12 @@ the current version if that one is stable, else the target stays as it was,
 since an unconfirmed release is no place to roll back to.
 """
 
-import logging
 from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
+from loguru import logger
 from pydantic import StringConstraints, TypeAdapter
 
 from app_assignment_1.backends import Backend
@@ -41,7 +41,6 @@ from app_assignment_1.schemas import (
     ReleaseVersion,
 )
 
-logger = logging.getLogger(__name__)
 Catalog = dict[BackendName, dict[str, ReleaseVersion]]
 _CATALOG = TypeAdapter(Catalog)
 _VERSION_NAME: TypeAdapter[str] = TypeAdapter(
@@ -189,7 +188,7 @@ class Releases:
             return None
         self.apply(event)
         self.unsaved.append(event)
-        logger.info("Controller rolled %s back to %s", name, event.version)
+        logger.info("Controller rolled {} back to {}", name, event.version)
         return event.version
 
     def confirm(self, name: BackendName) -> None:
@@ -279,7 +278,7 @@ class Releases:
             )
             if not known:
                 logger.warning(
-                    "Saved release %s of %s is not in the catalog; serving %s",
+                    "Saved release {} of {} is not in the catalog; serving {}",
                     event.version,
                     event.backend,
                     BASE_VERSION,

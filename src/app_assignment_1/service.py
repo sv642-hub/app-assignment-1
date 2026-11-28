@@ -1,7 +1,6 @@
 """Gateway flow; requests, their Jev assessments and interventions go to a Store."""
 
 import asyncio
-import logging
 import re
 import time
 from collections.abc import Callable, Coroutine, Sequence
@@ -11,6 +10,7 @@ from time import perf_counter
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
+from loguru import logger
 from pydantic import TypeAdapter, ValidationError
 
 from app_assignment_1.backends import UNKNOWN_REPLY, Backend, MockBackend
@@ -18,6 +18,7 @@ from app_assignment_1.breaker import CircuitBreaker
 from app_assignment_1.config import Settings, settings_version
 from app_assignment_1.intents import load_intents
 from app_assignment_1.labels import UNKNOWN, load_labels
+from app_assignment_1.logs import add_tokens
 from app_assignment_1.metrics import GatewayMetrics
 from app_assignment_1.monitor import RESTORE_ACTIONS, SEMANTIC_REASON, Controller
 from app_assignment_1.records import JevAssessment, ReplyCheck, check_call
@@ -53,7 +54,8 @@ from app_assignment_1.semantic import SemanticMonitor, score
 from app_assignment_1.store import MemoryStore, RevisionTaken, Store
 from app_assignment_1.vllm import BackendCallError, BackendOutputError
 
-logger = logging.getLogger(__name__)
+# Called as a request moves on: (stage, details). See Gateway.chat.
+ProgressCallback = Callable[[str, dict[str, Any]], None]
 QUESTIONS: tuple[Literal["route", "intent"], ...] = ("route", "intent")
 MAX_REPLY_LENGTH = 4000
 # Release changes read at startup to find each model's last deploy or rollback.
@@ -435,7 +437,7 @@ class Gateway:
             config.bad_prompt_rate = request.rate
         self.settings_version = self._settings_version()
         logger.info(
-            "Operator set fault %s=%s on %s", request.fault, request.rate, request.model
+            "Operator set fault {}={} on {}", request.fault, request.rate, request.model
         )
         return config
 
@@ -493,13 +495,13 @@ class Gateway:
             if self.releases.state[name] is before:
                 self.releases.apply(event)
                 logger.info(
-                    "Operator %s %s: now %s",
+                    "Operator {} {}: now {}",
                     event.action.replace("_", " "),
                     name,
                     event.version,
                 )
                 return
-        logger.warning("Release change for %s kept racing the controller", name)
+        logger.warning("Release change for {} kept racing the controller", name)
         raise ReleaseNotSaved
 
     async def _save_release_change(self, event: ReleaseEvent) -> None:
@@ -523,21 +525,21 @@ class Gateway:
             return
         except RevisionTaken:
             logger.warning(
-                "Release revision %s of %s is already taken",
+                "Release revision {} of {} is already taken",
                 event.revision,
                 event.backend,
             )
             await self._skip_saved_revisions()
             raise ReleaseNotSaved from None
         except Exception as exc:
-            logger.warning("Could not save release change (%s)", type(exc).__name__)
+            logger.warning("Could not save release change ({})", type(exc).__name__)
         try:
             latest = await asyncio.wait_for(
                 self.store.latest_release_events(), self.store_timeout
             )
         except Exception as exc:
             logger.warning(
-                "Could not read the release change back (%s)", type(exc).__name__
+                "Could not read the release change back ({})", type(exc).__name__
             )
             self._keep_release(event)
             raise ReleaseSaveUnknown from None
@@ -561,7 +563,7 @@ class Gateway:
                 self.store.latest_release_events(), self.store_timeout
             )
         except Exception as exc:
-            logger.warning("Could not read releases (%s)", type(exc).__name__)
+            logger.warning("Could not read releases ({})", type(exc).__name__)
             return
         for saved in latest:
             if saved.backend in self.releases.revision:
@@ -578,7 +580,7 @@ class Gateway:
                 self.store.latest_release_events(), self.store_timeout
             )
         except Exception as exc:
-            logger.warning("Could not load releases (%s)", type(exc).__name__)
+            logger.warning("Could not load releases ({})", type(exc).__name__)
             return
         self.releases.restore(latest)
         self.releases_loaded = True
@@ -598,7 +600,7 @@ class Gateway:
             )
         # Replaced, not changed in place, so a call in flight keeps its faults.
         router.faults = faults
-        logger.info("Operator set Jev fault %s=%s", request.fault, request.rate)
+        logger.info("Operator set Jev fault {}={}", request.fault, request.rate)
         return faults
 
     async def save_interventions(self) -> None:
@@ -622,13 +624,13 @@ class Gateway:
             except RevisionTaken as exc:
                 # The others were saved. Putting these back would fail forever.
                 logger.warning(
-                    "Dropped %d release change(s) whose revision was taken",
+                    "Dropped {} release change(s) whose revision was taken",
                     len(exc.events),
                 )
             except Exception as exc:
                 self.releases.unsaved = events + self.releases.unsaved
                 logger.warning(
-                    "Could not save release changes (%s)", type(exc).__name__
+                    "Could not save release changes ({})", type(exc).__name__
                 )
 
     async def _save_samples(self) -> None:
@@ -658,7 +660,7 @@ class Gateway:
                     )
                     raise
                 logger.warning(
-                    "Could not save monitor samples (%s)", type(exc).__name__
+                    "Could not save monitor samples ({})", type(exc).__name__
                 )
 
     async def restore(self) -> None:
@@ -678,7 +680,7 @@ class Gateway:
             )
             resets = await self._release_resets()
         except Exception as exc:
-            logger.warning("Could not restore monitor state (%s)", type(exc).__name__)
+            logger.warning("Could not restore monitor state ({})", type(exc).__name__)
             return
         cutoffs = self.controller.restore(
             interventions, samples, datetime.now(UTC), resets
@@ -689,8 +691,8 @@ class Gateway:
         self.semantic.restore(samples, cutoffs if actions else resets)
         if samples or self.controller.disabled_until or self.controller.held:
             logger.info(
-                "Restored %d monitor samples; %d model(s) still cooling down, "
-                "%d held by an operator",
+                "Restored {} monitor samples; {} model(s) still cooling down, "
+                "{} held by an operator",
                 len(samples),
                 len(self.controller.disabled_until),
                 len(self.controller.held),
@@ -728,13 +730,18 @@ class Gateway:
                 self.controller.unsaved = items + self.controller.unsaved
                 if not isinstance(exc, Exception):
                     raise
-                logger.warning("Could not save interventions (%s)", type(exc).__name__)
+                logger.warning("Could not save interventions ({})", type(exc).__name__)
 
-    async def chat(self, message: str) -> ChatResponse:
+    async def chat(
+        self, message: str, progress: ProgressCallback | None = None
+    ) -> ChatResponse:
+        """Answer one message. `progress`, if given, is called with a stage
+        name ("routing", then "generating" with the model's name) as the
+        request moves on; the streaming route turns these into events."""
         # Counted until the reply is ready; saving it afterwards is not in flight.
         self.metrics.chat_in_flight.inc()
         try:
-            response, jev, pending = await self._chat(message)
+            response, jev, pending = await self._chat(message, progress)
         except BaseException:
             self.metrics.chat_in_flight.dec()
             # Interventions also happen on requests that end in a 503.
@@ -808,7 +815,7 @@ class Gateway:
             )
         except Exception as exc:
             # The customer still gets the reply; it just cannot be looked up later.
-            logger.warning("Could not save request (%s)", type(exc).__name__)
+            logger.warning("Could not save request ({})", type(exc).__name__)
             return False
         return True
 
@@ -867,7 +874,7 @@ class Gateway:
         except Exception as exc:
             error_type = _jev_error_type(exc)
             timed_out = isinstance(exc, TimeoutError)
-            logger.warning("Jev reply check failed (%s)", error_type)
+            logger.warning("Jev reply check failed ({})", error_type)
             elapsed = perf_counter() - start
             self.metrics.reply_check_latency.labels(
                 "timeout" if timed_out else "error"
@@ -908,7 +915,7 @@ class Gateway:
                 self.store.save_reply_check(record), self.store_timeout
             )
         except Exception as exc:
-            logger.warning("Could not save reply check (%s)", type(exc).__name__)
+            logger.warning("Could not save reply check ({})", type(exc).__name__)
 
     def _reply_check_record(
         self,
@@ -950,7 +957,7 @@ class Gateway:
             return ReplyCheck(**fields)
         except ValueError as exc:
             # ValidationError text can hold Jev's answer, so log the type only.
-            logger.warning("Could not build reply check (%s)", type(exc).__name__)
+            logger.warning("Could not build reply check ({})", type(exc).__name__)
             return None
 
     async def _call_jev(
@@ -980,7 +987,7 @@ class Gateway:
             # Only isolate the replaceable router call. Cancellation still propagates.
             # Do not log input text, credentials or provider exception messages.
             error_type = _jev_error_type(exc)
-            logger.warning("Jev routing failed; using rule router (%s)", error_type)
+            logger.warning("Jev routing failed; using rule router ({})", error_type)
             timed_out = isinstance(exc, TimeoutError)
             self.metrics.jev_call_latency.labels(
                 "timeout" if timed_out else "error"
@@ -1059,7 +1066,7 @@ class Gateway:
             check_call(records)
         except ValueError as exc:
             # ValidationError is a ValueError. Its text can hold Jev's answer.
-            logger.warning("Could not build Jev records (%s)", type(exc).__name__)
+            logger.warning("Could not build Jev records ({})", type(exc).__name__)
             return []
         return records
 
@@ -1116,7 +1123,7 @@ class Gateway:
             # error. Cancellation still propagates. Do not log input text or
             # provider exception messages.
             logger.warning(
-                "Backend %s failed: %s (%s)",
+                "Backend {} failed: {} ({})",
                 backend.config.name,
                 code,
                 type(exc).__name__,
@@ -1140,6 +1147,10 @@ class Gateway:
             self._finish_release_watch(backend)
             return None, action, False, generation
         usage.completed_calls += 1
+        add_tokens(
+            getattr(generated, "prompt_tokens", None),
+            getattr(generated, "completion_tokens", None),
+        )
         self.metrics.backend_call_latency.labels(name, "ok").observe(
             perf_counter() - call_start
         )
@@ -1291,7 +1302,7 @@ class Gateway:
         return action
 
     async def _chat(
-        self, message: str
+        self, message: str, progress: ProgressCallback | None = None
     ) -> tuple[ChatResponse, list[JevAssessment], PendingCheck]:
         # Created before any provider call, so later records can share it.
         request_id = uuid4()
@@ -1301,6 +1312,8 @@ class Gateway:
             "mock_jev" if self.jev_mocked else "jev"
         )
         decision: RoutingDecision | None = None
+        if progress is not None:
+            progress("routing", {})
         result, jev = await self._call_jev(request_id, message, reasons)
         if result is not None:
             # Each answer stands on its own: an invalid intent answer does not
@@ -1314,7 +1327,7 @@ class Gateway:
                 )
             else:
                 logger.warning(
-                    "Jev route answer was invalid; using rule router (%s)",
+                    "Jev route answer was invalid; using rule router ({})",
                     result.route.error_type,
                 )
                 reasons.append("jev_invalid_route")
@@ -1382,6 +1395,8 @@ class Gateway:
                 reserve_held = budget < remaining
                 tried.append(backend)
                 attempted_latency = backend.config.latency_ms
+                if progress is not None:
+                    progress("generating", {"model": backend.config.name})
                 generated, action, cut_short, generation = await self._attempt(
                     backend,
                     message,

@@ -9,6 +9,11 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 ## Layout
 
 - `src/app_assignment_1/api.py`: FastAPI app, the `/v1/chat`, `/v1/requests/{id}` and `/v1/health` routes, the operator routes (`/v1/operator/models/{name}/disable`, `/enable`, `/release` and `/rollback`, `/v1/faults` and `/v1/faults/jev`, behind `APP_OPERATOR_TOKEN`), and the internal `/metrics` route.
+- `src/app_assignment_1/logs.py`: loguru setup (JSON lines or text, stdlib logging routed through it), the per-request fields (`annotate`, `add_tokens`) and `scrub`, which drops fields named like a message, reply or secret. Never log message text, replies or keys; log codes, counts and durations.
+- `src/app_assignment_1/middleware.py`: pure-ASGI middleware: `X-Request-ID` (kept only if plain, else new), the `APP_MAX_BODY_BYTES` limit (413), and one `request completed` log line per request.
+- `src/app_assignment_1/ratelimit.py`: per-client token bucket for `/v1/chat` and `/v1/chat/stream` (429 with `Retry-After`; `APP_RATE_LIMIT_PER_MINUTE`, `APP_RATE_LIMIT_BURST`, `APP_TRUST_FORWARDED_FOR`). Scripts that send bursts (demo, measure) need `APP_RATE_LIMIT_PER_MINUTE=0`.
+- `src/app_assignment_1/retry.py`: exponential backoff with full jitter; `VLLMBackend` uses it for timeouts, refused connections, 502/503/504 and 429 inside the attempt budget. Why a repeat is safe is in its docstring. Jev is never retried (paid call; the breaker and rule router are its fallback).
+- `src/app_assignment_1/streaming.py`: SSE for `/v1/chat/stream`: `progress` events, then one `result` or `error`.
 - `src/app_assignment_1/auth.py`: `require_operator`, the operator token check every operator route uses (403 while `APP_OPERATOR_TOKEN` is unset, 401 for a missing or wrong token).
 - `src/app_assignment_1/service.py`: gateway flow and reply format checks; saves requests and interventions to the store.
 - `src/app_assignment_1/store.py`: `Store` interface, `MemoryStore` (default) and `PostgresStore` (psycopg 3, plain SQL), plus the migration runner.

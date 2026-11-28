@@ -41,6 +41,7 @@ def demo_settings(cooldown: float = 0.5) -> Settings:
         semantic_baseline_disagreement_rate=0,
         semantic_actions_enabled=True,
         controller_cooldown_seconds=cooldown,
+        rate_limit_per_minute=0,  # the demo script sends bursts
     )
 
 

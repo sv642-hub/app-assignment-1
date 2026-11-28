@@ -25,6 +25,9 @@ class ScoredReply(BackendReply):
     JSON schema sent to the model; the backend fills it from logprobs."""
 
     label_confidence: float | None = None
+    # Token counts from vLLM's usage block, for the request log.
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
 
 
 def label_confidence(content: str, tokens: Sequence[Any]) -> float | None:

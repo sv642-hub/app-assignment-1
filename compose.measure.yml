@@ -8,3 +8,5 @@ services:
     environment:
       APP_SEMANTIC_BASELINE_DISAGREEMENT_RATE: "0"
       APP_SEMANTIC_ACTIONS_ENABLED: "true"
+      # The script sends bursts; the rate limit would answer 429.
+      APP_RATE_LIMIT_PER_MINUTE: "0"
