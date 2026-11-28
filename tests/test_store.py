@@ -592,6 +592,36 @@ def release_event(
     )
 
 
+def test_a_committed_release_change_is_dated_when_it_is_written(
+    make_store: MakeStore,
+) -> None:
+    planned = release_event(0, "qwen3-1.7b", "deployed", "v2-good").model_copy(
+        update={"at": datetime.now(UTC) - timedelta(seconds=30)}
+    )
+
+    async def body(store: Store) -> None:
+        before = datetime.now(UTC)
+        saved = await store.commit_release_change(planned)
+        after = datetime.now(UTC)
+        # Everything but the time is the change as planned.
+        assert saved.model_copy(update={"at": planned.at}) == planned
+        assert before - timedelta(seconds=1) <= saved.at <= after + timedelta(seconds=1)
+        assert saved.at > planned.at + timedelta(seconds=20)
+        # What a restart reads is what the gateway applied.
+        assert await store.latest_release_events() == [saved]
+        assert await store.latest_release_changes() == [saved]
+        # The same change again is the saved copy, not a new row.
+        assert await store.commit_release_change(planned) == saved
+        assert len(await store.recent_release_events(10)) == 1
+        # A different change under the same revision is a conflict.
+        clash = planned.model_copy(update={"version": "v3"})
+        with pytest.raises(RevisionTaken):
+            await store.commit_release_change(clash)
+        assert await store.latest_release_events() == [saved]
+
+    run(make_store(), body)
+
+
 def test_release_events_keep_order_and_the_latest_per_model(
     make_store: MakeStore,
 ) -> None:

@@ -11,6 +11,7 @@ Neither store keeps the customer's message: `ChatResponse` has no message field.
 import logging
 from collections import Counter, OrderedDict, deque
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 from uuid import UUID
@@ -89,6 +90,16 @@ class Store(Protocol):
         that were not."""
         ...
 
+    async def commit_release_change(self, event: ReleaseEvent) -> ReleaseEvent:
+        """Save one operator deploy or rollback, before the gateway applies it,
+        and return it as saved, with `at` set to when the write was made. The
+        gateway's own clock was read before the write, and replies to the old
+        version keep arriving during it; a restart cuts the monitor windows at
+        the saved time, so it clears the same replies the running gateway did.
+        Saving the same change again returns the saved copy. A different
+        change under the same (backend, revision) raises RevisionTaken."""
+        ...
+
     async def recent_release_events(self, limit: int) -> list[ReleaseEvent]:
         """The last `limit` release changes, oldest first."""
         ...
@@ -105,6 +116,12 @@ class Store(Protocol):
         """The release change with the highest revision for each model: what
         it served last."""
         ...
+
+
+def same_change(a: ReleaseEvent, b: ReleaseEvent) -> bool:
+    """Whether two events are the same change, ignoring `at`, which the store
+    sets when it commits an operator change."""
+    return a.model_copy(update={"at": b.at}) == b
 
 
 class RevisionTaken(Exception):
@@ -209,6 +226,14 @@ class MemoryStore:
                 self.latest_releases[item.backend] = item
         if taken:
             raise RevisionTaken(taken)
+
+    async def commit_release_change(self, event: ReleaseEvent) -> ReleaseEvent:
+        saved = self.saved_revisions.get((event.backend, event.revision))
+        if saved is not None and same_change(saved, event):
+            return saved
+        stamped = event.model_copy(update={"at": datetime.now(UTC)})
+        await self.save_release_events([stamped])
+        return stamped
 
     async def recent_release_events(self, limit: int) -> list[ReleaseEvent]:
         return list(self.release_events)[-limit:] if limit > 0 else []
@@ -482,6 +507,41 @@ class PostgresStore:
                         taken.append(item)
         if taken:
             raise RevisionTaken(taken)
+
+    async def commit_release_change(self, event: ReleaseEvent) -> ReleaseEvent:
+        async with self.pool.connection() as conn:
+            cur = await conn.execute(
+                f"""
+                INSERT INTO model_releases (at, backend, action, version,
+                    from_version, rollback_target, actor, reason, revision)
+                VALUES (clock_timestamp(), %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (backend, revision) DO NOTHING
+                RETURNING {RELEASE_COLUMNS}
+                """,
+                (
+                    event.backend,
+                    event.action,
+                    event.version,
+                    event.from_version,
+                    event.rollback_target,
+                    event.actor,
+                    event.reason,
+                    event.revision,
+                ),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                # A row was already there: the same change saved before is
+                # fine; a different one is a conflict.
+                cur = await conn.execute(
+                    f"SELECT {RELEASE_COLUMNS} FROM model_releases"
+                    " WHERE backend = %s AND revision = %s",
+                    (event.backend, event.revision),
+                )
+                row = await cur.fetchone()
+                if row is None or not same_change(event, _release_event(row)):
+                    raise RevisionTaken([event])
+        return _release_event(row)
 
     async def recent_release_events(self, limit: int) -> list[ReleaseEvent]:
         async with self.pool.connection() as conn:
