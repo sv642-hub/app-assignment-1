@@ -557,11 +557,9 @@ def test_d4_an_operator_hold_makes_the_faulted_model_the_last_one(tmp_path):
     # The large model is held and the small one fails: every request a 503.
     faulted = [r for r in result.replies if r.phase == "fault"]
     assert all(r.status == 503 for r in faulted)
-    # Found by this scenario: once the hold is released, the small model is
-    # disabled on the outage failures still in its window, although the fault
-    # is gone. Reported, not counted as a problem.
-    late = result.extra["disabled_after_clear"]
-    assert [x["model"] for x in late] == [mr.SMALL]
+    # #144: releasing the hold clears the kept model's stale window, so the
+    # small model is not disabled once its fault is gone.
+    assert "disabled_after_clear" not in result.extra
 
 
 def test_e1_the_fault_returns_and_is_detected_again(tmp_path):
