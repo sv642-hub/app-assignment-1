@@ -3,6 +3,7 @@ APP_PROVIDER_MODE=real. Each server's --served-model-name matches `name` in
 config/backends.json (compose.gpu.yml), so the config name is the model name.
 """
 
+import asyncio
 from contextlib import AsyncExitStack
 
 import httpx
@@ -53,10 +54,10 @@ async def open_vllm_backends(
     """Build both backends. `stack` closes their HTTP clients on exit."""
     labels = load_labels(settings.labels_path)
     cards = TypeAdapter(dict[str, PolicyCard]).validate_json(
-        settings.policy_cards_path.read_text()
+        await asyncio.to_thread(settings.policy_cards_path.read_text)
     )
     configs = TypeAdapter(list[BackendConfig]).validate_json(
-        settings.backends_path.read_text()
+        await asyncio.to_thread(settings.backends_path.read_text)
     )
     prompt = build_system_prompt(labels, cards)
     backends = []
@@ -64,5 +65,16 @@ async def open_vllm_backends(
         client = await stack.enter_async_context(
             create_vllm_http_client(settings, vllm_base_url(settings, config.name))
         )
-        backends.append(VLLMBackend(config, client, config.name, prompt, labels))
+        backends.append(
+            VLLMBackend(
+                config,
+                client,
+                config.name,
+                prompt,
+                labels,
+                retry_attempts=settings.backend_retry_attempts,
+                retry_base_seconds=settings.backend_retry_base_seconds,
+                retry_max_seconds=settings.backend_retry_max_seconds,
+            )
+        )
     return backends

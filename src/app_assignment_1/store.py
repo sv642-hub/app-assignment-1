@@ -8,6 +8,7 @@ Postgres so they survive a gateway restart; Compose uses it.
 Neither store keeps the customer's message: `ChatResponse` has no message field.
 """
 
+import asyncio
 import logging
 from collections import Counter, OrderedDict, deque
 from collections.abc import Sequence
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
+from loguru import logger
 from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
@@ -29,7 +31,6 @@ from app_assignment_1.schemas import (
     ReleaseEvent,
 )
 
-logger = logging.getLogger(__name__)
 MIGRATIONS = Path(__file__).parent / "migrations"
 INTERVENTION_LIMIT = 50
 RELEASE_EVENT_LIMIT = 200
@@ -635,14 +636,16 @@ async def migrate(conn: AsyncConnection) -> list[str]:
                         f" file is now {path.name}; renumber one of them"
                     )
                 continue
-            await conn.execute(path.read_text(encoding="utf-8"))
+            await conn.execute(
+                await asyncio.to_thread(path.read_text, encoding="utf-8")
+            )
             await conn.execute(
                 "INSERT INTO schema_migrations (version, name) VALUES (%s, %s)",
                 (version, path.name),
             )
             applied_now.append(path.name)
     if applied_now:
-        logger.info("Applied database migrations: %s", ", ".join(applied_now))
+        logger.info("Applied database migrations: {}", ", ".join(applied_now))
     return applied_now
 
 

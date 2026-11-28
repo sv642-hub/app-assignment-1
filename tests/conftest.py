@@ -1,11 +1,13 @@
 """Shared fixtures."""
 
+import logging
 import os
 from collections.abc import Iterator
 from uuid import uuid4
 
 import psycopg
 import pytest
+from loguru import logger
 from psycopg import sql
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
@@ -29,3 +31,29 @@ def postgres_url() -> Iterator[str]:
             conn.execute(
                 sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema))
             )
+
+
+@pytest.fixture(autouse=True)
+def loguru_to_caplog() -> Iterator[None]:
+    """Pass loguru records to standard logging, so `caplog` sees them."""
+
+    def sink(message) -> None:
+        record = message.record
+        std = logging.LogRecord(
+            name=record["name"] or "",
+            level=record["level"].no,
+            pathname=record["file"].path,
+            lineno=record["line"],
+            msg=record["message"],
+            args=(),
+            exc_info=None,
+        )
+        std.levelname = record["level"].name
+        std.from_loguru = True
+        logging.getLogger(std.name).handle(std)
+
+    handler_id = logger.add(sink, level=0, format="{message}")
+    try:
+        yield
+    finally:
+        logger.remove(handler_id)

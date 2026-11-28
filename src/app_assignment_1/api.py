@@ -10,13 +10,17 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+from loguru import logger
 from prometheus_client import CONTENT_TYPE_LATEST
 
 from app_assignment_1.auth import require_operator
 from app_assignment_1.config import Settings, get_settings
 from app_assignment_1.jev import TypeSafeJevRouter, create_jev_http_client
 from app_assignment_1.labels import load_labels
+from app_assignment_1.logs import annotate, configure_logging
+from app_assignment_1.middleware import RequestContextMiddleware
+from app_assignment_1.ratelimit import RateLimiter
 from app_assignment_1.real_backends import open_vllm_backends
 from app_assignment_1.releases import AlreadyServing, NoRollbackTarget, UnknownVersion
 from app_assignment_1.router import MockJevRouter, Router
@@ -48,6 +52,7 @@ from app_assignment_1.service import (
     ReleasesNotLoaded,
 )
 from app_assignment_1.store import Store, create_store
+from app_assignment_1.streaming import stream_chat
 
 READY_PROBE_SECONDS = 3
 
@@ -100,6 +105,17 @@ NOT_LOADED = (
 )
 
 
+def client_key(request: Request, trust_forwarded_for: bool) -> str:
+    """Who a request counts as for the rate limit: its network address, or,
+    behind the proxy, the last X-Forwarded-For entry (the one the proxy added)."""
+    if trust_forwarded_for:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        last = forwarded.rsplit(",", 1)[-1].strip()
+        if last:
+            return last
+    return request.client.host if request.client else "unknown"
+
+
 def create_app(
     settings: Settings | None = None,
     router: Router | None = None,
@@ -108,6 +124,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         configured = settings or get_settings()
+        configure_logging(configured.log_level, configured.log_format)
         opened = store or create_store(configured)
         async with AsyncExitStack() as stack:
             if router is not None:
@@ -139,6 +156,22 @@ def create_app(
                 await gateway.finish_saves()
                 await opened.close()
 
+    startup_settings = settings or get_settings()
+    limiter = RateLimiter(
+        startup_settings.rate_limit_per_minute, startup_settings.rate_limit_burst
+    )
+
+    async def limit_rate(request: Request) -> None:
+        """Refuse with 429 and Retry-After when the client is over the limit."""
+        wait = limiter.check(client_key(request, startup_settings.trust_forwarded_for))
+        if wait is not None:
+            logger.warning("Rate limit hit; retry in {}s", wait)
+            raise HTTPException(
+                429,
+                f"Too many requests. Try again in {wait} seconds.",
+                headers={"Retry-After": str(wait)},
+            )
+
     app = FastAPI(
         title="Smart AI Gateway",
         version="0.2.0",
@@ -148,6 +181,9 @@ def create_app(
             "APP_JEV_MODE=real, which sends each message to TypeSafe."
         ),
         lifespan=lifespan,
+    )
+    app.add_middleware(
+        RequestContextMiddleware, max_body_bytes=startup_settings.max_body_bytes
     )
 
     @app.exception_handler(RequestValidationError)
@@ -164,12 +200,30 @@ def create_app(
     @app.post(
         "/v1/chat",
         response_model=ChatResponse,
-        responses={503: {"description": "No backend available"}},
+        dependencies=[Depends(limit_rate)],
+        responses={
+            413: {"description": "The request body is over APP_MAX_BODY_BYTES"},
+            422: {"description": "The message is empty or over 2000 characters"},
+            429: {"description": "Too many requests; see the Retry-After header"},
+            503: {"description": "No backend available"},
+        },
     )
-    async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
+    async def chat(
+        payload: ChatRequest, request: Request, response: Response
+    ) -> ChatResponse:
+        """Answer one banking message."""
         gateway: Gateway = request.app.state.gateway
+        # A reply belongs to one customer: no cache may keep it.
+        response.headers["Cache-Control"] = "no-store"
         try:
-            return await gateway.chat(payload.message)
+            reply = await gateway.chat(payload.message)
+            annotate(
+                model=reply.trace.model,
+                route=reply.trace.route,
+                reply_source=reply.trace.reply_source,
+                format_check=reply.trace.format_check,
+            )
+            return reply
         except BackendUnavailable as exc:
             # The mock wording stays as it was, for scripts and docs that match it.
             mocks = all(getattr(b, "mocked", True) for b in gateway.backends)
@@ -181,6 +235,35 @@ def create_app(
                 else "No model is available"
             )
             raise HTTPException(503, detail) from exc
+
+    @app.post(
+        "/v1/chat/stream",
+        dependencies=[Depends(limit_rate)],
+        response_class=StreamingResponse,
+        responses={
+            200: {
+                "description": "Server-Sent Events: `progress` events, then one "
+                "`result` (the /v1/chat JSON) or one `error` "
+                "(`status`, `code`, `message`).",
+                "content": {"text/event-stream": {}},
+            },
+            413: {"description": "The request body is over APP_MAX_BODY_BYTES"},
+            422: {"description": "The message is empty or over 2000 characters"},
+            429: {"description": "Too many requests; see the Retry-After header"},
+        },
+    )
+    async def chat_stream(payload: ChatRequest, request: Request) -> StreamingResponse:
+        """The same as /v1/chat, but streams progress while a slow answer is
+        written, so the page is never left unchanged."""
+        gateway: Gateway = request.app.state.gateway
+        return StreamingResponse(
+            stream_chat(
+                gateway, payload.message, startup_settings.stream_heartbeat_seconds
+            ),
+            media_type="text/event-stream",
+            # No cache, and no buffering by Caddy or nginx.
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/v1/requests/{request_id}", response_model=ChatResponse)
     async def get_request(request_id: UUID, request: Request) -> ChatResponse:
