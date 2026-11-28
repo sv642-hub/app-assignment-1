@@ -5,7 +5,7 @@ import logging
 import re
 import time
 from collections.abc import Callable, Coroutine, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any, Literal
@@ -20,12 +20,13 @@ from app_assignment_1.intents import load_intents
 from app_assignment_1.labels import UNKNOWN, load_labels
 from app_assignment_1.metrics import GatewayMetrics
 from app_assignment_1.monitor import RESTORE_ACTIONS, SEMANTIC_REASON, Controller
-from app_assignment_1.records import JevAssessment, check_call
+from app_assignment_1.records import JevAssessment, ReplyCheck, check_call
 from app_assignment_1.releases import Releases, load_catalog
 from app_assignment_1.router import (
     JevAnswer,
     JevResult,
     MockJevRouter,
+    ReplyCheckResult,
     Router,
     RuleRouter,
 )
@@ -44,6 +45,7 @@ from app_assignment_1.schemas import (
     ModelUsage,
     PolicyCard,
     ReleaseEvent,
+    ReplyCheckUsage,
     RoutingDecision,
     Trace,
 )
@@ -137,6 +139,12 @@ def _jev_error_type(exc: Exception) -> str:
     return "router_error"
 
 
+def _agreement(first: str | None, second: str | None) -> str:
+    if first is None or second is None:
+        return "no_signal"
+    return "agree" if first == second else "disagree"
+
+
 def _assessment(
     call: dict[str, Any],
     question: Literal["route", "intent"],
@@ -160,6 +168,22 @@ def _assessment(
         probabilities=answer.probabilities,
         option_order=option_order,
     )
+
+
+@dataclass
+class PendingCheck:
+    """What the second Jev call needs. Lives in memory only until the call
+    ends: the message and reply are never stored."""
+
+    request_id: UUID
+    message: str
+    reply: str
+    first: JevResult | None
+    format_failed: bool
+    # Set once the request's own save has finished, and whether it worked: a
+    # check is saved only after its request, and never without it.
+    saved: asyncio.Event = field(default_factory=asyncio.Event)
+    request_saved: bool = False
 
 
 @dataclass
@@ -207,6 +231,16 @@ class Gateway:
         self.jev_answered_calls = 0
         self.jev_input_tokens = 0
         self.jev_output_tokens = 0
+        # The second Jev call (reply check); see config.jev_reply_check_enabled.
+        self.reply_check_enabled = settings.jev_reply_check_enabled
+        if self.reply_check_enabled and not hasattr(router, "check_reply"):
+            raise ValueError("APP_JEV_REPLY_CHECK_ENABLED needs a router that checks")
+        self.reply_check_timeout = settings.jev_reply_check_timeout_seconds
+        self.reply_check_max = settings.jev_reply_check_max_in_flight
+        self.reply_check_answered = 0
+        self.reply_check_input_tokens = 0
+        self.reply_check_output_tokens = 0
+        self.pending_checks: set[asyncio.Task[None]] = set()
         self.store = store or MemoryStore(settings.request_store_limit)
         # Each store write waits at most this long, so a database outage
         # delays a reply by seconds, not by the pool's 30-second default.
@@ -296,6 +330,20 @@ class Gateway:
             answered_calls=self.jev_answered_calls,
             input_tokens=self.jev_input_tokens,
             output_tokens=self.jev_output_tokens,
+            estimated_cost_usd=cost,
+        )
+
+    def reply_check_usage(self) -> ReplyCheckUsage:
+        cost = (
+            None
+            if self.jev_input_price is None
+            else self.reply_check_input_tokens * self.jev_input_price / 1_000_000
+        )
+        return ReplyCheckUsage(
+            enabled=self.reply_check_enabled,
+            answered_calls=self.reply_check_answered,
+            input_tokens=self.reply_check_input_tokens,
+            output_tokens=self.reply_check_output_tokens,
             estimated_cost_usd=cost,
         )
 
@@ -677,25 +725,34 @@ class Gateway:
         # Counted until the reply is ready; saving it afterwards is not in flight.
         self.metrics.chat_in_flight.inc()
         try:
-            response, jev = await self._chat(message)
+            response, jev, pending = await self._chat(message)
         except BaseException:
             self.metrics.chat_in_flight.dec()
             # Interventions also happen on requests that end in a 503.
             await self._finish(self.save_interventions())
             raise
         self.metrics.chat_in_flight.dec()
+        # Started before the saves, as its own task: the customer never waits
+        # for it, and a cancelled request does not stop it.
+        self._start_reply_check(pending)
         # By now the failure monitor and the metrics have counted this reply,
         # so a cancel must not stop the saves: the saved requests would no
         # longer match the counts, and the controller has already handed its
         # interventions over. Both saves run as one task, in order.
-        await self._finish(self._save_all(response, jev))
+        try:
+            await self._finish(self._save_all(response, jev, pending))
+        finally:
+            pending.saved.set()
         return response
 
     async def _save_all(
-        self, response: ChatResponse, jev: Sequence[JevAssessment]
+        self,
+        response: ChatResponse,
+        jev: Sequence[JevAssessment],
+        pending: PendingCheck,
     ) -> None:
         await self.save_interventions()
-        await self._save_request(response, jev)
+        pending.request_saved = await self._save_request(response, jev)
 
     async def _finish(
         self, saving: Coroutine[Any, Any, None], hold: bool = False
@@ -726,13 +783,13 @@ class Gateway:
         """At shutdown, before the store closes: wait for saves still running,
         such as those of requests the server cancelled, then save anything
         noticed since the last request (a /metrics scrape can see a re-enable)."""
-        while self.pending_saves:
-            await asyncio.wait(set(self.pending_saves))
+        while self.pending_saves or self.pending_checks:
+            await asyncio.wait(self.pending_saves | self.pending_checks)
         await self.save_interventions()
 
     async def _save_request(
         self, response: ChatResponse, jev: Sequence[JevAssessment]
-    ) -> None:
+    ) -> bool:
         try:
             # The Jev assessments are saved with their request or not at all, so
             # every saved assessment has a request to join to. A request that
@@ -743,6 +800,149 @@ class Gateway:
         except Exception as exc:
             # The customer still gets the reply; it just cannot be looked up later.
             logger.warning("Could not save request (%s)", type(exc).__name__)
+            return False
+        return True
+
+    def _start_reply_check(self, pending: PendingCheck) -> None:
+        """Start the second Jev call as its own task, or count why not."""
+        if not self.reply_check_enabled:
+            return
+        skipped = self.metrics.reply_check_skipped
+        first = pending.first
+        if first is None or (
+            first.route.choice is None and first.intent.choice is None
+        ):
+            # No first answer to compare with, so a second call buys nothing.
+            skipped.labels("no_first_answer").inc()
+        elif pending.format_failed:
+            # The customer got a fixed apology, not the model's reply.
+            skipped.labels("format_fallback").inc()
+        elif self.jev_breaker.state() != "closed":
+            # Jev is struggling; the second call must not add load.
+            skipped.labels("breaker_not_closed").inc()
+        elif len(self.pending_checks) >= self.reply_check_max:
+            skipped.labels("busy").inc()
+        else:
+            task = asyncio.create_task(self._run_reply_check(pending))
+            self.pending_checks.add(task)
+            task.add_done_callback(self.pending_checks.discard)
+
+    async def _run_reply_check(self, pending: PendingCheck) -> None:
+        """Ask Jev the same questions about the message and the reply, then
+        compare with the first call. Never raises: a failure is a record and a
+        metric, and does not touch the Jev circuit breaker."""
+        call_id = uuid4()
+        start = perf_counter()
+        first = pending.first
+        assert first is not None
+        base: dict[str, Any] = {
+            "request_id": pending.request_id,
+            "call_id": call_id,
+            "mocked": self.jev_mocked,
+            "option_set_version": self.jev_option_set_version,
+            "route_first": first.route.choice,
+            "intent_first": first.intent.choice,
+        }
+        checker: Any = self.router
+        try:
+            result = ReplyCheckResult.model_validate(
+                await asyncio.wait_for(
+                    checker.check_reply(
+                        pending.message,
+                        pending.reply,
+                        timeout=self.reply_check_timeout,
+                    ),
+                    self.reply_check_timeout,
+                )
+            )
+        except Exception as exc:
+            error_type = _jev_error_type(exc)
+            timed_out = isinstance(exc, TimeoutError)
+            logger.warning("Jev reply check failed (%s)", error_type)
+            elapsed = perf_counter() - start
+            self.metrics.reply_check_latency.labels(
+                "timeout" if timed_out else "error"
+            ).observe(elapsed)
+            record = self._reply_check_record(
+                base,
+                status="timeout" if timed_out else "error",
+                error_type=error_type,
+                elapsed=elapsed,
+            )
+        else:
+            elapsed = perf_counter() - start
+            self.metrics.reply_check_latency.labels("ok").observe(elapsed)
+            self.reply_check_answered += 1
+            self.reply_check_input_tokens += result.input_tokens
+            self.reply_check_output_tokens += result.output_tokens
+            for question in ("route", "intent"):
+                self.metrics.reply_check_agreement.labels(
+                    question,
+                    _agreement(
+                        getattr(first, question).choice,
+                        getattr(result, question).choice,
+                    ),
+                ).inc()
+            self.metrics.reply_check_fit.labels(result.fit.choice or "no_signal").inc()
+            record = self._reply_check_record(
+                base, status="ok", elapsed=elapsed, result=result
+            )
+        if record is None:
+            return
+        # Only after the request is saved, and only if it was: a saved check
+        # has a request to join to, never the other way round.
+        await pending.saved.wait()
+        if not pending.request_saved:
+            return
+        try:
+            await asyncio.wait_for(
+                self.store.save_reply_check(record), self.store_timeout
+            )
+        except Exception as exc:
+            logger.warning("Could not save reply check (%s)", type(exc).__name__)
+
+    def _reply_check_record(
+        self,
+        base: dict[str, Any],
+        *,
+        status: Literal["ok", "timeout", "error"],
+        elapsed: float,
+        error_type: str | None = None,
+        result: ReplyCheckResult | None = None,
+    ) -> ReplyCheck | None:
+        fields: dict[str, Any] = {
+            **base,
+            "status": status,
+            "finished_at": datetime.now(UTC),
+            "latency_ms": elapsed * 1000,
+            "error_type": error_type,
+        }
+        if result is not None:
+            route_second = result.route.choice
+            intent_second = result.intent.choice
+            fields |= {
+                "mocked": result.mocked,
+                "jev_model": result.jev_model,
+                "provider_request_id": result.provider_request_id,
+                "input_tokens": result.input_tokens,
+                "output_tokens": result.output_tokens,
+                "route_second": route_second,
+                "intent_second": intent_second,
+                "reply_fit": result.fit.choice,
+                "reply_fit_confidence": result.fit.confidence,
+            }
+            for name, first, second in (
+                ("route", base["route_first"], route_second),
+                ("intent", base["intent_first"], intent_second),
+            ):
+                if first is not None and second is not None:
+                    fields[f"{name}_agrees"] = first == second
+        try:
+            return ReplyCheck(**fields)
+        except ValueError as exc:
+            # ValidationError text can hold Jev's answer, so log the type only.
+            logger.warning("Could not build reply check (%s)", type(exc).__name__)
+            return None
 
     async def _call_jev(
         self, request_id: UUID, message: str, reasons: list[str]
@@ -1074,7 +1274,9 @@ class Gateway:
 
         return action
 
-    async def _chat(self, message: str) -> tuple[ChatResponse, list[JevAssessment]]:
+    async def _chat(
+        self, message: str
+    ) -> tuple[ChatResponse, list[JevAssessment], PendingCheck]:
         # Created before any provider call, so later records can share it.
         request_id = uuid4()
         start = perf_counter()
@@ -1288,4 +1490,11 @@ class Gateway:
         self.metrics.chat_latency_by_model.labels(trace.route, trace.model).observe(
             elapsed
         )
-        return response, jev
+        pending = PendingCheck(
+            request_id=request_id,
+            message=message,
+            reply=reply,
+            first=result,
+            format_failed=bool(format_errors),
+        )
+        return response, jev, pending

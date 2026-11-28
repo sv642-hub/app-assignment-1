@@ -78,6 +78,34 @@ class JevResult(StrictModel):
         return self
 
 
+FIT_OPTIONS = frozenset({"fits", "does_not_fit"})
+
+
+class ReplyCheckResult(StrictModel):
+    """The second Jev call: the same route and intent questions, asked about the
+    customer's message together with the reply, plus whether the reply fits.
+
+    `fit` chooses between `fits` and `does_not_fit`. Each answer is validated
+    on its own, like `JevResult`.
+    """
+
+    route: JevAnswer
+    intent: JevAnswer
+    fit: JevAnswer
+    mocked: bool
+    jev_model: str = Field(min_length=1)
+    provider_request_id: str | None = None
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def check_fit_options(self) -> "ReplyCheckResult":
+        probabilities = self.fit.probabilities
+        if probabilities is not None and set(probabilities) != FIT_OPTIONS:
+            raise ValueError("The fit answer chooses fits or does_not_fit")
+        return self
+
+
 class Router(Protocol):
     """Jev's interface. A whole-call failure raises; the gateway then uses the
     rule router. An invalid answer to one question comes back as a `JevAnswer`
@@ -91,6 +119,15 @@ class Router(Protocol):
     option_set_version: str
 
     async def route(self, message: str) -> JevResult: ...
+
+
+class ReplyChecker(Protocol):
+    """The optional second Jev call (APP_JEV_REPLY_CHECK_ENABLED). A failure
+    raises; the gateway records it and the customer is unaffected."""
+
+    async def check_reply(
+        self, message: str, reply: str, timeout: float | None = None
+    ) -> ReplyCheckResult: ...
 
 
 class MockJevRouter:
@@ -146,6 +183,56 @@ class MockJevRouter:
             input_tokens=0,
             output_tokens=0,
             route_order=list(ROUTE_ORDER),
+        )
+
+    async def check_reply(
+        self, message: str, reply: str, timeout: float | None = None
+    ) -> ReplyCheckResult:
+        """Mock second call: matches keywords in the message and in the reply.
+
+        The route and intent come from the message and the reply together, so
+        a reply that talks about another topic can pull the answer away from
+        the first call. The reply fits when the reply alone points to the same
+        intent as the message, or to none. Shares the first call's faults.
+        """
+        faults = self.faults
+        if faults.slow_rate and self.rng.random() < faults.slow_rate:
+            await asyncio.sleep(faults.slow_seconds)
+        if faults.error_rate and self.rng.random() < faults.error_rate:
+            raise ConnectionError("Simulated Jev outage")
+        _, from_message = match_intent(self.intents, message)
+        score, combined = match_intent(self.intents, f"{message} {reply}")
+        _, from_reply = match_intent(self.intents, reply)
+        if combined is None:
+            route, intent, confidence = "standard", UNKNOWN, 0.5
+        else:
+            route, intent = combined.complexity, combined.intent
+            confidence = round(min(0.95, 0.55 + score * 0.08), 2)
+        other = "complex" if route == "standard" else "standard"
+        wanted = from_message.intent if from_message else UNKNOWN
+        said = from_reply.intent if from_reply else wanted
+        fit = "fits" if said == wanted else "does_not_fit"
+        not_fit = "does_not_fit" if fit == "fits" else "fits"
+        return ReplyCheckResult(
+            route=JevAnswer(
+                choice=route,
+                confidence=confidence,
+                probabilities={route: confidence, other: round(1 - confidence, 2)},
+            ),
+            intent=JevAnswer(
+                choice=intent,
+                confidence=confidence,
+                probabilities=self._spread(intent, confidence),
+            ),
+            fit=JevAnswer(
+                choice=fit,
+                confidence=0.9,
+                probabilities={fit: 0.9, not_fit: 0.1},
+            ),
+            mocked=True,
+            jev_model="mock-jev",
+            input_tokens=0,
+            output_tokens=0,
         )
 
     def _spread(self, choice: str, confidence: float) -> dict[str, float]:

@@ -171,3 +171,71 @@ def check_call(records: Sequence[JevAssessment]) -> None:
             raise ValueError(f"Both answers from one call must share {field}")
     if (first.status == "skipped") != (second.status == "skipped"):
         raise ValueError("Jev is skipped for the whole call or not at all")
+
+
+class ReplyCheck(StrictModel):
+    """The second Jev call, made after the model answered.
+
+    Jev sees the customer's message and the reply the customer got, and answers
+    the route and intent questions again plus whether the reply fits. The
+    `*_first` fields repeat the first call's answers (before the model) so one
+    row holds both sides of the comparison. A side is None when that call gave
+    no valid answer, and the matching `*_agrees` is then None too, not False.
+    The record never stores the message or the reply.
+    """
+
+    request_id: UUID
+    call_id: UUID
+    status: Literal["ok", "timeout", "error"]
+    finished_at: AwareDatetime
+    mocked: bool
+    option_set_version: str = Field(min_length=1)
+    latency_ms: float = Field(ge=0)
+    error_type: str | None = Field(default=None, min_length=1)
+    jev_model: str | None = Field(default=None, min_length=1)
+    provider_request_id: str | None = None
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    route_first: str | None = None
+    route_second: str | None = None
+    intent_first: str | None = None
+    intent_second: str | None = None
+    # "fits" or "does_not_fit", and Jev's confidence in that answer.
+    reply_fit: Literal["fits", "does_not_fit"] | None = None
+    reply_fit_confidence: float | None = Field(default=None, ge=0, le=1)
+    route_agrees: bool | None = None
+    intent_agrees: bool | None = None
+
+    @model_validator(mode="after")
+    def check_record(self) -> "ReplyCheck":
+        if (self.error_type is not None) != (self.status != "ok"):
+            raise ValueError("error_type is set exactly when the call failed")
+        if self.status != "ok":
+            answers = (
+                self.route_second,
+                self.intent_second,
+                self.reply_fit,
+                self.reply_fit_confidence,
+                self.route_agrees,
+                self.intent_agrees,
+                self.jev_model,
+                self.input_tokens,
+                self.output_tokens,
+            )
+            if any(value is not None for value in answers):
+                raise ValueError("A failed call has no second answers")
+            return self
+        for first, second, agrees, name in (
+            (self.route_first, self.route_second, self.route_agrees, "route"),
+            (self.intent_first, self.intent_second, self.intent_agrees, "intent"),
+        ):
+            both = first is not None and second is not None
+            if both != (agrees is not None):
+                raise ValueError(f"{name}_agrees needs both answers, and only then")
+            if both and agrees != (first == second):
+                raise ValueError(f"{name}_agrees must match the two answers")
+        if (self.reply_fit is None) != (self.reply_fit_confidence is None):
+            raise ValueError("reply_fit and its confidence go together")
+        if self.jev_model is None or self.input_tokens is None:
+            raise ValueError("An ok check needs the model and token counts")
+        return self

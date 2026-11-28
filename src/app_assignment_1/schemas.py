@@ -378,6 +378,16 @@ class JevUsage(StrictModel):
     estimated_cost_usd: float | None = Field(default=None, ge=0)
 
 
+class ReplyCheckUsage(StrictModel):
+    """Second Jev calls (reply checks) that returned an answer since start."""
+
+    enabled: bool
+    answered_calls: int = Field(ge=0)
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    estimated_cost_usd: float | None = Field(default=None, ge=0)
+
+
 class JevBreakerStatus(StrictModel):
     """The Jev circuit breaker. While it is not closed, the rule router routes
     most or all messages."""
