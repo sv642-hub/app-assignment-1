@@ -140,6 +140,30 @@ def test_controller_disable_shows_in_gauges_and_interventions(settings):
         )
 
 
+def test_chat_request_series_exist_at_zero_before_traffic(settings):
+    with TestClient(create_app(settings)) as client:
+        found = samples(client)
+        series = [
+            labels for (name, labels) in found if name == "gateway_chat_requests_total"
+        ]
+        # 2 routes x 2 models x 5 reply sources x 2 format checks
+        assert len(series) == 40
+        assert all(
+            found[("gateway_chat_requests_total", labels)] == 0 for labels in series
+        )
+        assert (
+            value(
+                found,
+                "gateway_chat_requests_total",
+                route="standard",
+                model="qwen3-1.7b",
+                reply_source="format_fallback",
+                format_check="failed",
+            )
+            == 0
+        )
+
+
 def test_jev_fallbacks_by_reason(settings):
     class OfflineRouter:
         async def route(self, message):
