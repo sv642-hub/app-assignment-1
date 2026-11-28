@@ -18,7 +18,7 @@ from prometheus_client import (
 from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily, Metric
 from prometheus_client.registry import Collector
 
-from app_assignment_1.schemas import BackendErrorCode, InterventionAction, Route
+from app_assignment_1.schemas import BackendErrorCode, InterventionAction, Route, Trace
 from app_assignment_1.semantic import SAMPLES
 
 if TYPE_CHECKING:
@@ -37,9 +37,27 @@ JEV_FALLBACK_REASONS = (
 # Includes 2 s and 4 s, the latency targets in docs/MONITORING.md, so the
 # dashboard can count requests under each target exactly.
 LATENCY_BUCKETS = (0.05, 0.1, 0.25, 0.5, 1, 2, 4, 8, 15, 30, 60)
+# The label values of gateway_chat_requests, read from the Trace fields.
+REPLY_SOURCES = get_args(Trace.model_fields["reply_source"].annotation)
+FORMAT_CHECKS = get_args(Trace.model_fields["format_check"].annotation)
 JEV_OUTCOMES = ("ok", "timeout", "error")
 CALL_OUTCOMES = ("ok", "failed")
 AUTH_FAILURE_REASONS = ("operator_disabled", "missing_or_wrong_token")
+
+
+# What happened when the small model's score was below the threshold.
+# escalated: the large model's reply was used. shadow: escalation is off, so
+# the small reply was kept. large_unusable, no_time, large_failed and
+# large_format_failed: the large model could not be used, so the small reply
+# was kept.
+ESCALATION_OUTCOMES = (
+    "escalated",
+    "shadow",
+    "large_unusable",
+    "no_time",
+    "large_failed",
+    "large_format_failed",
+)
 
 
 class GatewayMetrics:
@@ -51,6 +69,16 @@ class GatewayMetrics:
             ["route", "model", "reply_source", "format_check"],
             registry=self.registry,
         )
+        # Create every label set at 0, so rate() and increase() count a burst
+        # that lands before the first scrape. Combinations that cannot happen
+        # stay at 0.
+        for route in get_args(Route):
+            for backend in gateway.backends:
+                for source in REPLY_SOURCES:
+                    for check in FORMAT_CHECKS:
+                        self.chat_requests.labels(
+                            route, backend.config.name, source, check
+                        )
         self.chat_unavailable = Counter(
             "gateway_chat_unavailable",
             "Chat requests that got a 503 because no backend could answer.",
@@ -169,6 +197,22 @@ class GatewayMetrics:
         )
         for backend in gateway.backends:
             self.semantic_not_compared.labels(backend.config.name)
+        self.escalation_score = Histogram(
+            "gateway_escalation_score",
+            "The small model's intent confidence on replies that passed the "
+            "format check, when it gave one. Recorded with escalation on or off.",
+            buckets=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1),
+            registry=self.registry,
+        )
+        self.escalations = Counter(
+            "gateway_escalations",
+            "Small-model replies whose score was below the escalation "
+            "threshold, by outcome.",
+            ["outcome"],
+            registry=self.registry,
+        )
+        for outcome in ESCALATION_OUTCOMES:
+            self.escalations.labels(outcome)
         self.registry.register(_GatewayStateCollector(gateway))
 
     def render(self) -> bytes:

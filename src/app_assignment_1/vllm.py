@@ -2,6 +2,7 @@ import json
 
 import httpx
 
+from app_assignment_1.confidence import ScoredReply, label_confidence
 from app_assignment_1.labels import LabelSet
 from app_assignment_1.schemas import BackendConfig, BackendReply, PolicyCard
 
@@ -69,6 +70,9 @@ class VLLMBackend:
                     "model": self.model,
                     "max_tokens": 512,
                     "temperature": 0.0,
+                    # Per-token log probabilities, for the intent's token
+                    # confidence (confidence.py).
+                    "logprobs": True,
                     "chat_template_kwargs": {"enable_thinking": False},
                     "messages": [
                         {"role": "system", "content": self.system_prompt},
@@ -94,7 +98,15 @@ class VLLMBackend:
             raise BackendCallError("Backend request failed") from None
 
         try:
-            content = response.json()["choices"][0]["message"]["content"]
-            return BackendReply.model_validate_json(content)
+            choice = response.json()["choices"][0]
+            content = choice["message"]["content"]
+            reply = BackendReply.model_validate_json(content)
         except (ValueError, KeyError, IndexError, TypeError):
             raise BackendOutputError("Backend returned invalid output") from None
+        # A missing or unreadable logprobs block only loses the score.
+        logprobs = choice.get("logprobs") if isinstance(choice, dict) else None
+        tokens = logprobs.get("content") if isinstance(logprobs, dict) else None
+        confidence = (
+            label_confidence(content, tokens) if isinstance(tokens, list) else None
+        )
+        return ScoredReply(**reply.model_dump(), label_confidence=confidence)

@@ -17,17 +17,20 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 - `src/app_assignment_1/jev.py`: the real Jev client (`TypeSafeJevRouter`), one TypeSafe call with the route and intent questions; the app uses it when `APP_JEV_MODE=real` (default `mock`).
 - `src/app_assignment_1/vllm.py`: `VLLMBackend`, the real Qwen client (one OpenAI-style chat call to vLLM with a JSON schema), and its typed failures.
 - `src/app_assignment_1/real_backends.py`: builds the two `VLLMBackend`s and their HTTP clients when `APP_PROVIDER_MODE=real`.
+- `src/app_assignment_1/confidence.py`: token confidence for the small model's intent (joint probability of the label's tokens from vLLM logprobs) and `ScoredReply`; the gateway escalates to the large model below `APP_ESCALATION_THRESHOLD` when `APP_ESCALATION_ENABLED` (off by default).
 - `src/app_assignment_1/breaker.py`: the Jev circuit breaker; while it is open the gateway skips Jev and uses the rule router.
 - `src/app_assignment_1/backends.py`: `Backend` interface and `MockBackend` (the mock Qwen backends).
 - `src/app_assignment_1/intents.py`: keyword matching over the configured intents, shared by the mocks.
 - `src/app_assignment_1/banking77.py`: the Banking77 development split (`make_split`, `load_split`) for offline evaluation; dev is 20% of Banking77 train per intent, seeded.
 - `src/app_assignment_1/labels.py`: loads the shared labels (77 Banking77 intents plus `unknown`) and derives `option_set_version`.
 - `src/app_assignment_1/monitor.py`: in-memory failure monitor (format failures and failed calls) and `Controller`; new interventions and window samples wait in `unsaved` and `unsaved_samples` until the gateway stores them, and `restore` rebuilds the windows and running cooldowns at startup. While a new release is watched, the controller rolls it back instead of disabling the model.
+- `src/app_assignment_1/evaluation.py`: offline evaluation: loads the official Banking77 test set (pinned download) or a `text,intent` CSV, mirrors the gateway's format checks, scores accuracy and macro F1 over the 77 intents, and builds the oracle router from the small and large results.
 - `src/app_assignment_1/releases.py`: model releases: the version each model serves (`base` or one from `config/releases.json`), the rollback target, and the release events saved through `Store` and reloaded at startup.
 - `src/app_assignment_1/probe.py`: offline linear probe skeleton and gate check; not used by the gateway. See `docs/PROBE.md`.
 - `src/app_assignment_1/probe_modellens.py`: `ModelLensExtractor`, the real activation extractor for the probe, built on ModelLens. Needs the optional `probe` extra (`uv sync --extra dev --extra probe`); not used by the gateway.
 - `src/app_assignment_1/records.py`: `JevAssessment` records for the semantic monitor and the checks on them. The gateway builds two records per request and saves them with the request through `Store`.
 - `src/app_assignment_1/semantic.py`: in-memory semantic monitor; scores each model's intent against Jev's intent answer, per model, with coverage and a baseline; only when Jev and the model are both mocks or both real (`Backend.mocked`). The controller acts on it only with `APP_SEMANTIC_ACTIONS_ENABLED` (off by default).
+- `src/app_assignment_1/metrics_catalog.py`: loads and renders the metrics catalog, `config/metrics.yaml` (targets, metric definitions and PromQL, kept once). Not read by the gateway; needs PyYAML from the `dev` extra. `docs/METRICS.md` is generated from the YAML by `scripts/build_metrics_docs.py` (`--check` fails if stale). `tests/test_metrics_catalog.py` fails when the dashboard, alerts, settings defaults or docs drift from it. Thresholds that are `APP_` settings stay in `config.py`; the catalog only names them.
 - `src/app_assignment_1/metrics.py`: Prometheus metrics for the gateway, served at the internal `/metrics` path (not proxied by Caddy).
 - `src/app_assignment_1/schemas.py`: Pydantic API contracts and config models.
 - `src/app_assignment_1/config.py`: cached Pydantic Settings.
@@ -35,8 +38,9 @@ Smart AI Gateway (DSAN 6700 final project): a FastAPI gateway that routes bankin
 - `frontend/`: React (Vite) app with Chat, Health and Jev screens; `frontend/Dockerfile` builds it into the Caddy image.
 - `config/`: `labels.json` (the 78 labels Jev and Qwen classify into), `intents.json`, `policy_cards.json`, `backends.json`, `releases.json` (versions an operator can deploy to each model), plus `backends.chaos.json`, `backends.outage.json` and `backends.labelswap.json` for simulated faults.
 - `tests/`: pytest suite. Frontend tests are in `frontend/src/App.test.jsx` and `frontend/src/JevView.test.jsx`.
-- `scripts/smoke_compose.py`: smoke test against the public proxy.
-- `scripts/measure_recovery.py`: sets each simulated fault on the small model through `/v1/faults`, then measures how long the controller takes to act, what customers got meanwhile, false interventions, and how long until the model serves again. Needs `APP_OPERATOR_TOKEN`; refuses any host but localhost unless told otherwise. `compose.measure.yml` turns semantic actions on with the mock baseline so the label-swap scenario can run.
+- `scripts/smoke_compose.py`: smoke test against the public proxy. Reads the Jev and Qwen modes from `/v1/health` and checks each one, so it passes on the all-mock stack (CI) and on the testers' stack (real Jev: three paid TypeSafe calls). Tested in `tests/test_smoke_compose.py`.
+- `scripts/run_eval.py`: the evaluation runner. `run` sends each message to one target (`small` or `large` directly, real vLLM or `--mock`, or `gateway` through `/v1/chat` on a local stack) and writes JSONL with no message or reply text; `score` and `oracle` read those files. Downloads go to `data/cache/`, which git ignores.
+- `scripts/measure_recovery.py`: runs the chaos scenarios in groups A–E of `docs/CHAOS_SCENARIOS.md` (`CATALOG`; B1–B3 by default) through `/v1/faults` and the operator routes, then measures how long the controller takes to act, what customers got meanwhile, false interventions, and how long until the model serves again. Needs `APP_OPERATOR_TOKEN`; refuses any host but localhost unless told otherwise. `compose.measure.yml` turns semantic actions on with the mock baseline so the label-swap scenario can run.
 - `scripts/make_banking77_split.py`: downloads Banking77 at a pinned commit and writes `data/banking77_split.csv`; `--check` fails if it differs.
 - `data/banking77_split.csv`: the committed split (`text`, `intent`, `split`, `source_row`); source, paper and licence in `data/README.md`. Banking77 is by PolyAI, CC BY 4.0. A test pins its SHA-256. Never regenerate it with different settings once results depend on it.
 - `scripts/evaluate_jev_order.py`: the Jev route-order experiment. `run` calls the real Jev client on dev-split messages with the two route options in each order (needs `APP_JEV_API_KEY` and a `--max-calls` budget; saves no message text; a rerun retries failed calls); `summarize` prints the flip rate minus the same-order disagreement, a verdict, and the other measures with bootstrap intervals. Not run against real Jev yet.
@@ -98,6 +102,10 @@ uv run python scripts/render_architecture.py
 
 # Smoke test the running stack
 python3 scripts/smoke_compose.py http://localhost:8080
+
+# Evaluation on the mocks (see README, Offline evaluation, for the real models)
+uv run python scripts/run_eval.py run --target small --mock --out eval/mock-small.jsonl
+uv run python scripts/run_eval.py score eval/mock-small.jsonl
 
 # Chaos mode, a simulated outage or a label swap, then back to normal
 docker compose -f compose.yml -f compose.chaos.yml up -d --build --wait
