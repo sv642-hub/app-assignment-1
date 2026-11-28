@@ -9,8 +9,10 @@
     # The whole gateway, through POST /v1/chat on a stack you run yourself
     uv run python scripts/run_eval.py run --target gateway --out eval/test-gateway.jsonl
 
-    # Score one or more results files; combine small and large into the oracle
-    uv run python scripts/run_eval.py score eval/test-small.jsonl eval/test-large.jsonl
+    # Score one or more results files (--top N: worst intents and mistakes);
+    # combine small and large into the oracle
+    uv run python scripts/run_eval.py score eval/test-small.jsonl \\
+        eval/test-large.jsonl --top 10
     uv run python scripts/run_eval.py oracle eval/test-small.jsonl eval/test-large.jsonl
 
 Datasets: `--dataset banking77-test` (the default) is the official Banking77
@@ -67,6 +69,7 @@ from app_assignment_1.evaluation import (
     CACHE_DIR,
     Dataset,
     Message,
+    confusions,
     oracle,
     parse_banking77,
     parse_labelled_csv,
@@ -458,11 +461,17 @@ def _fmt(value: float | None, digits: int = 3) -> str:
     return "-" if value is None else f"{value:.{digits}f}"
 
 
-def print_scores(paths: list[Path]) -> None:
+def is_direct(header: dict[str, Any]) -> bool:
+    """A model called directly, so rows keep its answer before the check."""
+    return header["target"] in ("small", "large")
+
+
+def print_scores(paths: list[Path], top: int = 0) -> None:
     labels, _, _ = load_config()
     for path in paths:
         header, items = read_results(path)
-        result = score(items, labels)
+        direct = is_direct(header)
+        result = score(items, labels, direct=direct)
         low, high = result["accuracy_95ci"]
         sample = header.get("sample")
         expected = sample["size"] if sample else header["dataset_size"]
@@ -480,6 +489,21 @@ def print_scores(paths: list[Path]) -> None:
             f"  latency p50 {_fmt(result['latency_ms_p50'], 0)} ms  "
             f"p95 {_fmt(result['latency_ms_p95'], 0)} ms"
         )
+        if result["format_errors_by_type"]:
+            print(f"  format errors by type {result['format_errors_by_type']}")
+        if result["intent_accuracy_before_check"] is not None:
+            print(
+                "  intent accuracy before the format check "
+                f"{_fmt(result['intent_accuracy_before_check'])}  right intents "
+                f"lost to the check {result['lost_to_format_check']}"
+            )
+        if top:
+            worst = sorted(result["per_class_recall"].items(), key=lambda kv: kv[1])
+            lowest = ", ".join(f"{label} {r:.2f}" for label, r in worst[:top])
+            print(f"  lowest recall: {lowest}")
+            print("  most common mistakes (gold -> answer, count):")
+            for gold, answer, n in confusions(items, top, direct=direct):
+                print(f"    {gold} -> {answer or '(no valid label)'}  {n}")
         retry = sum(bool(i.get("error")) and not i.get("final") for i in items)
         if result["messages"] < expected or retry:
             print(
@@ -494,10 +518,16 @@ def cmd_score(args: argparse.Namespace) -> int:
         report = {}
         for path in args.files:
             header, items = read_results(path)
-            report[str(path)] = {"run": header, "score": score(items, labels)}
+            report[str(path)] = {
+                "run": header,
+                "score": score(items, labels, direct=is_direct(header)),
+                "confusions": confusions(
+                    items, args.top or 20, direct=is_direct(header)
+                ),
+            }
         print(json.dumps(report, indent=2))
     else:
-        print_scores(args.files)
+        print_scores(args.files, args.top)
     return 0
 
 
@@ -514,7 +544,7 @@ def cmd_oracle(args: argparse.Namespace) -> int:
         combined = oracle(small, large)
     except ValueError as exc:
         raise SystemExit(f"{exc}: run both targets over the same rows") from None
-    result = score(combined, labels)
+    result = score(combined, labels, direct=True)
     large_share = sum(item.get("model") == large_header["model"] for item in combined)
     print(
         f"oracle over {small_header['model']} and {large_header['model']}: "
@@ -572,6 +602,13 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("score", help="score results files")
     s.add_argument("files", type=Path, nargs="+")
     s.add_argument("--json", action="store_true", help="full scores, per class too")
+    s.add_argument(
+        "--top",
+        type=int,
+        default=0,
+        help="also list the N lowest-recall intents and the N most common "
+        "mistakes (gold intent and the model's answer)",
+    )
 
     o = sub.add_parser("oracle", help="combine small and large results")
     o.add_argument("small", type=Path)
