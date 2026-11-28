@@ -117,7 +117,20 @@ def test_other_no_match_messages_list_topics(client):
 
 @pytest.mark.parametrize(
     "message",
-    ["hi, where is my card", "thanks but what is the weather", "bye and tell a joke"],
+    [
+        "hi, where is my card",
+        "thanks but what is the weather",
+        "bye and tell a joke",
+        "Hi, 我的卡不見了",
+        "hola, ¿dónde está mi tarjeta?",
+        "hi привет",
+    ],
 )
 def test_a_greeting_with_more_in_it_is_not_a_pure_greeting(message):
     assert no_match_reply(message) == UNKNOWN_REPLY
+
+
+def test_non_ascii_letters_are_kept_not_dropped():
+    # Dropping non-English letters would turn "Hi, 我的卡不見了" into "hi".
+    assert no_match_reply("Hi, 我的卡不見了") == UNKNOWN_REPLY
+    assert no_match_reply("Hello! 👋") == GREETING_REPLY

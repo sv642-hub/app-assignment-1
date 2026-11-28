@@ -55,9 +55,10 @@ _GOODBYE = re.compile(
 
 def no_match_reply(message: str) -> str:
     """The fixed reply for a message that matched no banking topic."""
-    # Lowercase words only; punctuation and emoji are dropped. A message with
-    # anything else in it (a greeting plus a question) is not a pure greeting.
-    text = " ".join(re.findall(r"[a-z]+", message.lower()))
+    # Letters and digits in any language; punctuation and emoji are dropped. A
+    # message with anything else in it (a greeting plus a question, in any
+    # language) is not a pure greeting.
+    text = " ".join(re.findall(r"[^\W_]+", message.lower()))
     if _GREETING.fullmatch(text):
         return GREETING_REPLY
     if _THANKS.fullmatch(text):
