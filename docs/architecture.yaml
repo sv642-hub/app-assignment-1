@@ -224,8 +224,8 @@ components:
       - built: "Three faults by hand: outage, bad format, label swap"
       - built: Tester walkthrough for outage and bad format
       - built: "Demo script (docs/CHAOS_DEMO.md); recovery times over many runs (mocks)"
-      - built: "Scenarios A-E (20) in the recovery script (mocks)"
-      - todo: "Runs of A-E on a stack; F-H"
+      - built: "Scenarios A-E (20), measured on a local stack (mocks)"
+      - todo: "F-H: parts around the models, new hooks, real models"
 
   evaluation:
     title: Offline evaluation harness

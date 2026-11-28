@@ -104,6 +104,11 @@ How to read it:
 
 These are mock models with simulated latency, so the numbers show how the loop behaves. They say nothing about real models.
 
+Groups A–E were measured on November 27, 2026, on a local Compose stack (A, B, D and E once each, C ten times per scenario). Every run of A, B, D and E showed what its scenario expects. The full tables and what they show are in [`docs/CHAOS_SCENARIOS.md`](docs/CHAOS_SCENARIOS.md#measured-on-november-27-2026). In short:
+- **Partial faults:** no disable at 10%, 5 of 10 runs at 30%, and every run at 50% and 70%. Every 30% trip came with a full 20-call window, so `APP_MONITOR_MIN_SAMPLES` doesn't cause them.
+- **One model down, one malformed (D3):** the controller disables the malformed model and keeps the dead one, so customers get 503s, not apologies.
+- **After an operator hold (D4):** releasing the hold disables the other model on the failures still in its window, though its fault is gone.
+
 ### Semantic monitor
 
 A model can return a well-formed reply for the wrong intent, which the format check cannot see. The semantic monitor compares each model's intent with Jev's answer to the intent question, from the same request:
