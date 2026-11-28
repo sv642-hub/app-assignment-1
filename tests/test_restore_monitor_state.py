@@ -727,3 +727,57 @@ def test_replies_to_the_old_version_during_a_deploys_save_do_not_come_back():
     saved = {e.backend: e for e in asyncio.run(store.latest_release_events())}
     assert restarted.releases.state[SMALL].since == saved[SMALL].at
     assert live.releases.state[SMALL].since == saved[SMALL].at
+
+
+class PausedAfterCommitStore(MemoryStore):
+    """Holds the answer to an operator's release write, after it was written."""
+
+    def __init__(self, limit: int) -> None:
+        super().__init__(limit)
+        self.written = asyncio.Event()
+        self.resume = asyncio.Event()
+
+    async def commit_release_change(self, event: ReleaseEvent) -> ReleaseEvent:
+        saved = await super().commit_release_change(event)
+        self.written.set()
+        await self.resume.wait()
+        return saved
+
+
+def test_replies_between_a_deploys_write_and_its_apply_do_not_come_back():
+    # The write is dated, then the gateway is slow to apply it, and chats on
+    # the old version finish in between. The running gateway clears them at
+    # apply, so a restart must not bring them back.
+    settings = Settings(
+        _env_file=None, backends_path=Path("config/backends.chaos.json")
+    )
+    store = PausedAfterCommitStore(settings.request_store_limit)
+
+    async def go() -> tuple[Gateway, Gateway]:
+        live = gateway(settings, store)
+        await live.restore_releases()
+        deploy = asyncio.create_task(live.deploy_release(SMALL, "v2-faster", "test"))
+        await store.written.wait()
+        for _ in range(3):
+            await live.chat(STANDARD)  # the old, faulty version, still serving
+        await live.save_interventions()  # a save while the deploy waits
+        store.resume.set()
+        await deploy
+        await live.save_interventions()
+        restarted = gateway(settings, store)
+        await restarted.restore_releases()
+        await restarted.restore()
+        return live, restarted
+
+    live, restarted = asyncio.run(go())
+    assert list(live.controller.windows[SMALL]) == []
+    assert list(restarted.controller.windows[SMALL]) == []
+    assert list(restarted.semantic.windows[SMALL]) == list(live.semantic.windows[SMALL])
+    assert live.sample_hold == set()
+    # Replies after the apply are new-version samples and are saved.
+    asyncio.run(live.chat(STANDARD))
+    asyncio.run(live.save_interventions())
+    again = gateway(settings, store)
+    asyncio.run(again.restore_releases())
+    asyncio.run(again.restore())
+    assert len(again.controller.windows[SMALL]) == len(live.controller.windows[SMALL])

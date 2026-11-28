@@ -255,6 +255,12 @@ class Gateway:
         self.releases.on_change.append(self._release_changed)
         # One operator release change at a time. The chat path never takes it.
         self.release_lock = asyncio.Lock()
+        # Models whose operator release change is being saved. Their new
+        # monitor samples describe the version being replaced, so they are not
+        # saved until the change is applied (then dropped, as the live windows
+        # drop them) or given up (then saved as usual). A restart therefore
+        # cuts at the same point the running gateway did.
+        self.sample_hold: set[BackendName] = set()
         # Whether the saved releases have been read. Until then the revision
         # counter is unknown, so operator release changes are refused.
         self.releases_loaded = False
@@ -409,12 +415,24 @@ class Gateway:
         never win a restart; the change is planned again on the new state, with
         a newer revision, and saved again. Each controller change ends a watch,
         so this repeats at most a few times."""
+        self.sample_hold.add(name)
+        try:
+            await self._plan_save_apply_held(name, plan)
+        finally:
+            self.sample_hold.discard(name)
+
+    async def _plan_save_apply_held(
+        self, name: BackendName, plan: Callable[[], ReleaseEvent]
+    ) -> None:
         for _ in range(MAX_RELEASE_REPLANS):
             event = plan()
             before = self.releases.state[name]
             saved = await self._save_release_change(event)
             if self.releases.state[name] is before:
                 self.releases.apply(saved)
+                # Replies that came back while the change was saved were to
+                # the old version, and `apply` cleared them from the windows.
+                self._drop_held_samples(name)
                 logger.info(
                     "Operator %s %s: now %s",
                     event.action.replace("_", " "),
@@ -557,6 +575,12 @@ class Gateway:
                     "Could not save release changes (%s)", type(exc).__name__
                 )
 
+    def _drop_held_samples(self, name: BackendName) -> None:
+        self.controller.unsaved_samples = [
+            s for s in self.controller.unsaved_samples if s.model != name
+        ]
+        self.semantic.unsaved = [s for s in self.semantic.unsaved if s.model != name]
+
     async def _save_samples(self) -> None:
         """Save new window samples, one batch at a time so the store keeps
         their order. If the store fails they are dropped, not retried: the
@@ -567,9 +591,11 @@ class Gateway:
             return
         async with self.sample_lock:
             samples = self.controller.unsaved_samples + self.semantic.unsaved
+            held = [s for s in samples if s.model in self.sample_hold]
+            samples = [s for s in samples if s.model not in self.sample_hold]
+            self.controller.unsaved_samples, self.semantic.unsaved = held, []
             if not samples:
                 return
-            self.controller.unsaved_samples, self.semantic.unsaved = [], []
             samples.sort(key=lambda s: s.at)
             try:
                 await asyncio.wait_for(
