@@ -4,6 +4,7 @@ import asyncio
 import random
 from typing import Protocol
 
+from app_assignment_1.confidence import ScoredReply
 from app_assignment_1.intents import match_intent
 from app_assignment_1.schemas import (
     BackendConfig,
@@ -11,6 +12,13 @@ from app_assignment_1.schemas import (
     IntentConfig,
     PolicyCard,
 )
+
+# Fixed token confidence for the mock models, which have no token
+# probabilities: a keyword match is sure and no match is unsure. A swapped
+# label stays sure, because the fault it simulates is a confident wrong
+# answer. Enough to exercise escalation; it measures nothing.
+MOCK_CONFIDENCE_MATCH = 0.9
+MOCK_CONFIDENCE_NO_MATCH = 0.3
 
 UNKNOWN_REPLY = (
     "I'm sorry, I could not match that message to a demo banking topic. "
@@ -77,13 +85,19 @@ class MockBackend:
             # It passes the format check; only the semantic monitor sees it.
             match = self.intents[(self.intents.index(match) + 1) % len(self.intents)]
         if match is None:
-            reply = BackendReply(intent="unknown", reply=UNKNOWN_REPLY, policy_facts=[])
+            reply = ScoredReply(
+                intent="unknown",
+                reply=UNKNOWN_REPLY,
+                policy_facts=[],
+                label_confidence=MOCK_CONFIDENCE_NO_MATCH,
+            )
         else:
             card = self.cards[match.intent]
-            reply = BackendReply(
+            reply = ScoredReply(
                 intent=match.intent,
                 reply=card.reply_template.format(facts=" ".join(card.facts)),
                 policy_facts=card.facts,
+                label_confidence=MOCK_CONFIDENCE_MATCH,
             )
         if self.rng.random() < config.fault_rate:
             # Simulated fault: a policy fact the model made up. It is on no card,

@@ -156,6 +156,7 @@ components:
     owner: "Verness: label file · Pavlos: secrets, URLs"
     items:
       - built: Pydantic Settings, private env file, thresholds; no secrets in Git or the image
+      - built: "Metrics catalog: targets and definitions, tested against alerts and docs"
       - simulated: 10 intents and 10 policy cards
       - built: One 78-label file; replies only for the 10 carded intents
       - built: Jev key and model, vLLM URLs and key, operator token
@@ -203,6 +204,7 @@ components:
     style: stretch
     items:
       - built: Skeleton and gate check
+      - built: "Escalation to 4B on token confidence, off by default"
       - built: ModelLens extractor, not yet run
       - todo: Load Qwen3-1.7B outside vLLM; real activations
       - todo: Gate run a week after the GPU host and dev split
@@ -224,16 +226,18 @@ components:
       - built: "Three faults by hand: outage, bad format, label swap"
       - built: Tester walkthrough for outage and bad format
       - built: "Demo script (docs/CHAOS_DEMO.md); recovery times over many runs (mocks)"
-      - todo: About 20 scenarios
+      - built: "Scenarios A-E (20), measured on a local stack (mocks)"
+      - todo: "F-H: parts around the models, new hooks, real models"
 
   evaluation:
     title: Offline evaluation harness
     owner: "Pavlos: runner · Yanzhen: accuracy · Eric: dev split · everyone: data"
     items:
-      - todo: Official test set primary; fresh set as a check
-      - todo: Baselines and the oracle router
-      - todo: "Evaluation set: 300 messages, 150 grades; split not agreed"
-      - built: Banking77 development split (seeded, 20% per intent)
+      - built: Runner over the official test set or any CSV
+      - built: Always-small, always-large, gateway and oracle
+      - todo: Results on the real models; fresh set as a check
+      - todo: 300 messages, 150 grades; split not agreed
+      - built: Banking77 dev split (seeded, 20% per intent)
 
   reports:
     title: Reports and artifacts
@@ -274,7 +278,7 @@ layout:
     vllm_large: [1420, 385, 370, 145]
     model_volume: [1420, 545, 370, 105]
     jev_api: [1420, 840, 370, 190]
-    probe: [1420, 1080, 370, 190]
+    probe: [1420, 1080, 370, 222]
     ci: [45, 1395, 465, 205]
     chaos: [530, 1395, 465, 200]
     evaluation: [1015, 1395, 460, 200]

@@ -69,6 +69,12 @@ class Trace(StrictModel):
     # Groups requests by the settings and config files that answered them.
     # None on requests saved before it existed.
     settings_version: str | None = None
+    # The small model's intent confidence (confidence.py), when it answered
+    # and gave one. Kept when the large model then answered instead.
+    escalation_score: float | None = Field(default=None, ge=0, le=1)
+    # The large model answered because the small model's score was below the
+    # threshold.
+    escalated: bool = False
 
 
 class ChatResponse(StrictModel):
