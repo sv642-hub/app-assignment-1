@@ -35,6 +35,7 @@ SHA256 = {
 
 
 def fetch(name: str) -> list[dict[str, str]]:
+    """Download one Banking77 file at the pinned commit."""
     response = httpx.get(URL.format(name=name), timeout=30, follow_redirects=True)
     body = response.raise_for_status().content
     if hashlib.sha256(body).hexdigest() != SHA256[name]:
@@ -43,6 +44,7 @@ def fetch(name: str) -> list[dict[str, str]]:
 
 
 def render(examples: list[Example]) -> str:
+    """Render the split examples as CSV text."""
     out = io.StringIO()
     writer = csv.writer(out, lineterminator="\n")
     writer.writerow(Example._fields)
@@ -51,6 +53,7 @@ def render(examples: list[Example]) -> str:
 
 
 def main() -> None:
+    """Write the split CSV, or with `--check` fail if it differs."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--check", action="store_true", help="fail if out of date")
     args = parser.parse_args()

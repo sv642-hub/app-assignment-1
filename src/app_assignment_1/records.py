@@ -70,6 +70,7 @@ class JevAssessment(StrictModel):
 
     @model_validator(mode="after")
     def check_status(self) -> "JevAssessment":
+        """Check the status agrees with the fields set on the record."""
         if self.option_order is not None:
             if self.question != "route":
                 raise ValueError("Only route records carry an option order")
@@ -208,6 +209,7 @@ class ReplyCheck(StrictModel):
 
     @model_validator(mode="after")
     def check_record(self) -> "ReplyCheck":
+        """Check the status agrees with the fields set on the record."""
         if (self.error_type is not None) != (self.status != "ok"):
             raise ValueError("error_type is set exactly when the call failed")
         if self.status != "ok":

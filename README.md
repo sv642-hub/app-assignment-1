@@ -1,5 +1,8 @@
 # Smart AI Gateway
 
+**Team:** Sebastian Villalobos, Verness Chin, Pavlos Baffes, Yanzhen Gao, Jackson Howes, Eric Kim.
+
+
 Who owns what: [docs/TEAM_PLAN.md](docs/TEAM_PLAN.md) · What is built: [docs/architecture.svg](docs/architecture.svg) · Beta testers: [USER_BRIEF.md](USER_BRIEF.md)
 
 A mocked banking-support gateway for DSAN 6700 Deliverable 2, with a React chat app in front of it. Send a customer message and get a reply from a fictional policy card, tagged `standard` or `complex`, with the intent and routing trace one click away. A Health screen shows the models and the self-healing controller.
@@ -334,7 +337,7 @@ The `grafana` service (Grafana 12.3.0) shows the metrics as plots. Open the **Me
 `prometheus/alerts_test.yml` tests each alert with promtool, including cases that must not fire. CI runs it, and checks that Compose's Prometheus loaded the rules. `tests/test_alert_rules.py` checks that every metric the rules use is one the gateway serves. To run the promtool tests locally:
 
 ```bash
-docker run --rm -v "$PWD/prometheus:/etc/prometheus:ro" -w /etc/prometheus --entrypoint promtool prom/prometheus:v3.15.1 test rules alerts_test.yml
+docker run --rm -v "$PWD/prometheus:/etc/prometheus:ro" -w /etc/prometheus --entrypoint promtool prom/prometheus:v3.15.1@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2 test rules alerts_test.yml
 ```
 
 To see firing alerts in the running stack:
@@ -418,7 +421,7 @@ Use public or fictional demo messages. The mock does not send messages to Jev or
 Use Python 3.13 as in CI. Install [uv](https://docs.astral.sh/uv/) first.
 
 ```bash
-uv sync --extra dev --frozen
+uv sync --frozen
 uv run uvicorn app_assignment_1.api:app --host 127.0.0.1 --port 8000
 ```
 
@@ -639,7 +642,7 @@ ssh exouser@CPU_PUBLIC_IP 'wc -c < ~/.vllm_api_key'   # 65: 64 characters and a 
 
 Change `~/app-assignment-1` if you cloned somewhere else. Do not send the key through GitHub, team chat or email. To change it, set a new `VLLM_API_KEY` in `env/gpu.env`, restart both servers (`down`, then `up -d --wait`) and copy it again.
 
-**Check from the CPU instance**, in a checkout with `uv sync --extra dev --frozen`:
+**Check from the CPU instance**, in a checkout with `uv sync --frozen`:
 
 ```bash
 export VLLM_API_KEY=$(cat ~/.vllm_api_key)

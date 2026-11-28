@@ -39,6 +39,8 @@ REF = re.compile(r"<<(\w+)>>")
 
 
 class Target(BaseModel):
+    """A named target value and the unit it is in."""
+
     model_config = ConfigDict(extra="forbid")
 
     value: float | dict[Size, float]
@@ -47,6 +49,8 @@ class Target(BaseModel):
 
 
 class MetricDef(BaseModel):
+    """One metric's definition, with its PromQL and targets."""
+
     model_config = ConfigDict(extra="forbid")
 
     description: str
@@ -64,6 +68,7 @@ class MetricDef(BaseModel):
 
     @model_validator(mode="after")
     def _check(self) -> "MetricDef":
+        """Check the definition has what its kind needs."""
         if self.status == "offline":
             if self.promql or not self.source:
                 raise ValueError("an offline metric has a source and no promql")
@@ -80,6 +85,8 @@ class MetricDef(BaseModel):
 
 
 class Catalog(BaseModel):
+    """The whole metrics catalog: targets and metric definitions."""
+
     model_config = ConfigDict(extra="forbid")
 
     version: Literal[1]
@@ -89,6 +96,7 @@ class Catalog(BaseModel):
 
     @model_validator(mode="after")
     def _check(self) -> "Catalog":
+        """Check that every name the catalog uses is defined."""
         for name, metric in self.metrics.items():
             if metric.target and metric.target not in self.targets:
                 raise ValueError(f"{name}: no target {metric.target}")
@@ -103,6 +111,7 @@ class Catalog(BaseModel):
     # --- rendering -----------------------------------------------------
 
     def _values(self, model: Size | None, metric: MetricDef) -> dict[str, str]:
+        """Return the values to fill into a metric's PromQL for one model size."""
         values = {
             "small_model": self.models["small"],
             "large_model": self.models["large"],
@@ -124,6 +133,7 @@ class Catalog(BaseModel):
         return values
 
     def target_value(self, name: str, size: Size | None = None) -> float:
+        """Return a target's number, for one model size when it has per-size values."""
         value = self.targets[name].value
         if isinstance(value, dict):
             if size is None:
@@ -154,9 +164,11 @@ class Catalog(BaseModel):
 
 
 def _num(value: float) -> str:
+    """Format a number without a trailing `.0`."""
     return format(round(value, 10), "g")
 
 
 def load_catalog(path: Path = CATALOG_PATH) -> Catalog:
+    """Read and validate the catalog YAML."""
     data: Any = yaml.safe_load(path.read_text())
     return Catalog.model_validate(data)

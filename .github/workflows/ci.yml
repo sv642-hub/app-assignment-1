@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+# Read-only by default; the publish job asks for more.
+permissions:
+  contents: read
+
 jobs:
   ci:
     runs-on: ubuntu-latest
@@ -25,16 +29,16 @@ jobs:
 
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install uv and pin Python
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
         with:
           python-version: "3.13"
           enable-cache: true
 
       - name: Install the environment from the lockfile
-        run: uv sync --extra dev --frozen
+        run: uv sync --frozen
 
       - name: Lint (ruff)
         run: uv run ruff check
@@ -50,14 +54,27 @@ jobs:
         env:
           TEST_DATABASE_URL: postgresql://postgres:ci-only@localhost:5432/postgres
 
+  # Scans the whole Git history, not just the latest commit.
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Scan the history for secrets
+        run: >-
+          docker run --rm -v "$PWD:/repo"
+          ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+          git /repo --redact --verbose
+
   frontend:
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: npm
@@ -72,18 +89,18 @@ jobs:
   prometheus-rules:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Check the config, the alert rules and their unit tests
         run: |
           docker run --rm -v "$PWD/prometheus:/etc/prometheus:ro" -w /etc/prometheus \
-            --entrypoint promtool prom/prometheus:v3.15.1 check config prometheus.yml
+            --entrypoint promtool prom/prometheus:v3.15.1@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2 check config prometheus.yml
           docker run --rm -v "$PWD/prometheus:/etc/prometheus:ro" -w /etc/prometheus \
-            --entrypoint promtool prom/prometheus:v3.15.1 test rules alerts_test.yml
+            --entrypoint promtool prom/prometheus:v3.15.1@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2 test rules alerts_test.yml
 
   compose-smoke:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Start the mocked stack
         run: docker compose up -d --build --wait --wait-timeout 180
       - name: Check the public proxy
@@ -119,3 +136,63 @@ jobs:
       - name: Stop the stack
         if: always()
         run: docker compose down
+
+  # Publishes the gateway and proxy images once every check above passed, tagged
+  # with the commit sha (and, on a `vX.Y.Z` tag push, the version too). The
+  # gateway image is then pulled back and smoke-tested. Pull requests from forks
+  # have no package access, so only pushes publish.
+  publish:
+    if: github.event_name == 'push'
+    needs: [ci, gitleaks, frontend, prometheus-rules, compose-smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REGISTRY_PATH: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Log in to the GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push gateway and proxy
+        run: |
+          base="${REGISTRY_PATH,,}"
+          tags="${GITHUB_SHA}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then tags="${tags} ${GITHUB_REF_NAME#v}"; fi
+          docker build -t "${base}/gateway:${GITHUB_SHA}" .
+          docker build -f frontend/Dockerfile -t "${base}/proxy:${GITHUB_SHA}" .
+          for tag in ${tags}; do
+            for name in gateway proxy; do
+              docker tag "${base}/${name}:${GITHUB_SHA}" "${base}/${name}:${tag}"
+              docker push "${base}/${name}:${tag}"
+            done
+          done
+      - name: Pull the published images and record their digests
+        run: |
+          base="${REGISTRY_PATH,,}"
+          for name in gateway proxy; do
+            docker rmi "${base}/${name}:${GITHUB_SHA}"
+            docker pull "${base}/${name}:${GITHUB_SHA}"
+            docker inspect --format '{{index .RepoDigests 0}}' "${base}/${name}:${GITHUB_SHA}"
+          done
+      - name: Smoke-test the published gateway image
+        # Mock Jev and Qwen with the in-memory store: no secrets, no database.
+        run: |
+          base="${REGISTRY_PATH,,}"
+          docker run -d --name gateway-smoke -p 8000:8000 "${base}/gateway:${GITHUB_SHA}"
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/v1/health >/dev/null; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8000/v1/health
+          curl -fsS -X POST http://127.0.0.1:8000/v1/chat \
+            -H 'Content-Type: application/json' \
+            -d '{"message": "I lost my card"}' | grep -q '"reply"'
+          echo "PASS: the published gateway image answers health and chat"
+      - name: Show the container log
+        if: failure()
+        run: docker logs gateway-smoke

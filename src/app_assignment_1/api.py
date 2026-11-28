@@ -12,6 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST
 
+from app_assignment_1 import __version__
 from app_assignment_1.auth import require_operator
 from app_assignment_1.config import Settings, get_settings
 from app_assignment_1.jev import TypeSafeJevRouter, create_jev_http_client
@@ -63,8 +64,11 @@ def create_app(
     router: Router | None = None,
     store: Store | None = None,
 ) -> FastAPI:
+    """Build the FastAPI app with its routes, settings, router and store."""
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        """Open the store and backends at startup and save pending data at shutdown."""
         configured = settings or get_settings()
         opened = store or create_store(configured)
         async with AsyncExitStack() as stack:
@@ -99,7 +103,7 @@ def create_app(
 
     app = FastAPI(
         title="Smart AI Gateway",
-        version="0.2.0",
+        version=__version__,
         description=(
             "Fictional policy replies. The Qwen backends are mocks unless "
             "APP_PROVIDER_MODE=real, which calls vLLM; Jev is a local mock unless "
@@ -125,6 +129,7 @@ def create_app(
         responses={503: {"description": "No backend available"}},
     )
     async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
+        """Answer one customer message through the gateway."""
         gateway: Gateway = request.app.state.gateway
         try:
             return await gateway.chat(payload.message)
@@ -142,6 +147,7 @@ def create_app(
 
     @app.get("/v1/requests/{request_id}", response_model=ChatResponse)
     async def get_request(request_id: UUID, request: Request) -> ChatResponse:
+        """Return a saved chat response by its request id, or 404."""
         gateway: Gateway = request.app.state.gateway
         result = await gateway.store.get_request(request_id)
         if result is None:
@@ -150,6 +156,7 @@ def create_app(
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health(request: Request) -> HealthResponse:
+        """Report the gateway's models, monitors and controller state."""
         gateway: Gateway = request.app.state.gateway
         breaker = gateway.jev_breaker
         # Only the backends decide the status. While the Jev breaker is open the
@@ -336,6 +343,7 @@ def create_app(
     # the OpenAPI docs. Prometheus scrapes it on the Compose network.
     @app.get("/metrics", include_in_schema=False)
     async def metrics(request: Request) -> Response:
+        """Serve the Prometheus metrics (internal; Caddy does not proxy this path)."""
         gateway: Gateway = request.app.state.gateway
         return Response(gateway.metrics.render(), media_type=CONTENT_TYPE_LATEST)
 

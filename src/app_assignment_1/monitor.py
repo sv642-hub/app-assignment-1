@@ -59,6 +59,7 @@ class Controller:
         settings: Settings,
         clock: Callable[[], float] = time.monotonic,
     ):
+        """Set up one window and one cooldown per model, from the settings."""
         names = list(names)
         self.windows: dict[BackendName, deque[Outcome]] = {
             name: deque(maxlen=settings.monitor_window) for name in names
@@ -126,6 +127,7 @@ class Controller:
         self.on_confirm: list[Callable[[BackendName], None]] = []
 
     def _clear_window(self, name: BackendName) -> None:
+        """Empty a model's window and its timeout and hang tracking."""
         self.windows[name].clear()
         self.timeouts[name] = 0
         self.streak_start[name] = None
@@ -138,6 +140,7 @@ class Controller:
         reason: str,
         ago: float = 0,
     ) -> None:
+        """Add an intervention to the unsaved list, `ago` seconds in the past."""
         at = datetime.now(UTC) - timedelta(seconds=ago)
         item = Intervention(at=at, backend=name, action=action, reason=reason)
         self.log.append(item)
@@ -186,6 +189,7 @@ class Controller:
         self.semantic_warned.discard(name)
 
     def _count_watch(self, name: BackendName) -> None:
+        """Count one request toward the watch of a new release."""
         if name not in self.watching:
             return
         if self.watching[name] >= self.watch_samples:
@@ -222,10 +226,12 @@ class Controller:
 
     def is_disabled(self, name: BackendName) -> bool:
         # Check the cooldown first, so one that ended under a hold still logs.
+        """Return True while the model is cooling down or held off."""
         cooling = self._cooling_down(name)
         return cooling or name in self.held
 
     def _cooling_down(self, name: BackendName) -> bool:
+        """Return True during a cooldown, and log when one has ended."""
         until = self.disabled_until.get(name)
         if until is None:
             return False
@@ -289,6 +295,7 @@ class Controller:
         # a reply from a call still in flight is not cleared by the re-enable.
         # A restart then agrees: the re-enable is dated when the cooldown
         # ended, and this sample is after it.
+        """Add an outcome to the window and disable the model if it is failing."""
         self._cooling_down(name)
         window = self.windows[name]
         window.append(outcome)
@@ -350,6 +357,7 @@ class Controller:
         return self._disable(name, reason, can_disable, self.warned, "failure", detect)
 
     def _failing(self, name: BackendName) -> bool:
+        """Return True when the window's failure share reaches the threshold."""
         window = self.windows[name]
         failures = sum(item != "ok" for item in window)
         return bool(window) and failures / len(window) >= self.threshold
@@ -401,6 +409,7 @@ class Controller:
         kind: DisabledFor,
         detect: DetectReason | None = None,
     ) -> str | None:
+        """Disable the model, or roll back a release being watched, and log why."""
         if not can_disable:
             # Log once per run above the threshold, not on every failing request.
             if name not in warned:
@@ -505,6 +514,7 @@ class Controller:
         return cutoffs
 
     def rules(self) -> ControllerRules:
+        """Return the controller's thresholds for `/v1/health`."""
         return ControllerRules(
             window=self.window,
             min_samples=self.min_samples,
@@ -513,6 +523,7 @@ class Controller:
         )
 
     def stats(self) -> list[BackendMonitor]:
+        """Return each model's window, state and cooldown for `/v1/health`."""
         result = []
         for name, window in self.windows.items():
             disabled = self._cooling_down(name)

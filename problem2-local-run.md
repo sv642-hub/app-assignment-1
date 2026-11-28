@@ -12,7 +12,7 @@ the repository root, where `pyproject.toml` and `uv.lock` are located.
 ## 1. Install dependencies and prepare local settings
 
 ```bash
-uv sync --extra dev --frozen
+uv sync --frozen
 test -f .env || cp env/.env.example .env
 ```
 
@@ -146,7 +146,7 @@ separate checkout for the saved blocking tag:
 git fetch origin --tags
 git worktree add --detach ../app-assignment-1-blocking problem2-blocking-v1
 cd ../app-assignment-1-blocking
-uv sync --extra dev --frozen
+uv sync --frozen
 uv run --no-sync uvicorn app_assignment_1.api:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 

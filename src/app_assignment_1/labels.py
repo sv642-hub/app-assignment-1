@@ -18,6 +18,8 @@ UNKNOWN = "unknown"
 
 @dataclass(frozen=True)
 class LabelSet:
+    """The shared intent labels and the version derived from them."""
+
     items: tuple[LabelConfig, ...]
     names: frozenset[str]
     # Answers are only comparable within one option set. Derived from the
@@ -26,6 +28,7 @@ class LabelSet:
 
 
 def load_labels(path: Path) -> LabelSet:
+    """Read the labels JSON and derive its option set version."""
     items = TypeAdapter(list[LabelConfig]).validate_json(path.read_text())
     names = [item.label for item in items]
     if len(names) != len(set(names)):

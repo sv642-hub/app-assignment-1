@@ -59,6 +59,7 @@ class JevCallError(Exception):
     never holds provider text, the customer's message or the API key."""
 
     def __init__(self, error_type: str):
+        """Keep the short error type, never the provider's text."""
         super().__init__(error_type)
         self.error_type = error_type
 
@@ -68,6 +69,8 @@ class JevTimeout(JevCallError, TimeoutError):
 
 
 class _Usage(BaseModel):
+    """Token counts TypeSafe reports for one call."""
+
     input_tokens: int = Field(ge=0, strict=True)
     output_tokens: int = Field(ge=0, strict=True)
 
@@ -75,6 +78,8 @@ class _Usage(BaseModel):
 class _SystemOneResponse(BaseModel):
     # Extra top-level fields are ignored, so a new provider field does not fail
     # every call.
+    """The part of a TypeSafe system-one response the router reads."""
+
     model: str = Field(min_length=1, strict=True)
     answers: dict[str, Any]
     usage: _Usage
@@ -134,6 +139,7 @@ class TypeSafeJevRouter:
     mocked = False
 
     def __init__(self, client: httpx.AsyncClient, model: str, labels: LabelSet):
+        """Keep the HTTP client, the model name and the label set."""
         self.option_set_version = labels.option_set_version
         self.client = client
         self.model = model
@@ -171,6 +177,7 @@ class TypeSafeJevRouter:
         return parsed, response.headers.get(REQUEST_ID_HEADER) or None
 
     async def route(self, message: str) -> JevResult:
+        """Ask TypeSafe the route and intent questions in one call."""
         parsed, request_id = await self._post(message, self.questions)
         return JevResult(
             route=_answer(parsed.answers.get("route"), ROUTE_OPTIONS),
@@ -205,12 +212,14 @@ class TypeSafeJevRouter:
 
 
 def _status_code(status: int) -> str:
+    """Name an HTTP status for the error type, such as `http_500`."""
     if status in DOCUMENTED_STATUSES:
         return f"http_{status}"
     return "http_5xx" if status >= 500 else "http_other"
 
 
 def _is_number(value: Any) -> bool:
+    """Return True for an int or float that is not a bool."""
     return isinstance(value, int | float) and not isinstance(value, bool)
 
 

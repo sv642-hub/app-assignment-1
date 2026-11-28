@@ -162,7 +162,9 @@ def test_grafana_is_viewer_only_and_not_published():
     assert env["GF_AUTH_BASIC_ENABLED"] == "false"
     assert env["GF_SERVER_SERVE_FROM_SUB_PATH"] == "true"
     # A pinned version, not latest.
-    assert re.fullmatch(r"grafana/grafana:\d+\.\d+\.\d+", grafana["image"])
+    assert re.fullmatch(
+        r"grafana/grafana:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}", grafana["image"]
+    )
     for volume in grafana["volumes"]:
         assert volume.endswith(":ro"), volume
 

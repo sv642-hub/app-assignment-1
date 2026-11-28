@@ -48,7 +48,7 @@ LAYER_NAME = "model.layers.{layer}"
 
 MISSING_EXTRA = (
     "ModelLensExtractor needs the probe extra: "
-    "uv sync --extra dev --extra probe (see docs/PROBE.md)."
+    "uv sync --extra probe (see docs/PROBE.md)."
 )
 
 
@@ -173,6 +173,7 @@ class ModelLensExtractor:
         return ids
 
     def extract(self, prompt: str, reply: str) -> list[float]:
+        """Return the chosen layer's activations for the prompt and reply."""
         tokens = (self.to_batch or _to_batch)(self.token_ids(prompt, reply))
         if self.device is not None:
             tokens = tokens.to(self.device)

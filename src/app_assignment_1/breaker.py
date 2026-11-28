@@ -17,9 +17,12 @@ BreakerState = Literal["closed", "open", "half_open"]
 
 
 class CircuitBreaker:
+    """Skips Jev for a cool-off after repeated failures, then retries once."""
+
     def __init__(
         self, failures: int, cooldown_seconds: float, clock: Callable[[], float]
     ):
+        """Set the failure count that opens the breaker, the cool-off and the clock."""
         self.failure_limit = failures
         self.cooldown = cooldown_seconds
         self.clock = clock
@@ -28,6 +31,7 @@ class CircuitBreaker:
         self.trial_running = False
 
     def state(self) -> BreakerState:
+        """Return closed, open or half-open for the current time."""
         if self.opened_at is None:
             return "closed"
         if self.clock() - self.opened_at < self.cooldown:
@@ -46,6 +50,7 @@ class CircuitBreaker:
         return True
 
     def succeeded(self) -> None:
+        """Record a good Jev call: reset the failure count and close the breaker."""
         self.consecutive_failures = 0
         self.opened_at = None
         self.trial_running = False
@@ -53,6 +58,7 @@ class CircuitBreaker:
     def failed(self) -> None:
         # The count only resets on success, so a failed trial is always at or
         # past the limit and reopens the breaker.
+        """Record a failed Jev call and open the breaker after enough in a row."""
         self.consecutive_failures += 1
         if self.consecutive_failures >= self.failure_limit:
             self.opened_at = self.clock()

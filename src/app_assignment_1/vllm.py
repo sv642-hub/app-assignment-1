@@ -1,3 +1,5 @@
+"""The real Qwen client: one OpenAI-style chat call to vLLM."""
+
 import json
 
 import httpx
@@ -20,6 +22,7 @@ class BackendOutputError(Exception):
 
 
 def build_system_prompt(labels: LabelSet, cards: dict[str, PolicyCard]) -> str:
+    """Build the classification prompt from the labels and policy cards."""
     label_text = "\n".join(
         f"- {item.label}: {item.description}" for item in labels.items
     )
@@ -45,6 +48,8 @@ def build_system_prompt(labels: LabelSet, cards: dict[str, PolicyCard]) -> str:
 
 
 class VLLMBackend:
+    """A backend that asks a vLLM server for the intent and facts."""
+
     mocked = False
 
     def __init__(
@@ -55,6 +60,7 @@ class VLLMBackend:
         system_prompt: str,
         labels: LabelSet,
     ) -> None:
+        """Keep the HTTP client, model name and prompt."""
         self.config = config
         self.client = client
         self.model = model
@@ -63,6 +69,7 @@ class VLLMBackend:
         self.reply_schema["properties"]["intent"]["enum"] = sorted(labels.names)
 
     async def generate(self, message: str) -> BackendReply:
+        """Call vLLM with a JSON schema and return the validated reply."""
         try:
             response = await self.client.post(
                 "/v1/chat/completions",

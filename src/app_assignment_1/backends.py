@@ -42,7 +42,8 @@ class Backend(Protocol):
     # with mock Jev, or a real model with real Jev (see semantic.py).
     mocked: bool
 
-    async def generate(self, message: str) -> BackendReply: ...
+    async def generate(self, message: str) -> BackendReply:
+        """Answer one message with this backend's intent and reply."""
 
 
 class MockBackend:
@@ -56,6 +57,7 @@ class MockBackend:
         intents: list[IntentConfig],
         cards: dict[str, PolicyCard],
     ):
+        """Keep the backend config, the intents to match and the policy cards."""
         self.config = config
         self.intents = intents
         self.cards = cards
@@ -64,6 +66,7 @@ class MockBackend:
     async def generate(self, message: str) -> BackendReply:
         # The call runs on the config it started with, as a real call runs on
         # the version it was sent to, even if a release changes it meanwhile.
+        """Match the message to an intent and fill that intent's card."""
         config = self.config
         if self.rng.random() < config.hang_rate:
             # Simulated hang: no answer until the caller gives up.

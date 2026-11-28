@@ -37,6 +37,7 @@ class JevAnswer(StrictModel):
 
     @model_validator(mode="after")
     def check_answer(self) -> "JevAnswer":
+        """Check an answer has a label or an error, not both."""
         answer = (self.choice, self.confidence, self.probabilities)
         if self.error_type is not None:
             if any(value is not None for value in answer):
@@ -71,6 +72,7 @@ class JevResult(StrictModel):
 
     @model_validator(mode="after")
     def check_route_options(self) -> "JevResult":
+        """Check the route answer's options are the route labels."""
         probabilities = self.route.probabilities
         if probabilities is not None and set(probabilities) != ROUTE_OPTIONS:
             raise ValueError("The route answer chooses standard or complex")
@@ -100,6 +102,7 @@ class ReplyCheckResult(StrictModel):
 
     @model_validator(mode="after")
     def check_fit_options(self) -> "ReplyCheckResult":
+        """Check the fit answer's options are the fit labels."""
         probabilities = self.fit.probabilities
         if probabilities is not None and set(probabilities) != FIT_OPTIONS:
             raise ValueError("The fit answer chooses fits or does_not_fit")
@@ -118,7 +121,8 @@ class Router(Protocol):
     mocked: bool
     option_set_version: str
 
-    async def route(self, message: str) -> JevResult: ...
+    async def route(self, message: str) -> JevResult:
+        """Choose the route for a message."""
 
 
 class ReplyChecker(Protocol):
@@ -127,7 +131,8 @@ class ReplyChecker(Protocol):
 
     async def check_reply(
         self, message: str, reply: str, timeout: float | None = None
-    ) -> ReplyCheckResult: ...
+    ) -> ReplyCheckResult:
+        """Ask Jev whether the reply fits the message."""
 
 
 class MockJevRouter:
@@ -142,6 +147,7 @@ class MockJevRouter:
     mocked = True
 
     def __init__(self, path: Path):
+        """Load the intents the mock matches against."""
         self.intents = load_intents(path)
         self.intent_options = [item.intent for item in self.intents] + [UNKNOWN]
         # The mock chooses from its own intents, not the 78 labels.
@@ -154,6 +160,7 @@ class MockJevRouter:
     async def route(self, message: str) -> JevResult:
         # Draw only for a fault that is set, so runs without Jev faults keep
         # the same random sequence.
+        """Return the route and intent of the best keyword match."""
         faults = self.faults
         if faults.slow_rate and self.rng.random() < faults.slow_rate:
             # The gateway's Jev timeout cancels this wait.
@@ -248,8 +255,10 @@ class RuleRouter:
     """Fallback when Jev fails or times out: long messages go to the large model."""
 
     def __init__(self, complex_min_words: int):
+        """Set the word count from which a message goes to the large model."""
         self.complex_min_words = complex_min_words
 
     async def route(self, message: str) -> RoutingDecision:
+        """Route by message length: long messages go to complex."""
         long = len(words(message).split()) >= self.complex_min_words
         return RoutingDecision(route="complex" if long else "standard")

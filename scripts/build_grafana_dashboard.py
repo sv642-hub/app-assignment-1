@@ -28,6 +28,7 @@ _cursor = {"x": 0, "y": 0, "row_h": 0}
 
 
 def _place(w: int, h: int) -> dict:
+    """Return the next free grid position for a panel of this size."""
     c = _cursor
     if c["x"] + w > 24:
         c["x"], c["y"], c["row_h"] = 0, c["y"] + c["row_h"], 0
@@ -38,6 +39,7 @@ def _place(w: int, h: int) -> dict:
 
 
 def _add(panel: dict, w: int, h: int) -> None:
+    """Place a panel on the grid and add it to the dashboard."""
     global _next_id
     panel["id"] = _next_id
     _next_id += 1
@@ -46,6 +48,7 @@ def _add(panel: dict, w: int, h: int) -> None:
 
 
 def row(title: str) -> None:
+    """Start a new dashboard row with a title."""
     c = _cursor
     c["x"], c["y"], c["row_h"] = 0, c["y"] + c["row_h"], 0
     _add({"type": "row", "title": title, "collapsed": False, "panels": []}, 24, 1)
@@ -54,6 +57,7 @@ def row(title: str) -> None:
 
 
 def _prom(exprs: list[tuple[str, str]], instant: bool = False) -> list[dict]:
+    """Build Prometheus query targets from (expression, legend) pairs."""
     return [
         {
             "datasource": PROM,
@@ -68,6 +72,7 @@ def _prom(exprs: list[tuple[str, str]], instant: bool = False) -> list[dict]:
 
 
 def _sql(sql: str, fmt: str) -> list[dict]:
+    """Build a Postgres query target with the given result format."""
     return [
         {
             "datasource": PG,
@@ -81,6 +86,7 @@ def _sql(sql: str, fmt: str) -> list[dict]:
 
 
 def _steps(*pairs: tuple[str, float | None]) -> dict:
+    """Build threshold steps from (colour, start) pairs."""
     return {
         "mode": "absolute",
         "steps": [{"color": c, "value": v} for c, v in pairs],
@@ -91,6 +97,7 @@ def timeseries(
     title, exprs, unit="short", w=8, h=8, stack=False, desc="", minimum=None,
     maximum=None, thresholds=None, bars=False,
 ):  # fmt: skip
+    """Add a time-series panel for Prometheus queries."""
     custom = {
         "lineWidth": 1 if stack or bars else 2,
         "fillOpacity": 25 if stack or bars else 0,
@@ -129,6 +136,7 @@ def timeseries(
 
 def stat(title, expr, unit="short", w=4, h=4, desc="", thresholds=None,
          mappings=None, decimals=None):  # fmt: skip
+    """Add a single-value panel for one Prometheus query."""
     defaults: dict = {
         "unit": unit,
         "thresholds": thresholds or _steps(("blue", None)),
@@ -153,6 +161,7 @@ def stat(title, expr, unit="short", w=4, h=4, desc="", thresholds=None,
 
 
 def prom_table(title, expr, w=8, h=8, desc=""):
+    """Add a table panel for one Prometheus query."""
     _add(
         {
             "type": "table",
@@ -175,6 +184,7 @@ def prom_table(title, expr, w=8, h=8, desc=""):
 
 
 def sql_table(title, sql, w=12, h=8, desc=""):
+    """Add a table panel for a Postgres query."""
     _add(
         {
             "type": "table",
@@ -191,6 +201,7 @@ def sql_table(title, sql, w=12, h=8, desc=""):
 
 
 def sql_series(title, sql, w=12, h=8, desc="", stack=True):
+    """Add a time-series panel for a Postgres query."""
     _add(
         {
             "type": "timeseries",
@@ -217,6 +228,7 @@ def sql_series(title, sql, w=12, h=8, desc="", stack=True):
 
 
 def sql_bars(title, sql, w=12, h=8, desc=""):
+    """Add a bar-chart panel for a Postgres query."""
     _add(
         {
             "type": "barchart",
@@ -235,6 +247,7 @@ def sql_bars(title, sql, w=12, h=8, desc=""):
 
 
 def text(title, content, w=8, h=6):
+    """Add a text panel."""
     _add(
         {
             "type": "text",
@@ -282,10 +295,12 @@ def _zero(expr: str) -> str:
 
 
 def _answered(w: str, fn: str = "rate") -> str:
+    """Return the PromQL for requests answered over window `w`."""
     return _zero(f"sum({fn}(gateway_chat_requests_total[{w}]))")
 
 
 def _unavailable(w: str, fn: str = "rate") -> str:
+    """Return the PromQL for requests that got a 503 over window `w`."""
     return _zero(f"sum({fn}(gateway_chat_unavailable_total[{w}]))")
 
 
@@ -296,6 +311,7 @@ def _bad_share(w: str, fn: str = "rate") -> str:
 
 def build() -> dict:
     # --- Overview ---------------------------------------------------------
+    """Build the whole dashboard as a dict."""
     bad_share = _bad_share("$__range", "increase")
     row("Overview")
     stat("Gateway", 'up{job="gateway"}', w=6,
@@ -773,6 +789,7 @@ def build() -> dict:
 
 
 def main() -> int:
+    """Write the dashboard JSON, or with `--check` fail if it is stale."""
     text_out = json.dumps(build(), indent=2) + "\n"
     if "--check" in sys.argv:
         if not OUT.exists() or OUT.read_text() != text_out:

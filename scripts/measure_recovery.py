@@ -84,6 +84,8 @@ Transport = Callable[[str, str, Any, dict[str, str]], tuple[int, Any]]
 
 @dataclass(frozen=True)
 class Fault:
+    """One fault to inject: the model, the kind and the share of calls hit."""
+
     model: str
     kind: str  # a FaultKind: outage, bad_format, label_swap
     rate: float = 1.0
@@ -132,10 +134,12 @@ class Scenario:
 
     @property
     def faulted(self) -> set[str]:
+        """Return the names of the models this scenario breaks."""
         return {f.model for f in self.faults}
 
 
 def _one(name: str, title: str, model: str, kind: str, **more: Any) -> Scenario:
+    """Build a scenario that breaks one model."""
     traffic = TRAFFIC if model == SMALL else COMPLEX_TRAFFIC
     return Scenario(
         name, title, (Fault(model, kind),), target=model, traffic=traffic, **more
@@ -144,6 +148,7 @@ def _one(name: str, title: str, model: str, kind: str, **more: Any) -> Scenario:
 
 def _partial(name: str, title: str, kind: str, rate: float) -> Scenario:
     # 60 requests, 45 of them to the small model: more than two windows.
+    """Build a scenario where only a share of the small model's calls fail."""
     return Scenario(
         name,
         title,
@@ -226,15 +231,19 @@ GROUPS = sorted({name[0] for name in CATALOG})
 
 
 def scenario_for(name: str | Scenario) -> Scenario:
+    """Return the scenario with this name from the catalog."""
     if isinstance(name, Scenario):
         return name
     return CATALOG[ALIASES.get(name, name)]
 
 
 def http_transport(base: str, timeout: float = 60) -> Transport:
+    """Build a transport that sends requests over HTTP to `base`."""
+
     def send(
         method: str, path: str, payload: Any, headers: dict[str, str]
     ) -> tuple[int, Any]:
+        """Send one HTTP request and return the status and parsed body."""
         data = None if payload is None else json.dumps(payload).encode()
         request = Request(
             base + path,
@@ -289,11 +298,14 @@ class Reply:
 
     @property
     def disabled_small(self) -> bool:
+        """Return True if the reply shows the small model was disabled."""
         return self.disabled == SMALL
 
 
 @dataclass
 class Result:
+    """What one scenario measured."""
+
     scenario: str
     fault_at: float
     cleared_at: float | None = None
@@ -440,25 +452,32 @@ def _serves(reply: Reply, model: str) -> bool:
 
 
 def _small_serves(reply: Reply) -> bool:
+    """Return True if the small model answered this reply."""
     return _serves(reply, SMALL)
 
 
 def _median(replies: list[Reply]) -> float | None:
+    """Return the median latency of the replies, or None if empty."""
     values = [r.latency_ms for r in replies if r.latency_ms is not None]
     return round(statistics.median(values), 1) if values else None
 
 
 class Gateway:
+    """The gateway as the measurement sees it: health, faults and operator actions."""
+
     def __init__(self, send: Transport, token: str | None):
+        """Keep the transport and the operator token."""
         self.send = send
         self.token = token
         self.sent = 0
         self.traffic: tuple[Message, ...] = TRAFFIC
 
     def _operator(self) -> dict[str, str]:
+        """Return the operator authorization header."""
         return {"Authorization": f"Bearer {self.token}"} if self.token else {}
 
     def health(self) -> dict[str, Any]:
+        """Fetch `/v1/health`."""
         status, body = self.send("GET", "/v1/health", None, {})
         if status != 200:
             raise RuntimeError(f"/v1/health answered {status}")
@@ -470,6 +489,7 @@ class Gateway:
         return sorted(items, key=lambda i: i["at"])
 
     def fault(self, model: str, fault: str, rate: float = 1.0) -> None:
+        """Inject a fault into a model at a rate."""
         payload: dict[str, Any] = {"model": model, "fault": fault}
         if fault != "none" and rate != 1.0:
             payload["rate"] = rate
@@ -492,12 +512,15 @@ class Gateway:
                 self._operator_action(model, "enable")
 
     def hold(self, model: str) -> None:
+        """Disable a model and hold it off."""
         self._operator_action(model, "disable")
 
     def release(self, model: str) -> None:
+        """Enable a model again."""
         self._operator_action(model, "enable")
 
     def _operator_action(self, model: str, action: str) -> None:
+        """Send an operator enable or disable for a model."""
         status, body = self.send(
             "POST",
             f"/v1/operator/models/{model}/{action}",
@@ -559,9 +582,11 @@ class _Run:
     wall_start: datetime | None = None
 
     def now(self) -> float:
+        """Return the run's clock reading in seconds."""
         return round(self.clock() - self.start, 3)
 
     def new_interventions(self) -> list[dict[str, Any]]:
+        """Return interventions that appeared since the last call."""
         return [i for i in self.gateway.interventions() if _key(i) not in self.seen]
 
     def first_logged_disable(
@@ -579,6 +604,7 @@ class _Run:
         return None
 
     def tick(self, phase: str, traffic: tuple[Message, ...] | None = None) -> Reply:
+        """Send one message, record the reply and return it."""
         sent = self.clock()
         reply = self.gateway.chat(phase, self.start, self.clock, traffic)
         self.replies.append(reply)
@@ -587,10 +613,12 @@ class _Run:
         return reply
 
     def set_faults(self) -> None:
+        """Inject the scenario's faults."""
         for f in self.scenario.faults:
             self.gateway.fault(f.model, f.kind, f.rate)
 
     def clear_faults(self) -> None:
+        """Remove the scenario's faults."""
         for model in (SMALL, LARGE):
             self.gateway.fault(model, "none")
 
@@ -749,6 +777,7 @@ def _for_seconds(
     seconds: float,
     traffic: tuple[Message, ...] | None = None,
 ) -> None:
+    """Send traffic for `seconds`, tagging replies with `phase`."""
     began = run.now()
     while run.now() - began < seconds:
         run.tick(phase, traffic)
@@ -866,6 +895,7 @@ def _time(value: str) -> datetime:
 
 
 def _key(item: dict[str, Any]) -> tuple[Any, ...]:
+    """Return a tuple that identifies an intervention (time, model, action, reason)."""
     return (item.get("at"), item.get("backend"), item.get("action"), item.get("reason"))
 
 
@@ -891,6 +921,7 @@ def _wait_until_serving(
 
 
 def label_swap_ready(health: dict[str, Any]) -> bool:
+    """Return True if the gateway can run the label-swap scenario."""
     rules = health["semantic_rules"]
     return bool(rules["actions_enabled"]) and (
         rules["baseline_disagreement_rate"] is not None
@@ -898,6 +929,7 @@ def label_swap_ready(health: dict[str, Any]) -> bool:
 
 
 def print_report(results: list[Result], health: dict[str, Any]) -> None:
+    """Print the results as a table."""
     rules = health["controller"]
     semantic = health["semantic_rules"]
     print(
@@ -958,16 +990,19 @@ def print_report(results: list[Result], health: dict[str, Any]) -> None:
 
 
 def _cell(value: float | int | str | None) -> str:
+    """Format one table cell."""
     return "-" if value is None else str(value)
 
 
 def _stop_on_sigterm(signum: int, frame: Any) -> None:
     # Closing the terminal or a CI kill: stop as Ctrl-C does, so the
     # `finally` in run_scenario clears the fault.
+    """Turn SIGTERM into KeyboardInterrupt so the fault is cleared."""
     raise KeyboardInterrupt
 
 
 def write_out(path: str, health: dict[str, Any], results: list[Result]) -> None:
+    """Write the results to a JSON file."""
     with open(path, "w", encoding="utf-8") as f:
         json.dump(
             {
@@ -991,6 +1026,7 @@ def chosen(scenarios: list[str] | None, groups: list[str] | None) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the chosen scenarios and report what the controller did."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("base_url", nargs="?", default="http://127.0.0.1:8080")
     parser.add_argument(

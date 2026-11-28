@@ -1,0 +1,9 @@
+# Gitleaks config for the pre-commit hook and the CI history scan.
+title = "Smart AI Gateway"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Fake credentials used by tests that check secrets stay out of errors"
+regexes = ['''sk-Hunter2Key''']

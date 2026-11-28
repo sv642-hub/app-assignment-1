@@ -55,7 +55,7 @@ The gateway can already escalate a message from the small model to the large one
 ModelLens, torch and transformers are in the optional `probe` extra, pinned to one ModelLens commit. The gateway image and CI never install it. Install it on the GPU host, or on any machine with enough memory for Qwen3-1.7B:
 
 ```bash
-uv sync --extra dev --extra probe
+uv sync --extra probe
 ```
 
 ```python

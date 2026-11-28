@@ -72,7 +72,10 @@ ESCALATION_OUTCOMES = (
 
 
 class GatewayMetrics:
+    """The Prometheus metrics for one gateway, kept in its own registry."""
+
     def __init__(self, gateway: "Gateway"):
+        """Register the gateway's counters, histograms and state collector."""
         self.registry = CollectorRegistry()
         self.chat_requests = Counter(
             "gateway_chat_requests",
@@ -279,6 +282,7 @@ class GatewayMetrics:
         self.registry.register(_GatewayStateCollector(gateway))
 
     def render(self) -> bytes:
+        """Return the metrics in the Prometheus text format."""
         return generate_latest(self.registry)
 
 
@@ -286,9 +290,11 @@ class _GatewayStateCollector(Collector):
     """Reads usage and controller state at scrape time, so values match /v1/health."""
 
     def __init__(self, gateway: "Gateway"):
+        """Keep the gateway whose state is read at each scrape."""
         self.gateway = gateway
 
     def collect(self) -> Iterable[Metric]:
+        """Yield gauges for the gateway's current state."""
         gateway = self.gateway
         calls = {
             field: CounterMetricFamily(

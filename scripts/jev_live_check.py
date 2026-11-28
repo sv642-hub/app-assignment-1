@@ -65,10 +65,12 @@ STOP_AFTER_ERRORS = 5
 
 
 def word_band(words: int) -> str:
+    """Name the length band (by word count) a message falls in."""
     return BANDS[0] if words <= 10 else BANDS[1] if words <= 20 else BANDS[2]
 
 
 def file_digest(path: Path) -> str:
+    """Return the SHA-256 of a file."""
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
@@ -82,6 +84,7 @@ def read_train(path: Path) -> list[tuple[str, str]]:
 
 
 def banking77_intents(labels: LabelSet) -> list[str]:
+    """Return the 77 Banking77 labels, without `unknown`."""
     return [item.banking77_name for item in labels.items if item.banking77_name]
 
 
@@ -213,6 +216,7 @@ async def run_calls(
 def _response_fields(
     response: httpx.Response, options: dict[str, frozenset[str]]
 ) -> dict[str, Any]:
+    """Read the fields to record from a TypeSafe response, without message text."""
     try:
         payload = response.json()
     except ValueError:
@@ -256,6 +260,7 @@ def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
 
 
 def decimals(value: float) -> int:
+    """Return how many decimal places a number is written with."""
     exponent = Decimal(repr(value)).normalize().as_tuple().exponent
     return max(0, -exponent) if isinstance(exponent, int) else 0
 
@@ -274,6 +279,7 @@ def confidence_tolerances(options: int, step: float) -> tuple[float, float]:
 
 
 def _share(k: int, n: int) -> str:
+    """Format k of n as a count and a percentage."""
     if n == 0:
         return "no calls"
     low, high = wilson(k, n)
@@ -281,6 +287,7 @@ def _share(k: int, n: int) -> str:
 
 
 def _probabilities(answer: Any) -> dict[str, float] | None:
+    """Return an answer's label probabilities, or None if it has none."""
     if not isinstance(answer, dict):
         return None
     probabilities = answer.get("probabilities")
@@ -492,6 +499,7 @@ def summarize(
 
 
 def _load_sample(path: Path, train: Path) -> list[dict[str, Any]]:
+    """Load a sample file and check it against the training split."""
     sample = json.loads(path.read_text())
     if sample["sha256"] != file_digest(train):
         raise ValueError("The training CSV differs from the one the sample used")
@@ -500,6 +508,7 @@ def _load_sample(path: Path, train: Path) -> list[dict[str, Any]]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Run the `sample`, `run` or `summarize` command."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
     s = commands.add_parser("sample")
@@ -556,10 +565,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         with args.out.open("x", encoding="utf-8") as out:
 
             def write(record: dict[str, Any]) -> None:
+                """Append one call record to the output file."""
                 out.write(json.dumps(record) + "\n")
                 out.flush()
 
             async def go() -> int:
+                """Make all the calls and return the exit code."""
                 async with client:
                     return await run_calls(
                         client, settings.jev_model, labels, messages, write

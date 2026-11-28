@@ -55,6 +55,8 @@ CACHE_DIR = Path("data/cache")
 
 @dataclass(frozen=True)
 class Message:
+    """One evaluation message with its gold intent."""
+
     row: int  # 0-based data row in the dataset's source file
     text: str
     gold: str  # our label from config/labels.json
@@ -62,12 +64,15 @@ class Message:
 
 @dataclass(frozen=True)
 class Dataset:
+    """A named set of evaluation messages and where it came from."""
+
     name: str
     sha256: str  # of the source file, so a result file names exactly what it used
     messages: tuple[Message, ...]
 
 
 def sha256(data: bytes) -> str:
+    """Return the hex SHA-256 of `data`."""
     return hashlib.sha256(data).hexdigest()
 
 
@@ -213,6 +218,7 @@ def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
 
 
 def percentile(values: Sequence[float], q: float) -> float | None:
+    """Return the `q` percentile of `values`, or None if it is empty."""
     if not values:
         return None
     ordered = sorted(values)

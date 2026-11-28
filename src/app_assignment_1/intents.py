@@ -9,10 +9,12 @@ from app_assignment_1.schemas import IntentConfig
 
 
 def words(value: str) -> str:
+    """Lowercase the text and keep only letters, digits and single spaces."""
     return " ".join(re.findall(r"[a-z0-9]+", value.lower()))
 
 
 def load_intents(path: Path) -> list[IntentConfig]:
+    """Read the configured intents from a JSON file."""
     intents = TypeAdapter(list[IntentConfig]).validate_json(path.read_text())
     names = [item.intent for item in intents]
     if not names or len(names) != len(set(names)) or "unknown" in names:

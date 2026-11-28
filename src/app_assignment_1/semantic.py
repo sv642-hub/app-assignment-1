@@ -70,6 +70,7 @@ class SemanticMonitor:
     """
 
     def __init__(self, names: Iterable[BackendName], settings: Settings):
+        """Set up one agreement window per model."""
         names = list(names)
         self.windows: dict[BackendName, deque[Sample]] = {
             name: deque(maxlen=settings.semantic_window) for name in names
@@ -93,6 +94,7 @@ class SemanticMonitor:
         )
 
     def record(self, name: BackendName, sample: Sample, rerouted: bool) -> None:
+        """Add one comparison with Jev's intent to the model's window."""
         (self.rerouted if rerouted else self.windows)[name].append(sample)
         self.unsaved.append(
             MonitorSample(
@@ -142,9 +144,11 @@ class SemanticMonitor:
         self.not_compared[name] += 1
 
     def stats(self) -> list[SemanticStatus]:
+        """Return every model's semantic status."""
         return [self.status(name) for name in self.windows]
 
     def status(self, name: BackendName) -> SemanticStatus:
+        """Return one model's agreement, coverage and baseline status."""
         window = self.windows[name]
         agree, disagree = window.count("agree"), window.count("disagree")
         no_signal = window.count("no_signal")
