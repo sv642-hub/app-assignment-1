@@ -2,7 +2,7 @@
 title: "Smart AI Gateway: discussion"
 ---
 
-**Team:** Sebastian Villalobos, Verness Chin, Pavlos Baffes, Yanzhen Gao, Jackson Howes, Eric [surname to add]. DSAN 6700, final project.
+**Team:** Sebastian Villalobos, Verness Chin, Pavlos Baffes, Yanzhen Gao, Jackson Howes, Eric Kim. DSAN 6700, final project.
 
 ## User and problem
 
@@ -14,7 +14,7 @@ A message goes through Caddy to a FastAPI gateway, which calls Jev (or a rule ro
 
 ## Baseline, improvements and how success was measured
 
-**Baselines.** The comparison points are always-small, always-large and the oracle, which is the best any router over these two models could do (the large model only where it is right and the small one is wrong). They are computed by `scripts/run_eval.py` on the official Banking77 test set (3,080 messages), scoring accuracy and macro F1 with a 95% Wilson interval. [RESULTS TO ADD: accuracy and macro F1 for always-small, always-large, the gateway and the oracle, from the real-model runs. The runs are not in the repository yet, so no figure is stated here.] A full rerun on the real models found format failures of 0.8% for Qwen3-1.7B and 0.03% for Qwen3-4B, against the controller's threshold of 0.5.
+**Baselines.** The comparison points are always-small, always-large and the oracle, which is the best any router over these two models could do (the large model only where it is right and the small one is wrong). They are computed by `scripts/run_eval.py` on the official Banking77 test set (3,080 messages), scoring accuracy and macro F1 with a 95% Wilson interval. We do not have accuracy or macro F1 for the real models yet, so this report states none; the runner and the oracle calculation are built and tested, and on the mock models they only check that the runner works. A full rerun on the real models found format failures of 0.8% for Qwen3-1.7B and 0.03% for Qwen3-4B, against the controller's threshold of 0.5.
 
 **Improvements.** (1) *Replies from cards.* Real Qwen added facts or text not in the card; replies are now built from the card and uncarded facts are dropped. (2) *Hung-model detection.* One run took 186 s to disable a hung model; a 6 s per-call limit and a streak rule (3 timeouts) now target about 18 s (see below). (3) *Per-model rollback.* A new model release that fails while watched rolls itself back instead of disabling the model. (4) *Escalation and the reply check* (the large model answers when the small one is unsure; a second Jev call checks the reply) exist but are off by default, because their thresholds wait on development data. We state them as built, not as improvements, since we have not measured that they help.
 
