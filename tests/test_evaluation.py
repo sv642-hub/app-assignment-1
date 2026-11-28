@@ -12,6 +12,7 @@ from pydantic import TypeAdapter
 from app_assignment_1.config import Settings
 from app_assignment_1.evaluation import (
     Message,
+    confusions,
     gold_classes,
     oracle,
     parse_banking77,
@@ -561,3 +562,113 @@ def test_oracle_on_different_rows_is_a_clear_error(tmp_path):
                               "--limit", limit]) == 0  # fmt: skip
     with pytest.raises(SystemExit, match="only in the large results: run both"):
         run_eval.main(["oracle", str(out["small"]), str(out["large"])])
+
+
+def direct(row, gold, raw, errors=()):
+    """A direct-target item: the model said `raw`; a failed check delivers
+    unknown."""
+    return item(
+        row,
+        gold,
+        "unknown" if errors else raw,
+        raw_intent=raw,
+        format_ok=not errors,
+        format_errors=list(errors),
+    )
+
+
+DIRECT = [
+    direct(0, "card_arrival", "card_arrival"),
+    # Right intent, but the check failed: the customer saw the apology.
+    direct(1, "exchange_rate", "exchange_rate", ["unknown_policy_facts"]),
+    direct(2, "exchange_rate", "top_up_failed", ["missing_policy_facts"]),
+    direct(3, "top_up_failed", "unknown", ["unknown_policy_facts"]),
+    # A failed call: the runner writes no raw_intent for it.
+    {**item(4, "top_up_failed", None), "error": "X", "final": True},
+]
+
+
+def test_score_shows_what_the_format_check_cost():
+    result = score(DIRECT, LABELS, direct=True)
+    assert result["accuracy"] == 0.2
+    assert result["intent_accuracy_before_check"] == 0.4
+    assert result["lost_to_format_check"] == 1
+    assert result["format_errors_by_type"] == {
+        "unknown_policy_facts": 2,
+        "missing_policy_facts": 1,
+    }
+
+
+def test_gateway_results_have_no_before_check_accuracy():
+    items = [item(0, "card_arrival", "unknown", format_ok=False,
+                  format_errors=["unknown_policy_facts"])]  # fmt: skip
+    result = score(items, LABELS)
+    assert result["intent_accuracy_before_check"] is None
+    assert result["lost_to_format_check"] is None
+    assert result["format_errors_by_type"] == {"unknown_policy_facts": 1}
+
+
+def test_confusions_use_the_models_own_answer():
+    # Row 1 was right before the check, so it is not a confusion; the gateway
+    # target (no raw_intent) falls back to the delivered intent.
+    assert confusions(DIRECT, 10, direct=True) == [
+        ("exchange_rate", "top_up_failed", 1),
+        ("top_up_failed", "unknown", 1),
+        ("top_up_failed", None, 1),
+    ]
+    assert ("exchange_rate", "unknown", 2) in confusions(DIRECT, 10)
+
+
+FAILED = [
+    {**item(row, gold, None), "error": "BackendOutputError", "final": True}
+    for row, gold in enumerate(["card_arrival", "exchange_rate"])
+]
+
+
+def test_a_direct_run_where_every_call_failed_scores_zero():
+    # No row has raw_intent, so the target must come from the run header.
+    result = score(FAILED, LABELS, direct=True)
+    assert result["intent_accuracy_before_check"] == 0.0
+    assert result["lost_to_format_check"] == 0
+    assert confusions(FAILED, 10, direct=True) == [
+        ("card_arrival", None, 1),
+        ("exchange_rate", None, 1),
+    ]
+
+
+def test_score_command_takes_the_target_from_the_header(tmp_path, capsys):
+    run_eval = load_script()
+    out = tmp_path / "small.jsonl"
+    header = {"type": "run", "dataset": "fresh", "dataset_size": 2,
+              "target": "small", "model": "qwen3-1.7b", "sample": None}  # fmt: skip
+    lines = [header] + [{"type": "item", **i} for i in FAILED]
+    out.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    assert run_eval.main(["score", str(out)]) == 0
+    assert "intent accuracy before the format check 0.000" in capsys.readouterr().out
+    assert run_eval.main(["score", str(out), "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)[str(out)]["score"]
+    assert report["intent_accuracy_before_check"] == 0.0
+    assert report["lost_to_format_check"] == 0
+
+
+def test_score_command_prints_the_breakdown(tmp_path, capsys):
+    run_eval = load_script()
+    out = tmp_path / "small.jsonl"
+    header = {"type": "run", "dataset": "fresh", "dataset_size": 5,
+              "target": "small", "model": "qwen3-1.7b", "sample": None}  # fmt: skip
+    lines = [header] + [{"type": "item", **i} for i in DIRECT]
+    out.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    assert run_eval.main(["score", str(out), "--top", "2"]) == 0
+    text = capsys.readouterr().out
+    assert (
+        "format errors by type {'unknown_policy_facts': 2, 'missing_policy_facts': 1}"
+        in text
+    )
+    assert "intent accuracy before the format check 0.400" in text
+    assert "right intents lost to the check 1" in text
+    assert "lowest recall: exchange_rate 0.00, top_up_failed 0.00" in text
+    assert "exchange_rate -> top_up_failed  1" in text
+    assert run_eval.main(["score", str(out), "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)[str(out)]
+    assert report["score"]["lost_to_format_check"] == 1
+    assert len(report["confusions"]) == 3
