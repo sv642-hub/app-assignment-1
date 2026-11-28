@@ -336,7 +336,7 @@
             "uid": "prometheus"
           },
           "refId": "A",
-          "expr": "1 - (((sum(increase(gateway_chat_unavailable_total[$__range]))) or vector(0)) / (((sum(increase(gateway_chat_requests_total[$__range]))) or vector(0)) + ((sum(increase(gateway_chat_unavailable_total[$__range]))) or vector(0))))",
+          "expr": "1 - (((sum(increase(gateway_chat_unavailable_total[$__range]))) or vector(0)) / (((sum(increase(gateway_chat_unavailable_total[$__range]))) or vector(0)) + ((sum(increase(gateway_chat_requests_total[$__range]))) or vector(0))))",
           "legendFormat": "",
           "instant": true,
           "range": false
@@ -387,7 +387,7 @@
     {
       "type": "stat",
       "title": "Error budget left",
-      "description": "1 means no 503s; 0 means the 1% allowance is used up; below 0 means the target is missed. Over the selected time range, not 30 days.",
+      "description": "1 means no 503s, 0 means the allowance is used up, below 0 means the availability target is missed. Over the window given, not 30 days.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -399,7 +399,7 @@
             "uid": "prometheus"
           },
           "refId": "A",
-          "expr": "1 - (((sum(increase(gateway_chat_unavailable_total[$__range]))) or vector(0)) / (((sum(increase(gateway_chat_requests_total[$__range]))) or vector(0)) + ((sum(increase(gateway_chat_unavailable_total[$__range]))) or vector(0)))) / 0.010000000000000009",
+          "expr": "1 - ((((sum(increase(gateway_chat_unavailable_total[$__range]))) or vector(0)) / (((sum(increase(gateway_chat_unavailable_total[$__range]))) or vector(0)) + ((sum(increase(gateway_chat_requests_total[$__range]))) or vector(0)))) / 0.01)",
           "legendFormat": "",
           "instant": true,
           "range": false
@@ -704,7 +704,7 @@
     {
       "type": "timeseries",
       "title": "Request latency percentiles, all requests incl. 503s",
-      "description": "Not split by model. 503s are in this histogram.",
+      "description": "Request latency, not split by model. 503s are in this histogram. The p95 line is the one ChatLatencyHigh alerts on (10 s); it is not the answer latency the 2 s and 4 s targets use.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -738,7 +738,7 @@
             "uid": "prometheus"
           },
           "refId": "C",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(gateway_chat_latency_seconds_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate( gateway_chat_latency_seconds_bucket[$__rate_interval])))",
           "legendFormat": "p95",
           "instant": false,
           "range": true
@@ -1036,6 +1036,78 @@
         },
         {
           "type": "timeseries",
+          "title": "Escalation rate and large-model share",
+          "description": "Escalation is the router's decision: the complex route. The large-model share is who answered. They differ while a model is disabled or a call falls back to the other model.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "refId": "A",
+              "expr": "sum(rate(gateway_chat_requests_total{route=\"complex\"}[$__rate_interval])) / sum(rate(gateway_chat_requests_total[$__rate_interval]))",
+              "legendFormat": "escalation rate (routed complex)",
+              "instant": false,
+              "range": true
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "refId": "B",
+              "expr": "sum(rate(gateway_chat_requests_total{model=\"qwen3-4b\"}[$__rate_interval])) / sum(rate(gateway_chat_requests_total[$__rate_interval]))",
+              "legendFormat": "large-model share (answered by large)",
+              "instant": false,
+              "range": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "drawStyle": "line"
+              },
+              "min": 0,
+              "max": 1
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "id": 17,
+          "gridPos": {
+            "x": 16,
+            "y": 27,
+            "w": 8,
+            "h": 8
+          }
+        },
+        {
+          "type": "timeseries",
           "title": "503 rate (no backend could answer)",
           "description": "",
           "datasource": {
@@ -1086,10 +1158,10 @@
               "sort": "desc"
             }
           },
-          "id": 17,
+          "id": 18,
           "gridPos": {
-            "x": 16,
-            "y": 27,
+            "x": 0,
+            "y": 35,
             "w": 8,
             "h": 8
           }
@@ -1146,9 +1218,9 @@
               "sort": "desc"
             }
           },
-          "id": 18,
+          "id": 19,
           "gridPos": {
-            "x": 0,
+            "x": 8,
             "y": 35,
             "w": 8,
             "h": 8
@@ -1206,9 +1278,9 @@
               "sort": "desc"
             }
           },
-          "id": 19,
+          "id": 20,
           "gridPos": {
-            "x": 8,
+            "x": 16,
             "y": 35,
             "w": 8,
             "h": 8
@@ -1277,10 +1349,10 @@
               "sort": "desc"
             }
           },
-          "id": 20,
+          "id": 21,
           "gridPos": {
-            "x": 16,
-            "y": 35,
+            "x": 0,
+            "y": 43,
             "w": 8,
             "h": 8
           }
@@ -1337,9 +1409,9 @@
               "sort": "desc"
             }
           },
-          "id": 21,
+          "id": 22,
           "gridPos": {
-            "x": 0,
+            "x": 8,
             "y": 43,
             "w": 8,
             "h": 8
@@ -1419,9 +1491,9 @@
               "sort": "desc"
             }
           },
-          "id": 22,
+          "id": 23,
           "gridPos": {
-            "x": 8,
+            "x": 16,
             "y": 43,
             "w": 8,
             "h": 8
@@ -1456,7 +1528,7 @@
                 "uid": "prometheus"
               },
               "refId": "A",
-              "expr": "(((sum(rate(gateway_chat_unavailable_total[5m]))) or vector(0)) / (((sum(rate(gateway_chat_requests_total[5m]))) or vector(0)) + ((sum(rate(gateway_chat_unavailable_total[5m]))) or vector(0)))) / 0.010000000000000009",
+              "expr": "(((sum(rate(gateway_chat_unavailable_total[5m]))) or vector(0)) / (((sum(rate(gateway_chat_unavailable_total[5m]))) or vector(0)) + ((sum(rate(gateway_chat_requests_total[5m]))) or vector(0)))) / 0.01",
               "legendFormat": "5 minutes",
               "instant": false,
               "range": true
@@ -1467,7 +1539,7 @@
                 "uid": "prometheus"
               },
               "refId": "B",
-              "expr": "(((sum(rate(gateway_chat_unavailable_total[1h]))) or vector(0)) / (((sum(rate(gateway_chat_requests_total[1h]))) or vector(0)) + ((sum(rate(gateway_chat_unavailable_total[1h]))) or vector(0)))) / 0.010000000000000009",
+              "expr": "(((sum(rate(gateway_chat_unavailable_total[1h]))) or vector(0)) / (((sum(rate(gateway_chat_unavailable_total[1h]))) or vector(0)) + ((sum(rate(gateway_chat_requests_total[1h]))) or vector(0)))) / 0.01",
               "legendFormat": "1 hour",
               "instant": false,
               "range": true
@@ -1478,7 +1550,7 @@
                 "uid": "prometheus"
               },
               "refId": "C",
-              "expr": "(((sum(rate(gateway_chat_unavailable_total[6h]))) or vector(0)) / (((sum(rate(gateway_chat_requests_total[6h]))) or vector(0)) + ((sum(rate(gateway_chat_unavailable_total[6h]))) or vector(0)))) / 0.010000000000000009",
+              "expr": "(((sum(rate(gateway_chat_unavailable_total[6h]))) or vector(0)) / (((sum(rate(gateway_chat_unavailable_total[6h]))) or vector(0)) + ((sum(rate(gateway_chat_requests_total[6h]))) or vector(0)))) / 0.01",
               "legendFormat": "6 hours",
               "instant": false,
               "range": true
@@ -1531,7 +1603,7 @@
               "sort": "desc"
             }
           },
-          "id": 24,
+          "id": 25,
           "gridPos": {
             "x": 0,
             "y": 52,
@@ -1542,7 +1614,7 @@
         {
           "type": "timeseries",
           "title": "p95 latency vs target (small 2 s, large 4 s)",
-          "description": "The line is the larger target. The targets are proposals picked from medians, not measured p95s.",
+          "description": "Answer latency p95: answered requests only, 503s left out. The line is the larger target. The targets are proposals picked from medians, not measured p95s.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1554,7 +1626,7 @@
                 "uid": "prometheus"
               },
               "refId": "A",
-              "expr": "histogram_quantile(0.95, sum by (le) (rate(gateway_chat_answer_latency_seconds_bucket{model=\"qwen3-1.7b\"}[$__rate_interval])))",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate( gateway_chat_answer_latency_seconds_bucket{model=\"qwen3-1.7b\"}[$__rate_interval])))",
               "legendFormat": "qwen3-1.7b p95 (target 2 s)",
               "instant": false,
               "range": true
@@ -1565,7 +1637,7 @@
                 "uid": "prometheus"
               },
               "refId": "B",
-              "expr": "histogram_quantile(0.95, sum by (le) (rate(gateway_chat_answer_latency_seconds_bucket{model=\"qwen3-4b\"}[$__rate_interval])))",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate( gateway_chat_answer_latency_seconds_bucket{model=\"qwen3-4b\"}[$__rate_interval])))",
               "legendFormat": "qwen3-4b p95 (target 4 s)",
               "instant": false,
               "range": true
@@ -1598,7 +1670,7 @@
                   },
                   {
                     "color": "red",
-                    "value": 4
+                    "value": 4.0
                   }
                 ]
               }
@@ -1618,7 +1690,7 @@
               "sort": "desc"
             }
           },
-          "id": 25,
+          "id": 26,
           "gridPos": {
             "x": 8,
             "y": 52,
@@ -1690,7 +1762,7 @@
               "sort": "desc"
             }
           },
-          "id": 26,
+          "id": 27,
           "gridPos": {
             "x": 16,
             "y": 52,
@@ -1705,7 +1777,7 @@
             "mode": "markdown",
             "content": "**Detect a faulty model in under 30 s.** There is no live metric for this yet. The controller's own timing is in the *Time models stayed disabled* table below (from the stored interventions), and `scripts/measure_recovery.py` (PR #104) measures detection and recovery per fault. The estimated real-Qwen hang time is 186 s (5 requests at about 31 s each, not measured), which would miss this target."
           },
-          "id": 27,
+          "id": 28,
           "gridPos": {
             "x": 0,
             "y": 60,
@@ -1714,7 +1786,7 @@
           }
         }
       ],
-      "id": 23,
+      "id": 24,
       "gridPos": {
         "x": 0,
         "y": 51,
@@ -1730,7 +1802,7 @@
         {
           "type": "timeseries",
           "title": "Format check pass rate by model",
-          "description": "",
+          "description": "Share of answered requests, per model, whose reply passed the format check. 1 minus this is the format-failure share of requests.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1780,7 +1852,7 @@
               "sort": "desc"
             }
           },
-          "id": 29,
+          "id": 30,
           "gridPos": {
             "x": 0,
             "y": 65,
@@ -1841,7 +1913,7 @@
               "sort": "desc"
             }
           },
-          "id": 30,
+          "id": 31,
           "gridPos": {
             "x": 8,
             "y": 65,
@@ -1913,7 +1985,7 @@
               "sort": "desc"
             }
           },
-          "id": 31,
+          "id": 32,
           "gridPos": {
             "x": 16,
             "y": 65,
@@ -1973,7 +2045,7 @@
               "sort": "desc"
             }
           },
-          "id": 32,
+          "id": 33,
           "gridPos": {
             "x": 0,
             "y": 73,
@@ -2033,7 +2105,7 @@
               "sort": "desc"
             }
           },
-          "id": 33,
+          "id": 34,
           "gridPos": {
             "x": 8,
             "y": 73,
@@ -2115,7 +2187,7 @@
               "sort": "desc"
             }
           },
-          "id": 34,
+          "id": 35,
           "gridPos": {
             "x": 16,
             "y": 73,
@@ -2124,7 +2196,7 @@
           }
         }
       ],
-      "id": 28,
+      "id": 29,
       "gridPos": {
         "x": 0,
         "y": 64,
@@ -2187,7 +2259,7 @@
               "showLegend": false
             }
           },
-          "id": 36,
+          "id": 37,
           "gridPos": {
             "x": 0,
             "y": 82,
@@ -2258,7 +2330,7 @@
               "sort": "desc"
             }
           },
-          "id": 37,
+          "id": 38,
           "gridPos": {
             "x": 12,
             "y": 82,
@@ -2318,7 +2390,7 @@
               "sort": "desc"
             }
           },
-          "id": 38,
+          "id": 39,
           "gridPos": {
             "x": 0,
             "y": 88,
@@ -2377,7 +2449,7 @@
               ]
             }
           },
-          "id": 39,
+          "id": 40,
           "gridPos": {
             "x": 12,
             "y": 88,
@@ -2428,7 +2500,7 @@
               }
             }
           ],
-          "id": 40,
+          "id": 41,
           "gridPos": {
             "x": 15,
             "y": 88,
@@ -2464,7 +2536,7 @@
           "options": {
             "showHeader": true
           },
-          "id": 41,
+          "id": 42,
           "gridPos": {
             "x": 0,
             "y": 95,
@@ -2500,7 +2572,7 @@
           "options": {
             "showHeader": true
           },
-          "id": 42,
+          "id": 43,
           "gridPos": {
             "x": 12,
             "y": 95,
@@ -2509,7 +2581,7 @@
           }
         }
       ],
-      "id": 35,
+      "id": 36,
       "gridPos": {
         "x": 0,
         "y": 81,
@@ -2607,7 +2679,7 @@
               "sort": "desc"
             }
           },
-          "id": 44,
+          "id": 45,
           "gridPos": {
             "x": 0,
             "y": 104,
@@ -2667,7 +2739,7 @@
               "sort": "desc"
             }
           },
-          "id": 45,
+          "id": 46,
           "gridPos": {
             "x": 8,
             "y": 104,
@@ -2727,10 +2799,87 @@
               "sort": "desc"
             }
           },
-          "id": 46,
+          "id": 47,
           "gridPos": {
             "x": 16,
             "y": 104,
+            "w": 8,
+            "h": 8
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Jev skipped share (rule router used)",
+          "description": "Share of requests routed by the rule router because the Jev call failed, its route answer was invalid, or the circuit breaker was open.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "refId": "A",
+              "expr": "sum(rate(gateway_jev_fallbacks_total[$__rate_interval])) / (((sum(rate(gateway_chat_requests_total[$__rate_interval]))) or vector(0)) + ((sum(rate(gateway_chat_unavailable_total[$__rate_interval]))) or vector(0)))",
+              "legendFormat": "share of requests",
+              "instant": false,
+              "range": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "drawStyle": "line",
+                "thresholdsStyle": {
+                  "mode": "line"
+                }
+              },
+              "min": 0,
+              "max": 1,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 0.5
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "id": 48,
+          "gridPos": {
+            "x": 0,
+            "y": 112,
             "w": 8,
             "h": 8
           }
@@ -2782,9 +2931,9 @@
               ]
             }
           },
-          "id": 47,
+          "id": 49,
           "gridPos": {
-            "x": 0,
+            "x": 8,
             "y": 112,
             "w": 4,
             "h": 4
@@ -2837,9 +2986,64 @@
               ]
             }
           },
-          "id": 48,
+          "id": 50,
           "gridPos": {
-            "x": 4,
+            "x": 12,
+            "y": 112,
+            "w": 4,
+            "h": 4
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Jev est. cost per request (range)",
+          "description": "Estimated Jev cost per chat request (answered plus 503; Jev is called before either). Jev only: the Qwen models run on our own GPUs and no per-request Qwen cost is measured.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "refId": "A",
+              "expr": "(sum(increase(gateway_jev_estimated_cost_usd_total[$__range]))) / (((sum(increase(gateway_chat_unavailable_total[$__range]))) or vector(0)) + ((sum(increase(gateway_chat_requests_total[$__range]))) or vector(0)))",
+              "legendFormat": "",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "currencyUSD",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "blue",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 6
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            }
+          },
+          "id": 51,
+          "gridPos": {
+            "x": 16,
             "y": 112,
             "w": 4,
             "h": 4
@@ -2885,10 +3089,10 @@
               "placement": "bottom"
             }
           },
-          "id": 49,
+          "id": 52,
           "gridPos": {
-            "x": 8,
-            "y": 112,
+            "x": 0,
+            "y": 120,
             "w": 12,
             "h": 8
           }
@@ -2929,9 +3133,9 @@
               "displayMode": "list"
             }
           },
-          "id": 50,
+          "id": 53,
           "gridPos": {
-            "x": 0,
+            "x": 12,
             "y": 120,
             "w": 12,
             "h": 8
@@ -2965,10 +3169,10 @@
           "options": {
             "showHeader": true
           },
-          "id": 51,
+          "id": 54,
           "gridPos": {
-            "x": 12,
-            "y": 120,
+            "x": 0,
+            "y": 128,
             "w": 8,
             "h": 8
           }
@@ -2980,16 +3184,16 @@
             "mode": "markdown",
             "content": "The gateway makes **one** Jev call per request, before the model answers. It returns the route and the intent together. There is no second Jev call that scores the model's reply.\n\nWhat is compared today is the model's intent label against Jev's intent answer: see *Qwen vs Jev intent agreement* above. The standard-first vs complex-first comparison needs the order-swap run (PRs #89, #90)."
           },
-          "id": 52,
+          "id": 55,
           "gridPos": {
             "x": 0,
-            "y": 128,
+            "y": 136,
             "w": 24,
             "h": 4
           }
         }
       ],
-      "id": 43,
+      "id": 44,
       "gridPos": {
         "x": 0,
         "y": 103,
@@ -3054,10 +3258,10 @@
               "sort": "desc"
             }
           },
-          "id": 54,
+          "id": 57,
           "gridPos": {
             "x": 0,
-            "y": 133,
+            "y": 141,
             "w": 8,
             "h": 8
           }
@@ -3114,10 +3318,10 @@
               "sort": "desc"
             }
           },
-          "id": 55,
+          "id": 58,
           "gridPos": {
             "x": 8,
-            "y": 133,
+            "y": 141,
             "w": 8,
             "h": 8
           }
@@ -3129,19 +3333,19 @@
             "mode": "markdown",
             "content": "Only port 8080 is published. Prometheus, Postgres and the gateway stay on the Compose network. Grafana is reached through the proxy at `/grafana`, as an anonymous **viewer**: no login, no editing. Postgres panels use a read-only database user."
           },
-          "id": 56,
+          "id": 59,
           "gridPos": {
             "x": 16,
-            "y": 133,
+            "y": 141,
             "w": 8,
             "h": 8
           }
         }
       ],
-      "id": 53,
+      "id": 56,
       "gridPos": {
         "x": 0,
-        "y": 132,
+        "y": 140,
         "w": 24,
         "h": 1
       }

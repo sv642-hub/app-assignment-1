@@ -225,10 +225,10 @@ metrics:
     promql: >-
       sum($fn(gateway_jev_fallbacks_total[$window]))
         / (((sum($fn(gateway_chat_requests_total[$window]))) or vector(0))
-           + sum($fn(gateway_chat_unavailable_total[$window])))
+           + ((sum($fn(gateway_chat_unavailable_total[$window]))) or vector(0)))
     target: jev_skipped_alert
     direction: max
-    used_by: [alert:JevMostlySkipped]
+    used_by: [alert:JevMostlySkipped, "grafana:Jev skipped share (rule router used)"]
 
   escalation_rate:
     description: >-
@@ -242,7 +242,7 @@ metrics:
     promql: >-
       sum(rate(gateway_chat_requests_total{route="complex"}[$window]))
         / sum(rate(gateway_chat_requests_total[$window]))
-    used_by: []
+    used_by: ["grafana:Escalation rate and large-model share"]
 
   large_model_share:
     description: >-
@@ -256,7 +256,7 @@ metrics:
     promql: >-
       sum(rate(gateway_chat_requests_total{model="$large_model"}[$window]))
         / sum(rate(gateway_chat_requests_total[$window]))
-    used_by: []
+    used_by: ["grafana:Escalation rate and large-model share"]
 
   jev_estimated_cost_usd:
     description: >-
@@ -283,7 +283,7 @@ metrics:
         / (((sum(increase(gateway_chat_unavailable_total[$window]))) or vector(0))
            + ((sum(increase(gateway_chat_requests_total[$window]))) or vector(0)))
     config: [jev_input_price_per_million_usd]
-    used_by: []
+    used_by: ["grafana:Jev est. cost per request (range)"]
 
   time_to_disable_seconds:
     description: >-

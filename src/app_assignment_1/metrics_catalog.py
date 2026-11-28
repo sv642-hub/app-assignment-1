@@ -144,13 +144,15 @@ class Catalog(BaseModel):
             raise ValueError(f"{name} is offline: it has no PromQL")
         if metric.per_model and model is None:
             raise ValueError(f"{name} needs model='small' or 'large'")
-        text = metric.promql
+        values = self._values(model, metric)
+        values.update(fn=fn, window=window)
+        # Fill this entry's own placeholders first: an inserted entry is
+        # already filled, and its window may hold a `$` of its own.
+        text = Template(metric.promql).substitute(values)
         for ref in REF.findall(text):
             inner = self.render(ref, window, fn, model)
             text = text.replace(f"<<{ref}>>", f"({inner})")
-        values = self._values(model, metric)
-        values.update(fn=fn, window=window)
-        return " ".join(Template(text).substitute(values).split())
+        return " ".join(text.split())
 
 
 def _num(value: float) -> str:

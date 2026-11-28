@@ -257,6 +257,46 @@ def test_every_panel_a_metric_names_exists_on_the_dashboard():
                 assert what in titles, f"{name}: no panel {what!r}"
 
 
+def dashboard_exprs() -> dict[str, str]:
+    data = json.loads((ROOT / "grafana/dashboards/smart-gateway.json").read_text())
+    out: dict[str, str] = {}
+    for panel in data["panels"] + [
+        inner for outer in data["panels"] for inner in outer.get("panels", [])
+    ]:
+        out[panel["title"]] = " ".join(
+            t.get("expr", "") for t in panel.get("targets", [])
+        )
+    return out
+
+
+def test_a_panel_a_metric_names_draws_the_catalogs_formula():
+    # The dashboard is generated from the catalog, so a panel listed under a
+    # metric must contain that metric's PromQL for some window and function.
+    exprs = dashboard_exprs()
+    windows = ("$__rate_interval", "$__range", "$__interval", "5m", "1h", "6h")
+    for name, metric in CATALOG.metrics.items():
+        wanted = [
+            r.partition(":")[2] for r in metric.used_by if r.startswith("grafana:")
+        ]
+        if not wanted or metric.promql is None:
+            continue
+        forms = {
+            CATALOG.render(name, window, fn, model)  # type: ignore[arg-type]
+            for window in windows
+            for fn in ("rate", "increase")
+            for model in (SIZES if metric.per_model else (None,))
+        }
+        for title in wanted:
+            assert any(form in exprs[title] for form in forms), f"{title!r}: not {name}"
+
+
+def test_the_new_panels_exist():
+    titles = dashboard_titles()
+    assert "Escalation rate and large-model share" in titles
+    assert "Jev est. cost per request (range)" in titles
+    assert "Jev skipped share (rule router used)" in titles
+
+
 # --- the alerts ---------------------------------------------------------------
 
 
