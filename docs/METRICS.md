@@ -242,5 +242,5 @@ Seconds from a fault starting to the controller disabling the model. Measured pe
 - **Unit:** seconds; **kind:** duration
 - **Status:** offline: measured by a script, not scraped
 - **Target:** at most `detect_faulty_model_seconds`
-- **Used by:** script:scripts/measure_recovery.py; grafana:Time models stayed disabled
+- **Used by:** script:scripts/measure_recovery.py
 - **Measured by:** `scripts/measure_recovery.py#detect_seconds`
