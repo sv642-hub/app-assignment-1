@@ -136,6 +136,9 @@ class BackendConfig(StrictModel):
     # purpose. The reply passes the format check; only the semantic monitor
     # sees it.
     label_swap_rate: float = Field(default=0, ge=0, le=1)
+    # Share of mock calls that never answer, to simulate a hung model. The call
+    # waits until the gateway cuts it off.
+    hang_rate: float = Field(default=0, ge=0, le=1)
     # Share of mock calls held for slow_seconds more on purpose, to exercise
     # the request deadline and the time kept back for the other model.
     slow_rate: float = Field(default=0, ge=0, le=1)
@@ -146,7 +149,9 @@ class BackendConfig(StrictModel):
     bad_prompt_rate: float = Field(default=0, ge=0, le=1)
 
 
-FaultKind = Literal["none", "outage", "bad_format", "label_swap", "slow", "bad_prompt"]
+FaultKind = Literal[
+    "none", "outage", "bad_format", "label_swap", "hang", "slow", "bad_prompt"
+]
 
 
 class FaultRequest(StrictModel):
@@ -375,6 +380,16 @@ class JevUsage(StrictModel):
     output_tokens: int = Field(ge=0)
     # Input tokens times APP_JEV_INPUT_PRICE_PER_MILLION_USD; Jev does not
     # charge for output tokens. None while the price is unset.
+    estimated_cost_usd: float | None = Field(default=None, ge=0)
+
+
+class ReplyCheckUsage(StrictModel):
+    """Second Jev calls (reply checks) that returned an answer since start."""
+
+    enabled: bool
+    answered_calls: int = Field(ge=0)
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
     estimated_cost_usd: float | None = Field(default=None, ge=0)
 
 

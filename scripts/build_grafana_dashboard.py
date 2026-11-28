@@ -600,6 +600,34 @@ def build() -> dict:
     prom_table("Release now (per model)", "gateway_model_release == 1",
                w=9, h=7, desc="Version each model serves and whether the "
                               "release is stable, watching or rolled back.")  # fmt: skip
+    stat("Slowest time to detect a fault",
+         "histogram_quantile(1, sum by (le) (increase("
+         "gateway_fault_detection_seconds_bucket[$__range])))",
+         unit="s", w=4, h=7, decimals=1,
+         thresholds=_steps(("green", None), ("orange", 30)),
+         desc="Seconds from a model's first failure to the controller "
+              "disabling it, the worst in the time range (upper bucket "
+              "bound; no data when nothing was disabled). Orange above the "
+              "30 s draft target. Semantic disables are not counted.")  # fmt: skip
+    stat("Median time to detect a fault",
+         "histogram_quantile(0.5, sum by (le) (increase("
+         "gateway_fault_detection_seconds_bucket[$__range])))",
+         unit="s", w=4, h=7, decimals=1,
+         thresholds=_steps(("green", None), ("orange", 30)))  # fmt: skip
+    prom_table("Time to detect a fault (per model and reason)",
+               "sum by (model, reason) (increase(gateway_fault_detection_seconds_count"
+               "[$__range])) > 0",
+               w=8, h=7,
+               desc="Faults the controller disabled a model for in the time "
+                    "range, by reason: timeout (a hang), call_error, "
+                    "format_failure or failure. Bucket detail is in the "
+                    "gateway_fault_detection_seconds histogram.")  # fmt: skip
+    timeseries("Time to detect a fault (average, per model and reason)",
+               [("sum by (model, reason) (increase("
+                 "gateway_fault_detection_seconds_sum[$__interval])) / "
+                 "sum by (model, reason) (increase("
+                 "gateway_fault_detection_seconds_count[$__interval]))",
+                 "{{model}} {{reason}}")], unit="s", minimum=0, w=8, h=7)  # fmt: skip
     sql_table(
         "Time models stayed disabled",
         "WITH e AS (SELECT at, backend, action, "
@@ -672,6 +700,77 @@ def build() -> dict:
         "question = 'route' AND status = 'ok' AND option_order IS NOT NULL "
         "GROUP BY 1, 2 ORDER BY 1, 2", w=12,
     )  # fmt: skip
+    # --- 1st vs 2nd Jev -----------------------------------------------------
+    row("1st vs 2nd Jev (reply check)")
+    stat("2nd Jev check", "max(gateway_reply_check_enabled)", w=4, h=4,
+         mappings=[{"type": "value", "options": {
+             "0": {"text": "OFF", "color": "gray"},
+             "1": {"text": "ON", "color": "green"}}}],
+         desc="Off by default: APP_JEV_REPLY_CHECK_ENABLED. When on, each "
+              "answered request costs one extra Jev call, made after the reply "
+              "is built, so customers never wait for it.")  # fmt: skip
+    stat("2nd Jev calls (range)",
+         "sum(increase(gateway_reply_check_latency_seconds_count[$__range]))",
+         w=4, h=4, decimals=0)  # fmt: skip
+    stat("2nd Jev tokens (range)",
+         "sum(increase(gateway_reply_check_tokens_total[$__range]))",
+         w=4, h=4, decimals=0, desc="Mock Jev reports 0 tokens.")  # fmt: skip
+    stat("2nd Jev est. cost (range)",
+         "sum(increase(gateway_reply_check_estimated_cost_usd_total[$__range]))",
+         unit="currencyUSD", w=4, h=4, decimals=4,
+         desc="Empty while APP_JEV_INPUT_PRICE_PER_MILLION_USD is unset. This "
+              "is the extra cost of turning the check on.")  # fmt: skip
+    timeseries("1st vs 2nd Jev agreement",
+               [(f'sum by (question) (rate(gateway_reply_check_agreement_total{{'
+                 f'result="agree"}}[{R}])) / '
+                 f'sum by (question) (rate(gateway_reply_check_agreement_total{{'
+                 f'result=~"agree|disagree"}}[{R}]))', "{{question}}")],
+               unit="percentunit", minimum=0, maximum=1,
+               desc="The first Jev call sees only the customer's message. The "
+                    "second sees the message and the reply. Share of requests "
+                    "where both picked the same route or intent. Requests "
+                    "where either call gave no valid answer are left out "
+                    "(see no signal below).")  # fmt: skip
+    timeseries("Reply fit rate",
+               [(f'sum(rate(gateway_reply_check_fit_total{{result="fits"}}'
+                 f'[{R}])) / sum(rate(gateway_reply_check_fit_total{{'
+                 f'result=~"fits|does_not_fit"}}[{R}]))', "fits")],
+               unit="percentunit", minimum=0, maximum=1,
+               desc="Share of checked replies the second Jev call judged to "
+                    "answer the customer's message.")  # fmt: skip
+    timeseries("Agreement results (route and intent)",
+               [(f"sum by (question, result) (rate("
+                 f"gateway_reply_check_agreement_total[{R}]))",
+                 "{{question}} {{result}}")], unit="ops", stack=True,
+               minimum=0)  # fmt: skip
+    timeseries("2nd Jev call latency percentiles",
+               [(f'histogram_quantile({q}, sum by (le) (rate('
+                 f'gateway_reply_check_latency_seconds_bucket{{outcome="ok"}}'
+                 f'[{R}])))', name)
+                for q, name in ((0.5, "p50"), (0.95, "p95"))],
+               unit="s", minimum=0,
+               desc="Not on the customer's path: the check runs after the "
+                    "reply is built.")  # fmt: skip
+    timeseries("2nd Jev calls by outcome and skips",
+               [(f"sum by (outcome) (rate("
+                 f"gateway_reply_check_latency_seconds_count[{R}]))",
+                 "{{outcome}}"),
+                (f"sum by (reason) (rate(gateway_reply_check_skipped_total[{R}]))",
+                 "skipped: {{reason}}")], unit="ops", stack=True, minimum=0,
+               desc="Skipped: no first Jev answer, the reply was the format "
+                    "fallback, the Jev circuit breaker was not closed, or too "
+                    "many checks were already running.")  # fmt: skip
+    sql_table(
+        "Where the 1st and 2nd Jev intent disagree",
+        "SELECT intent_first AS \"first (message only)\", intent_second AS "
+        "\"second (message + reply)\", count(*) AS requests FROM jev_reply_checks "
+        "WHERE $__timeFilter(finished_at) AND intent_agrees = false "
+        "GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 20",
+        w=12,
+        desc="Most common intent pairs where the second call picked something "
+             "else. Empty while the check is off.",
+    )  # fmt: skip
+
     # --- Security -----------------------------------------------------------
     row("Security")
     timeseries("Operator route auth failures",

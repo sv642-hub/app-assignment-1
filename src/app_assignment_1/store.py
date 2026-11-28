@@ -20,7 +20,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 from app_assignment_1.config import PUBLIC_DATABASE_PASSWORD, Settings
-from app_assignment_1.records import JevAssessment
+from app_assignment_1.records import JevAssessment, ReplyCheck
 from app_assignment_1.schemas import (
     KEPT_REASON_MARKER,
     ChatResponse,
@@ -55,6 +55,11 @@ class Store(Protocol):
         """Keep a completed request and its Jev assessments in one write; drop
         the oldest request beyond the retention limit. Assessments are kept
         for the monitor even after their request is dropped."""
+        ...
+
+    async def save_reply_check(self, check: ReplyCheck) -> None:
+        """Keep the second Jev call's record. Saved after the request, on its
+        own, so a failure here never touches the request."""
         ...
 
     async def get_request(self, request_id: UUID) -> ChatResponse | None: ...
@@ -124,6 +129,7 @@ class MemoryStore:
         self.interventions: deque[Intervention] = deque(maxlen=intervention_limit)
         # Two per request, so this keeps about as many calls as requests.
         self.jev_assessments: deque[JevAssessment] = deque(maxlen=2 * limit)
+        self.reply_checks: deque[ReplyCheck] = deque(maxlen=limit)
         # About two per request: a failure sample and a semantic one.
         self.monitor_samples: deque[MonitorSample] = deque(maxlen=4 * limit)
         self.monitor_sample_ids: set[UUID] = set()
@@ -149,6 +155,9 @@ class MemoryStore:
         self.jev_assessments.extend(jev)
         while len(self.requests) > self.limit:
             self.requests.popitem(last=False)
+
+    async def save_reply_check(self, check: ReplyCheck) -> None:
+        self.reply_checks.append(check)
 
     async def get_request(self, request_id: UUID) -> ChatResponse | None:
         return self.requests.get(request_id)
@@ -326,6 +335,38 @@ class PostgresStore:
                     """,
                     (self.limit,),
                 )
+
+    async def save_reply_check(self, check: ReplyCheck) -> None:
+        async with self.pool.connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO jev_reply_checks
+                    (request_id, call_id, status, finished_at, mocked,
+                     option_set_version, latency_ms, error_type, route_first,
+                     route_second, intent_first, intent_second, reply_fit,
+                     route_agrees, intent_agrees, record)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s)
+                """,
+                (
+                    check.request_id,
+                    check.call_id,
+                    check.status,
+                    check.finished_at,
+                    check.mocked,
+                    check.option_set_version,
+                    check.latency_ms,
+                    check.error_type,
+                    check.route_first,
+                    check.route_second,
+                    check.intent_first,
+                    check.intent_second,
+                    check.reply_fit,
+                    check.route_agrees,
+                    check.intent_agrees,
+                    Jsonb(check.model_dump(mode="json")),
+                ),
+            )
 
     async def get_request(self, request_id: UUID) -> ChatResponse | None:
         async with self.pool.connection() as conn:
@@ -551,7 +592,8 @@ async def migrate(conn: AsyncConnection) -> list[str]:
 
     Each file runs once, in order, inside one transaction with the version row,
     under an advisory lock so two processes cannot apply the same file.
-    Returns the names of the files applied.
+    Returns the names of the files applied. A version recorded under another
+    file name stops startup.
     """
     applied_now = []
     async with conn.transaction():
@@ -565,11 +607,19 @@ async def migrate(conn: AsyncConnection) -> list[str]:
             )
             """
         )
-        cur = await conn.execute("SELECT version FROM schema_migrations")
-        done = {row[0] for row in await cur.fetchall()}
+        cur = await conn.execute("SELECT version, name FROM schema_migrations")
+        done = {row[0]: row[1] for row in await cur.fetchall()}
         for path in sorted(MIGRATIONS.glob("*.sql")):
             version = int(path.name.split("_", 1)[0])
             if version in done:
+                if done[version] != path.name:
+                    # The same number ran from a different file, so this file
+                    # would be skipped for good. Say so now, not at the first
+                    # query that needs its tables.
+                    raise RuntimeError(
+                        f"Migration {version} ran as {done[version]}, but the"
+                        f" file is now {path.name}; renumber one of them"
+                    )
                 continue
             await conn.execute(path.read_text(encoding="utf-8"))
             await conn.execute(

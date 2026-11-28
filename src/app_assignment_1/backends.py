@@ -65,6 +65,9 @@ class MockBackend:
         # The call runs on the config it started with, as a real call runs on
         # the version it was sent to, even if a release changes it meanwhile.
         config = self.config
+        if self.rng.random() < config.hang_rate:
+            # Simulated hang: no answer until the caller gives up.
+            await asyncio.sleep(3600)
         await asyncio.sleep(config.latency_ms / 1000)
         # The new faults draw a random number only when set, so the existing
         # ones keep the same sequence.

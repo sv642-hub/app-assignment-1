@@ -42,6 +42,17 @@ REPLY_SOURCES = get_args(Trace.model_fields["reply_source"].annotation)
 FORMAT_CHECKS = get_args(Trace.model_fields["format_check"].annotation)
 JEV_OUTCOMES = ("ok", "timeout", "error")
 CALL_OUTCOMES = ("ok", "failed")
+DETECT_REASONS = ("timeout", "call_error", "format_failure", "failure")
+# Seconds from a model's first failure to its disable; 30 s is the draft target.
+DETECTION_BUCKETS = (1, 2, 4, 8, 12, 16, 20, 30, 45, 60, 120, 240)
+REPLY_CHECK_SKIP_REASONS = (
+    "no_first_answer",
+    "format_fallback",
+    "breaker_not_closed",
+    "busy",
+)
+AGREEMENT_RESULTS = ("agree", "disagree", "no_signal")
+FIT_RESULTS = ("fits", "does_not_fit", "no_signal")
 AUTH_FAILURE_REASONS = ("operator_disabled", "missing_or_wrong_token")
 
 
@@ -106,6 +117,19 @@ class GatewayMetrics:
             buckets=LATENCY_BUCKETS,
             registry=self.registry,
         )
+        self.fault_detection = Histogram(
+            "gateway_fault_detection_seconds",
+            "Seconds from a model's first failure to the controller disabling "
+            "it, by model and reason (timeout, call_error, format_failure or "
+            "failure for a mix). Semantic disables have no onset and are not "
+            "counted.",
+            ["model", "reason"],
+            buckets=DETECTION_BUCKETS,
+            registry=self.registry,
+        )
+        for backend in gateway.backends:
+            for reason in DETECT_REASONS:
+                self.fault_detection.labels(backend.config.name, reason)
         self.jev_call_latency = Histogram(
             "gateway_jev_call_latency_seconds",
             "Time of one Jev call, by outcome: ok, timeout or error. Skipped "
@@ -137,6 +161,45 @@ class GatewayMetrics:
         for backend in gateway.backends:
             for outcome in CALL_OUTCOMES:
                 self.backend_call_latency.labels(backend.config.name, outcome)
+        self.reply_check_latency = Histogram(
+            "gateway_reply_check_latency_seconds",
+            "Time of one second Jev call (the reply check), by outcome: ok, "
+            "timeout or error. It runs after the reply, so customers never wait "
+            "for it.",
+            ["outcome"],
+            buckets=LATENCY_BUCKETS,
+            registry=self.registry,
+        )
+        for outcome in JEV_OUTCOMES:
+            self.reply_check_latency.labels(outcome)
+        self.reply_check_skipped = Counter(
+            "gateway_reply_check_skipped",
+            "Requests the second Jev call was not made for, by reason.",
+            ["reason"],
+            registry=self.registry,
+        )
+        for reason in REPLY_CHECK_SKIP_REASONS:
+            self.reply_check_skipped.labels(reason)
+        self.reply_check_agreement = Counter(
+            "gateway_reply_check_agreement",
+            "First Jev call (before the model) against the second (after it), "
+            "by question: agree, disagree, or no_signal when either call gave "
+            "no valid answer.",
+            ["question", "result"],
+            registry=self.registry,
+        )
+        for question in ("route", "intent"):
+            for result in AGREEMENT_RESULTS:
+                self.reply_check_agreement.labels(question, result)
+        self.reply_check_fit = Counter(
+            "gateway_reply_check_fit",
+            "Whether the second Jev call judged the reply to fit the customer's "
+            "message: fits, does_not_fit, or no_signal.",
+            ["result"],
+            registry=self.registry,
+        )
+        for result in FIT_RESULTS:
+            self.reply_check_fit.labels(result)
         self.jev_fallbacks = Counter(
             "gateway_jev_fallbacks",
             "Requests routed by the rule router: the Jev call failed, its route "
@@ -326,6 +389,38 @@ class _GatewayStateCollector(Collector):
             )
             cost.add_metric([mocked], jev.estimated_cost_usd)
             yield cost
+
+        # The second Jev call. Its tokens and cost are kept apart from the first
+        # call's, so the price of turning the check on is visible.
+        check = gateway.reply_check_usage()
+        enabled = GaugeMetricFamily(
+            "gateway_reply_check_enabled",
+            "1 when the second Jev call (reply check) is switched on.",
+        )
+        enabled.add_metric([], int(check.enabled))
+        check_calls = CounterMetricFamily(
+            "gateway_reply_check_answered_calls",
+            "Second Jev calls that returned an answer.",
+            labels=["mocked"],
+        )
+        check_calls.add_metric([mocked], check.answered_calls)
+        check_tokens = CounterMetricFamily(
+            "gateway_reply_check_tokens",
+            "Tokens of answered second Jev calls, by direction.",
+            labels=["direction", "mocked"],
+        )
+        check_tokens.add_metric(["input", mocked], check.input_tokens)
+        check_tokens.add_metric(["output", mocked], check.output_tokens)
+        yield from (enabled, check_calls, check_tokens)
+        if check.estimated_cost_usd is not None:
+            check_cost = CounterMetricFamily(
+                "gateway_reply_check_estimated_cost_usd",
+                "Estimated cost of second Jev calls: input tokens times the "
+                "configured price.",
+                labels=["mocked"],
+            )
+            check_cost.add_metric([mocked], check.estimated_cost_usd)
+            yield check_cost
 
         # Only models with data get a value: an empty window is not 0%.
         disagreement = GaugeMetricFamily(
