@@ -313,3 +313,57 @@ def test_health_reports_the_controller_rules(tmp_path):
         "failure_threshold": 0.4,
         "cooldown_seconds": 30,
     }
+
+
+def test_a_reply_recorded_after_the_cooldown_ended_survives_the_re_enable(tmp_path):
+    """The reply of a call still in flight, recorded after the cooldown ended
+    but before the next is_disabled check, counts. A restart agrees: the
+    re-enable is dated when the cooldown ended, and the sample is after it."""
+    clock = Clock()
+    c = controller(tmp_path, clock)
+    for _ in range(3):
+        c.record("qwen3-1.7b", True, can_disable=True)
+    clock.now = 100.0  # the 30 s cooldown ended 70 s ago, nobody checked
+    c.record("qwen3-1.7b", True, can_disable=False)
+    assert list(c.windows["qwen3-1.7b"]) == ["format_failure"]
+    assert [i.action for i in c.log] == ["disabled", "re-enabled"]
+    re_enabled = c.log[-1].at
+    assert c.unsaved_samples[-1].at > re_enabled
+
+
+@pytest.mark.parametrize("how", ["operator_enable", "cooldown"])
+def test_other_model_window_clears_when_a_model_is_back(tmp_path, how):
+    """The small model, kept as the last backend while the large one is out,
+    must not be disabled for failures from that time once the large is back."""
+    clock = Clock()
+    c = controller(tmp_path, clock)
+    small, large = "qwen3-1.7b", "qwen3-4b"
+    if how == "operator_enable":
+        c.operator_disable(large, "hold")
+    else:
+        for _ in range(3):
+            c.record(large, True, can_disable=True)
+    for _ in range(3):
+        assert c.record(small, True, can_disable=False) is None
+    assert small in c.warned
+    if how == "operator_enable":
+        c.operator_enable(large, "release")
+    else:
+        clock.now = 31
+        assert not c.is_disabled(large)
+    assert not c.windows[small]
+    # Healthy calls now: no disable from the old failures.
+    for _ in range(3):
+        assert c.record(small, False, can_disable=True) is None
+    assert not c.is_disabled(small)
+
+
+def test_failing_other_model_is_still_disabled_after_the_clear(tmp_path):
+    c = controller(tmp_path)
+    small, large = "qwen3-1.7b", "qwen3-4b"
+    c.operator_disable(large, "hold")
+    for _ in range(3):
+        c.record(small, True, can_disable=False)
+    c.operator_enable(large, "release")
+    actions = [c.record(small, True, can_disable=True) for _ in range(3)]
+    assert actions[-1] and actions[-1].startswith(f"disabled {small}")

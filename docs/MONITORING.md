@@ -22,7 +22,7 @@ The [README](../README.md#monitor-and-controller) explains each part in detail; 
 | The database is slow or down | A store write takes longer than `APP_STORE_TIMEOUT_SECONDS` (2 s) or fails | The customer still gets the reply, but it can't be looked up by id. Interventions that fail to save are kept and retried in order | When the database answers again |
 
 Two limits to keep in mind:
-- **Memory only:** the windows, cooldowns and operator holds live in the gateway process. A restart clears them; the intervention log survives in Postgres. Run one gateway worker.
+- **Per process:** the windows, cooldowns and operator holds live in the gateway process. With Postgres, a restart rebuilds them from the saved samples and interventions; with the memory store it clears them. Run one gateway worker.
 - **No Alertmanager:** alerts show in Prometheus and nowhere else, so someone has to look.
 
 ## Where to look
@@ -89,7 +89,7 @@ It clears 1 minute after the scrape works again.
 This alert covers the controller only. A model an operator holds shows `disabled_by_operator` on Health, but there is no metric or alert for holds.
 
 Check the newest `disabled` intervention for the model on Health. Its reason says what failed:
-- **`format failure rate ...`:** the replies were malformed. With a real model, look at its output. With the mocks, a fault is set: the chaos override, or `POST /v1/faults` with `bad_format`.
+- **`format failure rate ...`:** the replies were malformed: an unknown label, or policy facts missing or not on the card. Problems in the model's own text do not count here; they are in `gateway_discarded_text_problems_total`. With a real model, look at its output. With the mocks, a fault is set: the chaos override, or `POST /v1/faults` with `bad_format`.
 - **`call error rate ...`:** calls raised. With a real model, its server is down, unreachable or timing out. With the mocks: the outage override, or `/v1/faults` with `outage`.
 - **`failure rate ...`:** a mix of both.
 - **`intent differs from Jev's on ...`:** a semantic disable, only with `APP_SEMANTIC_ACTIONS_ENABLED=true`. `disabled_for` is `semantic`, and the model still answers as a last resort. See [PossibleWrongIntents](#possiblewrongintents).
@@ -153,14 +153,14 @@ It clears 5 minutes after the last 503.
 
 ### ChatMostlyFailing
 
-**Critical.** More than 1 in 5 chat requests get a 503, for 5 minutes. Customers are mostly not getting answers. It also fires when no request has succeeded since the gateway started.
+**Critical.** More than 20% of chat requests (1 in 5) get a 503, for 5 minutes. Customers are mostly not getting answers. It also fires when no request has succeeded since the gateway started.
 
 Do, in order:
 1. On Health, find which models are out and why: disabled, held, or unavailable in config.
 2. Enable any model an operator holds, if it works.
 3. Clear any mock faults (`"fault": "none"` for each model) or return from an override with `docker compose up -d --wait`.
 4. With real models, check that their servers are up and reachable from the gateway.
-5. As a last resort, `docker compose restart gateway`. This clears the cooldowns, holds, windows and faults set through `/v1/faults`. The intervention log stays in Postgres.
+5. As a last resort, `docker compose restart gateway`. This clears faults set through `/v1/faults`. With Postgres, the windows, running cooldowns and holds come back after the restart, so a restart doesn't end a cooldown or a hold: use `/enable` for that.
 
 It clears when the share of 503s stays under 20%.
 
@@ -180,7 +180,7 @@ It clears when most messages are routed by Jev again.
 
 ### ChatLatencyHigh
 
-**Warning.** p95 chat latency, measured inside the gateway and including 503s, is above 10 s for 10 minutes.
+**Warning.** The request latency p95, measured inside the gateway and including 503s, is above 10 s for 10 minutes. This is not the answer latency the dashboard compares with its 2 s and 4 s targets: that one leaves 503s out and is split by model (see [Metric definitions](#metric-definitions)).
 
 Check which part is slow:
 - **The models:** with the mocks, latency is simulated, 120 ms for the small model and 350 ms for the large one. So in mock mode, high latency points elsewhere. With real models, check their servers.
@@ -212,12 +212,22 @@ curl -fsS -X POST -H "$H" -H 'Content-Type: application/json' \
 ```
 
 - **The reason is public:** `GET /v1/health` lists it without a token, so never put customer data in it.
-- **Holds don't survive a restart:** re-apply a hold after restarting the gateway.
+- **Holds survive a restart with Postgres:** the gateway reads each model's last operator action at startup. With the memory store, re-apply a hold after restarting.
 - **Overrides replace the stack:** don't run the Compose fault overrides on the deployment testers use. They take over port 8080 and the default project. Use `/v1/faults`, or another machine.
 - **No new ports:** never publish the gateway, Postgres or Prometheus ports to debug. Use `docker compose exec`, as above.
 
 ## Dashboard
 
-Grafana (at `/grafana`) has two dashboards. The summary on the app's Metrics screen has eight panels. The full dashboard, linked from there, plots the same series the alerts use, plus per-model latency percentiles, in-flight requests, Jev call latency and auth failures. Its rows and targets are listed in the README under Grafana dashboard. A hung model call shows first in *In-flight requests*, because a latency histogram only counts calls that have finished. The latency targets there (small under 2 s, large under 4 s at p95) are proposals, not measured values.
+Grafana (at `/grafana`) has two dashboards. The summary on the app's Metrics screen has eight panels. The full dashboard, linked from there, plots the same series the alerts use, plus per-model latency percentiles, in-flight requests, Jev call latency and auth failures. Its rows and targets are listed in the README under Grafana dashboard. A hung model call shows first in *In-flight requests*, because a latency histogram only counts calls that have finished. The latency targets there (small under 2 s, large under 4 s at p95, answered requests only) and the availability target (99% answered) are proposals, not measured values.
 
 The detection target is to catch a faulty model in under 30 s. There is no live metric for it. The full dashboard's *Time models stayed disabled* table shows how long each disable lasted, and `scripts/measure_recovery.py` (PR #104) measures detection and recovery per fault. The real-Qwen hang run took 186 s to disable, which misses this target.
+
+## Metric definitions
+
+The meaning of each metric, its formula and its target are in the metrics catalog, [`config/metrics.yaml`](../config/metrics.yaml), and the generated page [METRICS.md](METRICS.md). The dashboard, the alerts and these docs repeat its numbers, and `tests/test_metrics_catalog.py` fails when they differ. Three terms are easy to mix up:
+
+- **Answer latency p95** (`answer_latency_p95_seconds`): answered requests only, per model. The dashboard's 2 s and 4 s targets use it.
+- **Request latency p95** (`request_latency_p95_seconds`): every request including 503s, not split by model. `ChatLatencyHigh` uses it, with a 10 s threshold.
+- **Monitor failure rate** (`monitor_failure_rate`): format failures plus failed calls over the model's last calls. The controller and `ModelFailureRateRising` use it. It is not the share of replies that fail the format check (`format_check_pass_ratio`).
+
+Two more views of the same traffic differ during self-healing. The **escalation rate** is the share of answered requests the router sent down the complex route. The **large-model share** is the share the large model answered, so a standard request moved to the large model while the small one is disabled raises the second and not the first.

@@ -4,6 +4,7 @@ import asyncio
 import random
 from typing import Protocol
 
+from app_assignment_1.confidence import ScoredReply
 from app_assignment_1.intents import match_intent
 from app_assignment_1.schemas import (
     BackendConfig,
@@ -12,12 +13,21 @@ from app_assignment_1.schemas import (
     PolicyCard,
 )
 
+# Fixed token confidence for the mock models, which have no token
+# probabilities: a keyword match is sure and no match is unsure. A swapped
+# label stays sure, because the fault it simulates is a confident wrong
+# answer. Enough to exercise escalation; it measures nothing.
+MOCK_CONFIDENCE_MATCH = 0.9
+MOCK_CONFIDENCE_NO_MATCH = 0.3
+
 UNKNOWN_REPLY = (
     "I'm sorry, I could not match that message to a demo banking topic. "
     "Could you describe the banking problem you need help with? "
     "Please rephrase your request with the details, or try an example. "
     "This is a fictional bank demo."
 )
+# The fact the mock bad_format fault adds. No policy card lists it.
+INVENTED_FACT = "DemoBank waives every fee forever."
 
 
 class Backend(Protocol):
@@ -56,23 +66,38 @@ class MockBackend:
         # the version it was sent to, even if a release changes it meanwhile.
         config = self.config
         await asyncio.sleep(config.latency_ms / 1000)
+        # The new faults draw a random number only when set, so the existing
+        # ones keep the same sequence.
+        if config.slow_rate and self.rng.random() < config.slow_rate:
+            # Simulated slow or hung model: the gateway's deadline may cut it.
+            await asyncio.sleep(config.slow_seconds)
         if self.rng.random() < config.error_rate:
             raise ConnectionError("Simulated backend outage")
         _, match = match_intent(self.intents, message)
+        if config.bad_prompt_rate and self.rng.random() < config.bad_prompt_rate:
+            # Simulated bad prompt: a well-formed reply with no intent.
+            match = None
         if match is not None and self.rng.random() < config.label_swap_rate:
             # Simulated semantic fault: a confident reply for the wrong intent.
             # It passes the format check; only the semantic monitor sees it.
             match = self.intents[(self.intents.index(match) + 1) % len(self.intents)]
         if match is None:
-            reply = BackendReply(intent="unknown", reply=UNKNOWN_REPLY, policy_facts=[])
+            reply = ScoredReply(
+                intent="unknown",
+                reply=UNKNOWN_REPLY,
+                policy_facts=[],
+                label_confidence=MOCK_CONFIDENCE_NO_MATCH,
+            )
         else:
             card = self.cards[match.intent]
-            reply = BackendReply(
+            reply = ScoredReply(
                 intent=match.intent,
                 reply=card.reply_template.format(facts=" ".join(card.facts)),
                 policy_facts=card.facts,
+                label_confidence=MOCK_CONFIDENCE_MATCH,
             )
         if self.rng.random() < config.fault_rate:
-            # Simulated fault: a template slot the model failed to fill.
-            reply.reply += " {customer_name}"
+            # Simulated fault: a policy fact the model made up. It is on no card,
+            # so the reply fails the format check (unknown_policy_facts).
+            reply.policy_facts = [*reply.policy_facts, INVENTED_FACT]
         return reply

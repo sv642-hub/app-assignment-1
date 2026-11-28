@@ -1,7 +1,9 @@
 repos:
+  # Keep rev at the ruff version in uv.lock, which CI runs: two versions can
+  # format the same code differently (tests/test_precommit.py checks this).
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.6.9
+    rev: v0.16.6
     hooks:
-      - id: ruff
+      - id: ruff-check
         args: [--fix]
       - id: ruff-format

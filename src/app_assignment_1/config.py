@@ -103,6 +103,13 @@ class Settings(BaseSettings):
     # The key both vLLM servers require (VLLM_API_KEY in env/gpu.env), sent as a
     # bearer token. Server-side secret: set it only in the real env file.
     vllm_api_key: SecretStr | None = None
+    # Escalation (confidence.py): when the small model's reply passes the
+    # format check but its intent confidence is below the threshold, the
+    # large model answers too and its reply is used if it passes the format
+    # check. Off by default: the threshold is a placeholder until set from dev
+    # data. The score and would-be escalations are still reported with it off.
+    escalation_enabled: bool = False
+    escalation_threshold: float = Field(default=0.5, ge=0, le=1)
     request_deadline_seconds: float = Field(default=45, gt=0, le=600)
     alternate_reserve_seconds: float = Field(default=15, gt=0, le=600)
 
@@ -192,11 +199,22 @@ class Settings(BaseSettings):
                 "provider_mode 'real' needs APP_VLLM_SMALL_BASE_URL and "
                 "APP_VLLM_LARGE_BASE_URL"
             )
-        if (
-            self.vllm_api_key is None
-            or not self.vllm_api_key.get_secret_value().strip()
-        ):
+        # Stored stripped, like the operator token: the client sends it as
+        # "Bearer <key>", and vLLM compares that header exactly. A key read
+        # with $(cat file) keeps a CRLF file's "\r", and padding gives a 401.
+        value = (
+            "" if self.vllm_api_key is None else self.vllm_api_key.get_secret_value()
+        ).strip()
+        if not value:
             raise ValueError("provider_mode 'real' needs APP_VLLM_API_KEY")
+        # Printable ASCII with no spaces: anything else cannot go in the header
+        # or never matches vLLM's key.
+        if not all("!" <= char <= "~" for char in value):
+            raise ValueError(
+                "APP_VLLM_API_KEY must be printable ASCII with no spaces or "
+                "control characters inside it"
+            )
+        self.vllm_api_key = SecretStr(value)
         return self
 
 

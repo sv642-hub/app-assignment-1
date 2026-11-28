@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 from typing import Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -69,6 +69,12 @@ class Trace(StrictModel):
     # Groups requests by the settings and config files that answered them.
     # None on requests saved before it existed.
     settings_version: str | None = None
+    # The small model's intent confidence (confidence.py), when it answered
+    # and gave one. Kept when the large model then answered instead.
+    escalation_score: float | None = Field(default=None, ge=0, le=1)
+    # The large model answered because the small model's score was below the
+    # threshold.
+    escalated: bool = False
 
 
 class ChatResponse(StrictModel):
@@ -122,7 +128,7 @@ class BackendConfig(StrictModel):
     route: Route
     latency_ms: int = Field(ge=0, le=5000)
     available: bool = True
-    # Share of mock replies corrupted on purpose, to exercise the controller.
+    # Share of mock replies given an invented policy fact, to exercise the controller.
     fault_rate: float = Field(default=0, ge=0, le=1)
     # Share of mock calls that raise on purpose, to simulate an outage.
     error_rate: float = Field(default=0, ge=0, le=1)
@@ -130,18 +136,37 @@ class BackendConfig(StrictModel):
     # purpose. The reply passes the format check; only the semantic monitor
     # sees it.
     label_swap_rate: float = Field(default=0, ge=0, le=1)
+    # Share of mock calls held for slow_seconds more on purpose, to exercise
+    # the request deadline and the time kept back for the other model.
+    slow_rate: float = Field(default=0, ge=0, le=1)
+    slow_seconds: float = Field(default=0, ge=0, le=120)
+    # Share of mock replies replaced by a well-formed `unknown` on purpose, as a
+    # bad prompt would give. It passes the format check; only the semantic
+    # monitor can see it, and only acts on it with semantic actions on.
+    bad_prompt_rate: float = Field(default=0, ge=0, le=1)
 
 
-FaultKind = Literal["none", "outage", "bad_format", "label_swap"]
+FaultKind = Literal["none", "outage", "bad_format", "label_swap", "slow", "bad_prompt"]
 
 
 class FaultRequest(StrictModel):
-    """Set one simulated fault on one mock model. `none` clears all three."""
+    """Set one simulated fault on one mock model. `none` clears them all."""
 
     model: BackendName
     fault: FaultKind
     # Share of calls the fault hits; ignored for `none`.
-    rate: float = Field(default=1, ge=0, le=1)
+    rate: float = Field(default=1, ge=0, le=1, allow_inf_nan=False)
+    # How long `slow` holds each call it hits, on top of the usual latency.
+    # Required for `slow`; not allowed for any other fault, not even as null.
+    seconds: float | None = Field(default=None, gt=0, le=120, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def seconds_only_for_slow(self) -> "FaultRequest":
+        if self.fault == "slow" and self.seconds is None:
+            raise ValueError("The slow fault needs seconds")
+        if self.fault != "slow" and "seconds" in self.model_fields_set:
+            raise ValueError("Only the slow fault takes seconds")
+        return self
 
 
 JevFaultKind = Literal["none", "outage", "slow"]
@@ -208,6 +233,25 @@ InterventionAction = Literal[
 ]
 
 
+class MonitorSample(StrictModel):
+    """One sample in a monitor window, saved so the windows survive a restart.
+
+    `failure`: the controller's outcome for one call (ok, format_failure or
+    call_error). `semantic`: one reply scored against Jev (agree, disagree or
+    no_signal), with `traffic` own or rerouted. No message text. `id` is
+    made once, so a save retried after a cancel can't store it twice.
+    """
+
+    id: UUID = Field(default_factory=uuid4)
+    at: datetime
+    model: BackendName
+    monitor: Literal["failure", "semantic"]
+    outcome: Literal[
+        "ok", "format_failure", "call_error", "agree", "disagree", "no_signal"
+    ]
+    traffic: Literal["own", "rerouted"] | None = None
+
+
 class Intervention(StrictModel):
     at: datetime
     backend: BackendName
@@ -221,6 +265,10 @@ VERSION_PATTERN = r"^[a-z0-9][a-z0-9._-]{0,63}$"
 ReleaseStatus = Literal["stable", "watching", "rolled_back"]
 ReleaseAction = Literal["deployed", "confirmed", "rolled_back"]
 ReleaseActor = Literal["operator", "controller"]
+# A kept record (an operator change whose save was not confirmed) has this
+# phrase in its reason. It changes nothing, so restore does not count it as a
+# release change.
+KEPT_REASON_MARKER = "not confirmed as saved"
 
 
 class ReleaseChanges(StrictModel):

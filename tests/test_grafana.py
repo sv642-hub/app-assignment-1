@@ -235,20 +235,29 @@ def _all_503_metrics(tmp_path_factory, send: int) -> str:
         return client.get("/metrics").text
 
 
+def _answered_total(text: str) -> float:
+    return sum(
+        float(line.rsplit(" ", 1)[1])
+        for line in text.splitlines()
+        if line.startswith("gateway_chat_requests_total{")
+    )
+
+
 def test_all_503_traffic_has_only_the_unavailable_counter(tmp_path_factory):
-    # The premise of the zero-fill below: during a full outage Prometheus has
-    # no answered series at all, only the 503 counter.
+    # During a full outage the answered series exist (pre-created at 0) but
+    # none has counted a reply, so only the 503 counter moves. The zero-fill
+    # below still matters for a Prometheus that has not scraped them yet.
     text = _all_503_metrics(tmp_path_factory, 3)
     assert "gateway_chat_unavailable_total 3.0" in text
-    assert not re.search(r"^gateway_chat_requests_total\{", text, re.M)
+    assert _answered_total(text) == 0
 
 
-def test_no_traffic_has_no_answered_series(tmp_path_factory):
-    # With no traffic the 503 counter reads 0 and the answered one is absent;
-    # the zero-fill gives 0 / 0, which Grafana shows as "no data", not 0%.
+def test_no_traffic_has_no_answered_replies(tmp_path_factory):
+    # With no traffic both counters read 0, so a ratio is 0 / 0, which Grafana
+    # shows as "no data", not 0%.
     text = _all_503_metrics(tmp_path_factory, 0)
     assert "gateway_chat_unavailable_total 0.0" in text
-    assert not re.search(r"^gateway_chat_requests_total\{", text, re.M)
+    assert _answered_total(text) == 0
 
 
 def _bare_sums(expr: str, metric: str) -> list[str]:
