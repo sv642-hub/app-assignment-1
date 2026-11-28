@@ -186,6 +186,17 @@ class PendingCheck:
     request_saved: bool = False
 
 
+@dataclass
+class _Shaped:
+    """A checked reply: what the customer gets, and why the check failed."""
+
+    intent: str
+    reply: str
+    facts: list[str]
+    format_errors: list[str]
+    uncarded: bool
+
+
 class Gateway:
     def __init__(
         self,
@@ -212,6 +223,8 @@ class Gateway:
         self.rule_router = RuleRouter(settings.rule_router_complex_min_words)
         self.request_deadline = settings.request_deadline_seconds
         self.alternate_reserve = settings.alternate_reserve_seconds
+        self.escalation_enabled = settings.escalation_enabled
+        self.escalation_threshold = settings.escalation_threshold
         self.jev_timeout = settings.jev_timeout_seconds
         self.jev_input_price = settings.jev_input_price_per_million_usd
         # Answered Jev calls and their tokens since start; see jev_usage().
@@ -1132,6 +1145,135 @@ class Gateway:
             return
         self.controller.finish_call(name)
 
+    def _shape(self, backend: Backend, generated: BackendReply) -> "_Shaped":
+        """Check a generated reply and build the text the customer gets."""
+        intent, reply, facts = generated.intent, generated.reply, generated.policy_facts
+        uncarded = (
+            intent in self.labels.names
+            and intent != UNKNOWN
+            and intent not in self.cards
+        )
+        if uncarded:
+            # Nothing the model wrote is shown: the reply becomes the fixed
+            # uncarded text and its facts are dropped, since no card grounds
+            # them. So leftover facts are not a format failure; in the #109
+            # test-set run they failed 36-39% of real replies, most with the
+            # right intent. They are counted on their own instead.
+            format_errors: list[str] = []
+            if facts:
+                self.metrics.uncarded_facts_dropped.labels(backend.config.name).inc()
+                facts = []
+            reply = UNCARDED_REPLY
+        elif intent == UNKNOWN and not reply.strip() and not facts:
+            # No intent and no text: the customer gets the fixed no-match reply
+            # that asks them to describe their problem, so nothing generated is
+            # shown and this is not a format failure. In the #109 test-set run
+            # the small model did this on 304 of 3,080 messages. Counted on its
+            # own, so the prompt problem stays visible.
+            self.metrics.empty_unknown_filled.labels(backend.config.name).inc()
+            reply = UNKNOWN_REPLY
+            format_errors = []
+        else:
+            # The model's own text is never shown or stored: it can repeat the
+            # customer's message or say things the card doesn't. The customer
+            # gets text built from approved content only. So only the intent
+            # and the facts decide the format check; problems in the discarded
+            # text are counted on their own, to keep the prompt visible (#126).
+            for problem in check_reply(reply):
+                self.metrics.discarded_text_problems.labels(
+                    backend.config.name, problem
+                ).inc()
+            format_errors = []
+            if intent not in self.labels.names:
+                format_errors.append("unknown_label")
+            elif intent == UNKNOWN:
+                # No intent means no card, so there is nothing to ground facts.
+                if facts:
+                    format_errors.append("unknown_policy_facts")
+                reply = UNKNOWN_REPLY
+            else:
+                card = self.cards[intent]
+                if not set(facts) <= set(card.facts):
+                    format_errors.append("unknown_policy_facts")
+                elif not facts:
+                    format_errors.append("missing_policy_facts")
+                # The chosen facts, in the card's order, once each.
+                facts = [fact for fact in card.facts if fact in facts]
+                reply = card.reply_template.format(facts=" ".join(facts))
+                # A broken card can still build a bad reply, and that one is shown.
+                format_errors += check_reply(reply)
+        if format_errors:
+            # Keep malformed generated content out of the UI and stored response.
+            intent = "unknown"
+            reply = "Sorry, the demo could not produce a valid reply. Please try again."
+            facts = []
+        return _Shaped(intent, reply, facts, format_errors, uncarded)
+
+    def _monitor(
+        self,
+        backend: Backend,
+        generated: BackendReply,
+        format_errors: list[str],
+        generation: int,
+        own_route: bool,
+        jev: list[JevAssessment],
+        action: str | None,
+    ) -> str | None:
+        """Feed one reply to the monitors; return the latest controller action."""
+        # No await in this block: the generation check, the monitors and the
+        # watch all see one release state, and the reply path holds no lock,
+        # so an operator's store write never delays a customer.
+        # A reply from a call that started on a version the model no longer
+        # serves goes to the customer, but the monitors skip it: it says
+        # nothing about the new version.
+        current = self.releases.generation[backend.config.name] == generation
+        # The trace reports validation of the original generated reply.
+        if current:
+            action = (
+                self.controller.record(
+                    backend.config.name,
+                    bool(format_errors),
+                    can_disable=self.others_usable(backend),
+                    own_route=own_route,
+                )
+                or action
+            )
+        if current and not format_errors:
+            # Score the model's own label against Jev's intent answer. A failed
+            # format check gives no semantic sample; the controller counted it.
+            # Only like with like: a mock model against mock Jev, or a real
+            # model against real Jev. A mix disagrees by design, so it is never
+            # scored and never acted on.
+            if self.jev_mocked == getattr(backend, "mocked", True):
+                sample = score(generated.intent, jev)
+                rerouted = not own_route
+                self.semantic.record(backend.config.name, sample, rerouted)
+                self.metrics.semantic_samples.labels(
+                    backend.config.name, sample, "rerouted" if rerouted else "own"
+                ).inc()
+                # Only replies on the model's own route can trigger an action. A
+                # rerouted reply can follow a one-off error from the selected
+                # model, which is still usable, so it must not disable the model
+                # that served it.
+                if self.semantic.rules.actions_enabled and not rerouted:
+                    action = (
+                        self.controller.record_semantic(
+                            backend.config.name,
+                            self._semantic_reason(backend.config.name),
+                            can_disable=self.others_answering(backend),
+                        )
+                        or action
+                    )
+            else:
+                self.semantic.skip(backend.config.name)
+                self.metrics.semantic_not_compared.labels(backend.config.name).inc()
+        if current:
+            # After the semantic check, so it can roll back on the watch's
+            # last call before the release is confirmed.
+            self._finish_release_watch(backend)
+
+        return action
+
     async def _chat(
         self, message: str
     ) -> tuple[ChatResponse, list[JevAssessment], PendingCheck]:
@@ -1244,117 +1386,67 @@ class Gateway:
             self.metrics.chat_unavailable.inc()
             self.metrics.chat_latency.observe(perf_counter() - start)
             raise BackendUnavailable
-        intent, reply, facts = generated.intent, generated.reply, generated.policy_facts
-        uncarded = (
-            intent in self.labels.names
-            and intent != UNKNOWN
-            and intent not in self.cards
+        shaped = self._shape(backend, generated)
+        action = self._monitor(
+            backend,
+            generated,
+            shaped.format_errors,
+            generation,
+            backend is selected,
+            jev,
+            action,
         )
-        if uncarded:
-            # Nothing the model wrote is shown: the reply becomes the fixed
-            # uncarded text and its facts are dropped, since no card grounds
-            # them. So leftover facts are not a format failure; in the #109
-            # test-set run they failed 36-39% of real replies, most with the
-            # right intent. They are counted on their own instead.
-            format_errors: list[str] = []
-            if facts:
-                self.metrics.uncarded_facts_dropped.labels(backend.config.name).inc()
-                facts = []
-            reply = UNCARDED_REPLY
-        elif intent == UNKNOWN and not reply.strip() and not facts:
-            # No intent and no text: the customer gets the fixed no-match reply
-            # that asks them to describe their problem, so nothing generated is
-            # shown and this is not a format failure. In the #109 test-set run
-            # the small model did this on 304 of 3,080 messages. Counted on its
-            # own, so the prompt problem stays visible.
-            self.metrics.empty_unknown_filled.labels(backend.config.name).inc()
-            reply = UNKNOWN_REPLY
-            format_errors = []
-        else:
-            # The model's own text is never shown or stored: it can repeat the
-            # customer's message or say things the card doesn't. The customer
-            # gets text built from approved content only. So only the intent
-            # and the facts decide the format check; problems in the discarded
-            # text are counted on their own, to keep the prompt visible (#126).
-            for problem in check_reply(reply):
-                self.metrics.discarded_text_problems.labels(
-                    backend.config.name, problem
-                ).inc()
-            format_errors = []
-            if intent not in self.labels.names:
-                format_errors.append("unknown_label")
-            elif intent == UNKNOWN:
-                # No intent means no card, so there is nothing to ground facts.
-                if facts:
-                    format_errors.append("unknown_policy_facts")
-                reply = UNKNOWN_REPLY
+        escalation_score: float | None = None
+        escalated = False
+        if backend.config.route == "standard" and not shaped.format_errors:
+            escalation_score = getattr(generated, "label_confidence", None)
+        if escalation_score is not None:
+            self.metrics.escalation_score.observe(escalation_score)
+        if (
+            escalation_score is not None
+            and escalation_score < self.escalation_threshold
+        ):
+            # The small model looks unsure: the large model answers too, if it
+            # can, within the time left. Its reply is used only if it passes
+            # the format check; otherwise the customer keeps the small reply.
+            large = next(b for b in self.backends if b is not backend)
+            remaining = self.request_deadline - (perf_counter() - start)
+            if not self.escalation_enabled:
+                outcome = "shadow"
+            elif large in tried or not self.usable(large):
+                outcome = "large_unusable"
+            elif remaining <= 0:
+                outcome = "no_time"
             else:
-                card = self.cards[intent]
-                if not set(facts) <= set(card.facts):
-                    format_errors.append("unknown_policy_facts")
-                elif not facts:
-                    format_errors.append("missing_policy_facts")
-                # The chosen facts, in the card's order, once each.
-                facts = [fact for fact in card.facts if fact in facts]
-                reply = card.reply_template.format(facts=" ".join(facts))
-                # A broken card can still build a bad reply, and that one is shown.
-                format_errors += check_reply(reply)
-        if format_errors:
-            # Keep malformed generated content out of the UI and stored response.
-            intent = "unknown"
-            reply = "Sorry, the demo could not produce a valid reply. Please try again."
-            facts = []
-        # No await in this block: the generation check, the monitors and the
-        # watch all see one release state, and the reply path holds no lock,
-        # so an operator's store write never delays a customer.
-        # A reply from a call that started on a version the model no longer
-        # serves goes to the customer, but the monitors skip it: it says
-        # nothing about the new version.
-        current = self.releases.generation[backend.config.name] == generation
-        # The trace reports validation of the original generated reply.
-        if current:
-            action = (
-                self.controller.record(
-                    backend.config.name,
-                    bool(format_errors),
-                    can_disable=self.others_usable(backend),
-                    own_route=backend is selected,
+                tried.append(large)
+                big, action, big_cut_short, big_generation = await self._attempt(
+                    large, message, remaining, len(tried), action, large is selected
                 )
-                or action
-            )
-        if current and not format_errors:
-            # Score the model's own label against Jev's intent answer. A failed
-            # format check gives no semantic sample; the controller counted it.
-            # Only like with like: a mock model against mock Jev, or a real
-            # model against real Jev. A mix disagrees by design, so it is never
-            # scored and never acted on.
-            if self.jev_mocked == getattr(backend, "mocked", True):
-                sample = score(generated.intent, jev)
-                rerouted = backend is not selected
-                self.semantic.record(backend.config.name, sample, rerouted)
-                self.metrics.semantic_samples.labels(
-                    backend.config.name, sample, "rerouted" if rerouted else "own"
-                ).inc()
-                # Only replies on the model's own route can trigger an action. A
-                # rerouted reply can follow a one-off error from the selected
-                # model, which is still usable, so it must not disable the model
-                # that served it.
-                if self.semantic.rules.actions_enabled and not rerouted:
-                    action = (
-                        self.controller.record_semantic(
-                            backend.config.name,
-                            self._semantic_reason(backend.config.name),
-                            can_disable=self.others_answering(backend),
-                        )
-                        or action
+                if big is None:
+                    # Cut short by the deadline is no fault of the large model.
+                    outcome = "no_time" if big_cut_short else "large_failed"
+                else:
+                    big_shaped = self._shape(large, big)
+                    action = self._monitor(
+                        large,
+                        big,
+                        big_shaped.format_errors,
+                        big_generation,
+                        large is selected,
+                        jev,
+                        action,
                     )
-            else:
-                self.semantic.skip(backend.config.name)
-                self.metrics.semantic_not_compared.labels(backend.config.name).inc()
-        if current:
-            # After the semantic check, so it can roll back on the watch's
-            # last call before the release is confirmed.
-            self._finish_release_watch(backend)
+                    if big_shaped.format_errors:
+                        outcome = "large_format_failed"
+                    else:
+                        outcome = "escalated"
+                        escalated = True
+                        reasons.append("low_confidence_escalation")
+                        attempted_latency += large.config.latency_ms
+                        backend, generated, shaped = large, big, big_shaped
+            self.metrics.escalations.labels(outcome).inc()
+        intent, reply, facts = shaped.intent, shaped.reply, shaped.facts
+        format_errors, uncarded = shaped.format_errors, shaped.uncarded
 
         mocked = getattr(backend, "mocked", True)
         response = ChatResponse(
@@ -1385,6 +1477,8 @@ class Gateway:
                 controller_action=action,
                 mocked=mocked,
                 settings_version=self.settings_version,
+                escalation_score=escalation_score,
+                escalated=escalated,
             ),
         )
         trace = response.trace

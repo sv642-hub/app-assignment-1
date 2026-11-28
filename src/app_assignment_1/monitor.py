@@ -138,6 +138,7 @@ class Controller:
         # starts again too.
         for reset in self.on_reenable:
             reset(name)
+        self._clear_kept(name)
         self._note(name, "operator_enabled", reason)
 
     def watch(self, name: BackendName) -> None:
@@ -209,8 +210,18 @@ class Controller:
         self.windows[name].clear()
         for reset in self.on_reenable:
             reset(name)
+        self._clear_kept(name)
         self._note(name, "re-enabled", "cooldown elapsed; window reset", now - until)
         return False
+
+    def _clear_kept(self, back: BackendName) -> None:
+        """`back` is usable again: start the window again of any other model
+        kept as the last backend while it was out. That window holds what
+        failed while nothing else could answer, not what the model does now.
+        If it still fails, it fills again and the usual rule disables it."""
+        for other in self.warned - {back}:
+            self.windows[other].clear()
+            self.warned.discard(other)
 
     def record(
         self, name: BackendName, failed: bool, can_disable: bool, own_route: bool = True

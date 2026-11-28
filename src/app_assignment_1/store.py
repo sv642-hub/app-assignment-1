@@ -283,8 +283,8 @@ class PostgresStore:
                 """
                 INSERT INTO requests
                     (id, completed_at, route, model, intent, format_check,
-                     settings_version, response)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                     settings_version, escalation_score, escalated, response)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     response.id,
@@ -294,6 +294,8 @@ class PostgresStore:
                     response.intent,
                     response.trace.format_check,
                     response.trace.settings_version,
+                    response.trace.escalation_score,
+                    response.trace.escalated,
                     Jsonb(response.model_dump(mode="json")),
                 ),
             )

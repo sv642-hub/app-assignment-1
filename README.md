@@ -58,14 +58,22 @@ Send five standard messages. Each one is still answered, by `qwen3-4b` with `fal
 
 ### Measure detection and recovery
 
-[`scripts/measure_recovery.py`](scripts/measure_recovery.py) times the loop. For each fault on the small model (`outage`, `bad_format`, and `label_swap` when semantic actions are on), it:
+[`scripts/measure_recovery.py`](scripts/measure_recovery.py) times the loop. It runs the scenarios in groups A to E of [`docs/CHAOS_SCENARIOS.md`](docs/CHAOS_SCENARIOS.md). By default it runs B1–B3, the full fault on the small model (`outage`, `bad_format`, and `label_swap` when semantic actions are on). For each run, it:
 1. starts from clean monitor windows: it waits out any cooldown, then disables and enables each model through the operator routes, which clears both models' windows, so each run is an independent sample whatever ran before;
 2. sends 8 normal messages and counts any controller action, a false intervention;
-3. sets the fault with `POST /v1/faults`;
-4. sends a message every 0.5 s, or as soon as the last reply arrives if it took longer (three standard, then one complex), until the controller disables the model, then 4 more;
-5. clears the fault and keeps sending until the small model answers its own route again. The time until it serves again counts from the moment the fault was cleared.
+3. sets the scenario's faults with `POST /v1/faults`;
+4. sends a message every 0.5 s, or as soon as the last reply arrives if it took longer (three standard, then one complex; the other way round for a fault on the large model), until the controller disables the model, then 4 more;
+5. clears the faults and keeps sending until every faulted model answers its own route again. The time until it serves again counts from the moment the fault was cleared.
 
-A run fails if the model is never disabled, never serves again, or the controller acted during the normal messages. A run that stops on an error (a dropped connection, say) is reported as failed, and the other runs go on. `--out` is rewritten after each run, so a crash keeps the runs before it. The fault is cleared on Ctrl-C and on SIGTERM. The script exits 1 if any run failed or none ran.
+The other scenarios change steps 3–5:
+- **A1** sends healthy traffic for 10 minutes, and **A2** adds 60 healthy messages after the recovery. Any controller action in them is a false intervention.
+- **C1–C5** set the fault on a share of calls (10–70%) and send a fixed 60 messages, since whether the model is disabled is random. Run them with `--runs 10` or more: the report gives the share of runs with a disable.
+- **D1–D4** fault both models, or hold the large one with an operator disable (D4). The run checks the controller logged `kept_last_backend`.
+- **E1–E4** are about timing: E1 sets the fault again after the recovery, E2 clears it a sixth of the cooldown after the disable, E3 turns it on and off every 10 s for 5 minutes, and E4 sends only complex messages for the first 2 minutes of the fault.
+
+Pick scenarios with `--scenario B4` or a whole group with `--group C` (both can repeat). `outage`, `bad_format` and `label_swap` still name B1–B3. Each run also reads the interventions in `/v1/health` before and after, because a `kept_last_backend` decision and a disable during a 503 are not on any reply's trace.
+
+A run fails if it doesn't show what its scenario expects: for most, that the model is disabled and then serves again. It also fails if the controller acted during the normal messages, or disabled a model with no fault. A run that stops on an error (a dropped connection, say) is reported as failed, and the other runs go on. `--out` is rewritten after each run, so a crash keeps the runs before it. The fault is cleared on Ctrl-C and on SIGTERM. The script exits 1 if any run failed or none ran.
 
 It needs an operator token, and it changes the running models, so it refuses any host but localhost unless you pass `--allow-remote`. Never run it on the deployment testers use. Set `APP_OPERATOR_TOKEN` in `env/.env` first, then pass the same value to the script (it runs on Python 3.9 or later):
 
@@ -96,6 +104,11 @@ How to read it:
 
 These are mock models with simulated latency, so the numbers show how the loop behaves. They say nothing about real models.
 
+Groups A–E were measured on November 27, 2026, on a local Compose stack (A, B, D and E once each, C ten times per scenario). Every run of A, B, D and E showed what its scenario expects. The full tables and what they show are in [`docs/CHAOS_SCENARIOS.md`](docs/CHAOS_SCENARIOS.md#measured-on-november-27-2026). In short:
+- **Partial faults:** no disable at 10%, 5 of 10 runs at 30%, and every run at 50% and 70%. Every 30% trip came with a full 20-call window, so `APP_MONITOR_MIN_SAMPLES` doesn't cause them.
+- **One model down, one malformed (D3):** the controller disables the malformed model and keeps the dead one, so customers get 503s, not apologies.
+- **After an operator hold (D4):** releasing the hold disables the other model on the failures still in its window, though its fault is gone.
+
 ### Semantic monitor
 
 A model can return a well-formed reply for the wrong intent, which the format check cannot see. The semantic monitor compares each model's intent with Jev's answer to the intent question, from the same request:
@@ -110,6 +123,8 @@ A model can return a well-formed reply for the wrong intent, which the format ch
   - `normal`: otherwise.
 - **Visibility:** `GET /v1/health` has `semantic` (per model: counts, `disagreement_rate`, `coverage`, `status`) and `semantic_rules`. `/metrics` has `gateway_semantic_samples_total`, `gateway_semantic_disagreement_rate`, `gateway_semantic_coverage` and `gateway_semantic_above_baseline`. The rate and coverage gauges are absent while a model has no data, so an empty window never reads as 0%.
 - **Like with like:** a reply is only compared when Jev and the model are both mocks or both real. Real Jev answers over 78 labels while the mock models know 10 intents, so a mix would disagree by design. Those replies are counted in `not_compared` in `/v1/health` and `gateway_semantic_not_compared_total`, and stay out of the windows.
+
+- **Escalation:** the small model's reply carries a token confidence for its intent: the joint probability of the intent label's tokens, from the logprobs vLLM returns (`confidence.py`). The mock models give 0.9 for a keyword match and 0.3 for no match; that measures nothing. When the score is below `APP_ESCALATION_THRESHOLD` (default 0.5, a placeholder) and `APP_ESCALATION_ENABLED=true` (default off), the large model answers the same message within the time left, and its reply is used if it passes the format check. Otherwise the customer keeps the small model's reply. Both replies go to the monitors. The trace has `escalation_score` and `escalated`, and `fallback_reason` includes `low_confidence_escalation`; Postgres copies both into columns. `/metrics` has `gateway_escalation_score` (a histogram, recorded with escalation on or off) and `gateway_escalations_total` by outcome: `escalated`, `shadow` (below the threshold with escalation off), `large_unusable`, `no_time`, `large_failed` and `large_format_failed`. The linear probe would replace token confidence only if it passes its gate (`docs/PROBE.md`).
 
 - **Semantic actions:** off by default (`APP_SEMANTIC_ACTIONS_ENABLED=false`), so the monitor only reports. When they are on and a model's status is `above_baseline`, the controller disables it for `APP_CONTROLLER_COOLDOWN_SECONDS`. It does so only while the other model is serving and has answered recently without failing: its failure window has calls, and its failure rate is below `APP_MONITOR_FAILURE_THRESHOLD`. A model that fails every call stays usable until its own window fills, and an empty window after a re-enable says nothing, so neither counts. Otherwise the controller logs `kept_last_backend` once. The other model can still start failing after the disable. So a model disabled only for its intents stays a last resort: when no other model answers, the gateway calls it anyway, with `fallback_reason` ending in `semantic_last_resort`, because a reply with a possibly wrong intent beats a 503. A model disabled for failures is never a last resort. A last resort keeps being called even if some of its own calls fail, like the last enabled model: a model that answers some calls beats a certain 503. If a model's cooldown ends while another model's call is running, the gateway tries it in the same request. This holds with semantic actions off too: when the only usable model fails, a model whose failure cooldown ended during that call answers the request instead of a 503. `/v1/health` shows `disabled_for` (`failure` or `semantic`) and `answering` for each model. The intervention reason gives the disagreement rate and the baseline. Only replies on the model's own route can trigger an action; a rerouted reply never does. Low coverage and a missing baseline never cause an action. With actions on, any re-enable also starts the model's semantic window again; with actions off, the semantic report keeps its window across a cooldown.
 
@@ -294,6 +309,7 @@ The `grafana` service (Grafana 12.3.0) shows the metrics as plots. Open the **Me
 - The latency targets (small under 2 s, large under 4 s at p95) are proposals chosen from the real-Qwen medians; p95 has not been measured. The availability target is 99% answered.
 - The gateway makes one Jev call per request, before the model answers. The agreement panels compare the model's intent label with Jev's intent answer; Jev does not score the model's reply. The standard-first vs complex-first panel shows one bar until requests are sent with both option orders (the order-swap run, PRs #89 and #90).
 - Edit panels in `scripts/build_grafana_dashboard.py` and run it; the JSON is generated and a test fails if it is stale.
+- Targets and metric definitions are in the metrics catalog, [`config/metrics.yaml`](config/metrics.yaml), with a generated page, [docs/METRICS.md](docs/METRICS.md). A test fails if the dashboard, the alert rules or these docs disagree with it. It defines the "answer latency" p95 (answered requests, per model, the 2 s and 4 s targets) and the "request latency" p95 (503s included, the alert's 10 s) as two different metrics.
 
 ### Alerts
 
@@ -308,7 +324,7 @@ The `grafana` service (Grafana 12.3.0) shows the metrics as plots. Open the **Me
 | `ChatRequestsFailing` | warning | Any chat request got a 503 in the last 5 minutes |
 | `ChatMostlyFailing` | critical | More than 20% of chat requests get a 503 for 5 minutes |
 | `JevMostlySkipped` | warning | The rule router routes more than half of messages for 5 minutes, because Jev fails or its breaker is open |
-| `ChatLatencyHigh` | warning | p95 chat latency is above 10 s for 10 minutes |
+| `ChatLatencyHigh` | warning | The request latency p95 (503s included) is above 10 s for 10 minutes |
 
 **Hard failures and slow drift.** `ModelFailureRateRising` and `PossibleWrongIntents` are for problems the controller does not act on: a model failing some calls but below the 50% threshold, or wrong intents while semantic actions are off or the other model can't take over. For a hard failure, the controller disables the model within a few requests, and `ModelDisabledByController` fires. The re-enable then clears the window, which restarts the `for:` timer of the two slower alerts, so they may never fire during a hard failure. `PossibleWrongIntents` also needs `APP_SEMANTIC_BASELINE_DISAGREEMENT_RATE`: without a baseline, its gauge stays 0 at any disagreement rate.
 
@@ -547,6 +563,8 @@ curl -fsS http://127.0.0.1:8080/v1/health
 python3 scripts/smoke_compose.py http://127.0.0.1:8080
 ```
 
+The smoke test reads the modes from `/v1/health`. With real Jev, it sends three chats, so three paid TypeSafe calls. It checks that each reply came from Jev, not the rule router, and from the model on the route Jev chose; it does not check which route that was. With real Qwen, it prints each intent and format check instead of checking them, since a real model can be wrong.
+
 These deployment commands target `main` after this PR is merged. For updates:
 
 ```bash
@@ -707,6 +725,42 @@ sudo systemctl restart smart-gateway-gpu
 To run the GPU checks by hand, from the checkout: `deploy/autostart/gpu-preflight.sh && echo ready`.
 
 Deploying an update does not change: `git pull` and `docker compose -p app-assignment-1 up -d --build --wait` as above. The next boot starts the newly built images. To stop a stack until the next boot, run `sudo systemctl stop smart-gateway-cpu` (or `-gpu`). To stop it starting at boot, run `sudo systemctl disable smart-gateway-cpu`.
+
+## Offline evaluation
+
+[`scripts/run_eval.py`](scripts/run_eval.py) measures intent accuracy on a fixed set of messages. The primary set is the official [Banking77](https://github.com/PolyAI-LDN/task-specific-datasets) test set (3,080 messages, 40 per intent; PolyAI, CC BY 4.0). The script downloads it at a pinned commit, checks its SHA-256 and caches it in `data/cache/`. `--dataset-csv` takes any CSV with `text` and `intent` columns instead, such as the fresh set once it exists. For a CSV that holds several splits in a `split` column, such as the Banking77 dev split, add `--split dev` to keep only those rows; results keep each row's number in the whole file. The files are sorted by intent, so `--limit N` covers only the first few intents. For a quick check across all of them, use `--sample N`: N messages spread evenly over the intents, the same ones every time for the same `--seed` (6700 by default). `--sample 154` gives two per intent.
+
+Targets:
+
+| Target | What it measures |
+| --- | --- |
+| `small`, `large` | One model called directly: the always-small and always-large baselines. Real vLLM with `--base-url` and `VLLM_API_KEY`, or `--mock` |
+| `gateway` | The whole system through `POST /v1/chat`: routing, fallbacks and format checks. Only a stack you run yourself; it refuses other hosts unless `--allow-remote` |
+| `oracle` | Worked out from the small and large results, with no calls: the large model only where it is right and the small model is wrong. The best any router over these two models could do |
+
+On the real models, from the CPU instance (the GPU servers accept no other host):
+
+```bash
+export VLLM_API_KEY=$(cat ~/.vllm_api_key)
+uv run python scripts/run_eval.py run --target small --base-url http://GPU_PRIVATE_IP:8001 --out eval/test-small.jsonl
+uv run python scripts/run_eval.py run --target large --base-url http://GPU_PRIVATE_IP:8002 --out eval/test-large.jsonl
+uv run python scripts/run_eval.py score eval/test-small.jsonl eval/test-large.jsonl
+uv run python scripts/run_eval.py oracle eval/test-small.jsonl eval/test-large.jsonl
+```
+
+How it scores, following the integration plan:
+- **Accuracy.** A failed call counts as wrong. A model called directly gets the gateway's format checks, so a reply that fails them counts as the fallback apology a customer would see, which carries `unknown`. `unknown` is wrong for a Banking77 message, and right only where the gold label is `unknown` (the fresh set has some).
+- **Macro F1** averages F1 over the Banking77 intents with at least one gold message in the run; `unknown` is never one of them. On the full official test set that is all 77. On `--limit`, the dev split or the fresh set, the classes depend only on the gold labels, so every target on the same rows is averaged over the same classes, and a wrong guess outside the gold set can't score below answering `unknown`. `score --json` gives the count as `macro_f1_classes`.
+- **Per class:** `score --json` adds recall per intent. With 40 messages per intent in the official test set, one miss moves a class by 2.5 points.
+- Accuracy comes with a 95% Wilson interval, so small runs (`--limit`) show their uncertainty.
+
+Results are JSONL: a `run` line with the dataset's SHA-256, the target, the model, `option_set_version` and the git commit, then one line per message keyed by its row in the dataset. They hold **no message or reply text**. A stopped run continues when you rerun the same command from the same git commit; a different commit is refused, so one file never mixes two versions of the code. A cut-off last line (after a kill or a full disk) is dropped and that message sent again.
+
+Failed calls come in two kinds, and both count as wrong:
+- **Kept**, because they are what a customer would have got: invalid output from the model (`BackendOutputError`), or an error status from the gateway (`unavailable` for a 503, `HTTP422` for a message it refuses). A rerun does not send these again.
+- **Retried**, because they are harness problems: timeouts, refused connections, a 502 from the proxy. `score` says how many are left; rerun the same command to retry them before reporting numbers.
+
+On the mock models, both score about 4% on the official test set: the mock matches keywords for 10 intents and answers `unknown` to the rest. That checks the runner, not the models. No real-model results yet.
 
 ## Tests and project layout
 

@@ -111,6 +111,13 @@ class Settings(BaseSettings):
     # The key both vLLM servers require (VLLM_API_KEY in env/gpu.env), sent as a
     # bearer token. Server-side secret: set it only in the real env file.
     vllm_api_key: SecretStr | None = None
+    # Escalation (confidence.py): when the small model's reply passes the
+    # format check but its intent confidence is below the threshold, the
+    # large model answers too and its reply is used if it passes the format
+    # check. Off by default: the threshold is a placeholder until set from dev
+    # data. The score and would-be escalations are still reported with it off.
+    escalation_enabled: bool = False
+    escalation_threshold: float = Field(default=0.5, ge=0, le=1)
     request_deadline_seconds: float = Field(default=45, gt=0, le=600)
     alternate_reserve_seconds: float = Field(default=15, gt=0, le=600)
 
