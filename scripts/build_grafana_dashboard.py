@@ -12,15 +12,33 @@ import json
 import sys
 from pathlib import Path
 
+from app_assignment_1.metrics_catalog import load_catalog
+
 OUT = Path(__file__).resolve().parents[1] / "grafana/dashboards/smart-gateway.json"
 PROM = {"type": "prometheus", "uid": "prometheus"}
 PG = {"type": "grafana-postgresql-datasource", "uid": "postgres"}
 R = "$__rate_interval"
 MODEL = 'model=~"$model"'
-# Latency and availability targets (docs/MONITORING.md, "Targets").
-SLO_AVAILABILITY = 0.99
-SMALL, LARGE = "qwen3-1.7b", "qwen3-4b"
-SMALL_TARGET_S, LARGE_TARGET_S = 2, 4
+# Targets, models and PromQL come from the metrics catalog (config/metrics.yaml);
+# the panels here only choose the layout and which window each one reads.
+CATALOG = load_catalog()
+SLO_AVAILABILITY = CATALOG.target_value("availability")
+SMALL, LARGE = CATALOG.models["small"], CATALOG.models["large"]
+SMALL_TARGET_S = CATALOG.target_value("answer_latency_p95_seconds", "small")
+LARGE_TARGET_S = CATALOG.target_value("answer_latency_p95_seconds", "large")
+AVAILABILITY_PCT = f"{SLO_AVAILABILITY * 100:g}"
+SMALL_S, LARGE_S = f"{SMALL_TARGET_S:g}", f"{LARGE_TARGET_S:g}"
+
+
+def cat(name: str, window: str = R, fn: str = "rate", model: str | None = None) -> str:
+    """The catalog's PromQL for one metric, for this window and function."""
+    return CATALOG.render(name, window, fn, model)  # type: ignore[arg-type]
+
+
+def about(name: str) -> str:
+    """The catalog's description of a metric, for a panel's help text."""
+    return " ".join(CATALOG.metrics[name].description.split())
+
 
 _panels: list[dict] = []
 _next_id = 1
@@ -289,14 +307,8 @@ def _unavailable(w: str, fn: str = "rate") -> str:
     return _zero(f"sum({fn}(gateway_chat_unavailable_total[{w}]))")
 
 
-def _bad_share(w: str, fn: str = "rate") -> str:
-    """503s over all traffic (answered plus 503). No traffic gives no data."""
-    return f"({_unavailable(w, fn)} / ({_answered(w, fn)} + {_unavailable(w, fn)}))"
-
-
 def build() -> dict:
     # --- Overview ---------------------------------------------------------
-    bad_share = _bad_share("$__range", "increase")
     row("Overview")
     stat("Gateway", 'up{job="gateway"}', w=6,
          mappings=[{"type": "value", "options": {
@@ -311,17 +323,16 @@ def build() -> dict:
     stat("Requests per second", f"{_answered(R)} + {_unavailable(R)}",
          unit="reqps", w=6, decimals=2,
          desc="Answered requests plus 503s.")  # fmt: skip
-    stat("Answered, no 503", f"1 - {bad_share}", unit="percentunit", w=8,
-         decimals=2, thresholds=_steps(("red", None), ("orange", 0.98),
-                                       ("green", SLO_AVAILABILITY)),
+    stat("Answered, no 503", cat("chat_availability", "$__range", "increase"),
+         unit="percentunit", w=8, decimals=2,
+         thresholds=_steps(("red", None), ("orange", 0.98),
+                           ("green", SLO_AVAILABILITY)),
          desc="Share of requests answered without a 503 in the selected time "
-              "range. Target 99%.")  # fmt: skip
-    stat("Error budget left", f"1 - {bad_share} / {1 - SLO_AVAILABILITY}",
+              f"range. Target {AVAILABILITY_PCT}%.")  # fmt: skip
+    stat("Error budget left", cat("error_budget_left", "$__range", "increase"),
          unit="percentunit", w=8, decimals=0,
          thresholds=_steps(("red", None), ("orange", 0.25), ("green", 0.5)),
-         desc="1 means no 503s; 0 means the 1% allowance is used up; below 0 "
-              "means the target is missed. Over the selected time range, not "
-              "30 days.")  # fmt: skip
+         desc=about("error_budget_left"))  # fmt: skip
     stat("Jev calls", "sum(increase(gateway_jev_answered_calls_total[$__range]))",
          w=8, decimals=0, desc="Answered Jev calls in the time range.")  # fmt: skip
 
@@ -343,12 +354,15 @@ def build() -> dict:
     )  # fmt: skip
     timeseries(
         "Request latency percentiles, all requests incl. 503s",
-        [(f"histogram_quantile({q}, sum by (le) "
+        [(cat("request_latency_p95_seconds") if q == 0.95 else
+          f"histogram_quantile({q}, sum by (le) "
           f"(rate(gateway_chat_latency_seconds_bucket[{R}])))", name)
          for q, name in ((0.5, "p50"), (0.9, "p90"), (0.95, "p95"),
                          (0.99, "p99"))],
         unit="s", w=12, minimum=0,
-        desc="Not split by model. 503s are in this histogram.",
+        desc="Request latency, not split by model. 503s are in this "
+             "histogram. The p95 line is the one ChatLatencyHigh alerts on "
+             f"({CATALOG.target_value('request_latency_p95_alert_seconds'):g} s); it is not the answer latency the 2 s and 4 s targets use.",
     )  # fmt: skip
     timeseries(
         "Request latency percentiles by route",
@@ -368,6 +382,13 @@ def build() -> dict:
                  "{{route}}"),
                 (_unavailable(R), "503")], unit="reqps", stack=True,
                minimum=0)  # fmt: skip
+    timeseries("Escalation rate and large-model share",
+               [(cat("escalation_rate"), "escalation rate (routed complex)"),
+                (cat("large_model_share"), "large-model share (answered by large)")],
+               unit="percentunit", minimum=0, maximum=1,
+               desc="Escalation is the router's decision: the complex route. "
+                    "The large-model share is who answered. They differ while "
+                    "a model is disabled or a call falls back to the other model.")  # fmt: skip
     timeseries("503 rate (no backend could answer)",
                [(f"sum(rate(gateway_chat_unavailable_total[{R}]))", "503s")],
                unit="reqps", minimum=0)  # fmt: skip
@@ -400,36 +421,31 @@ def build() -> dict:
 
     # --- SLO ----------------------------------------------------------------
     row("SLOs and error budget")
-    burn = lambda w: f"{_bad_share(w)} / {1 - SLO_AVAILABILITY}"  # noqa: E731
-    timeseries("Availability burn rate (target 99% answered)",
+    burn = lambda w: cat("error_budget_burn_rate", w)  # noqa: E731
+    timeseries(f"Availability burn rate (target {AVAILABILITY_PCT}% answered)",
                [(burn("5m"), "5 minutes"), (burn("1h"), "1 hour"),
                 (burn("6h"), "6 hours")], minimum=0,
                thresholds=_steps(("green", None), ("red", 1)),
                desc="1 spends the 1% allowance at exactly the budgeted pace. "
                     "Above 1 the budget runs out early.")  # fmt: skip
     timeseries(
-        "p95 latency vs target (small 2 s, large 4 s)",
-        [(f"histogram_quantile(0.95, sum by (le) (rate("
-          f'gateway_chat_answer_latency_seconds_bucket{{model="{SMALL}"}}[{R}])))',
-          f"{SMALL} p95 (target {SMALL_TARGET_S} s)"),
-         (f"histogram_quantile(0.95, sum by (le) (rate("
-          f'gateway_chat_answer_latency_seconds_bucket{{model="{LARGE}"}}[{R}])))',
-          f"{LARGE} p95 (target {LARGE_TARGET_S} s)")],
+        f"p95 latency vs target (small {SMALL_S} s, large {LARGE_S} s)",
+        [(cat("answer_latency_p95_seconds", model="small"),
+          f"{SMALL} p95 (target {SMALL_S} s)"),
+         (cat("answer_latency_p95_seconds", model="large"),
+          f"{LARGE} p95 (target {LARGE_S} s)")],
         unit="s", minimum=0,
         thresholds=_steps(("green", None), ("red", LARGE_TARGET_S)),
-        desc="The line is the larger target. The targets are proposals picked "
+        desc="Answer latency p95: answered requests only, 503s left out. The "
+             "line is the larger target. The targets are proposals picked "
              "from medians, not measured p95s.",
     )  # fmt: skip
     timeseries(
         "Share of requests under the latency target",
-        [(f'sum(rate(gateway_chat_answer_latency_seconds_bucket{{model="{SMALL}",'
-          f'le="{SMALL_TARGET_S}.0"}}[{R}])) / '
-          f'sum(rate(gateway_chat_answer_latency_seconds_count{{model="{SMALL}"}}'
-          f"[{R}]))", f"{SMALL} under {SMALL_TARGET_S} s"),
-         (f'sum(rate(gateway_chat_answer_latency_seconds_bucket{{model="{LARGE}",'
-          f'le="{LARGE_TARGET_S}.0"}}[{R}])) / '
-          f'sum(rate(gateway_chat_answer_latency_seconds_count{{model="{LARGE}"}}'
-          f"[{R}]))", f"{LARGE} under {LARGE_TARGET_S} s")],
+        [(cat("answer_latency_within_target", model="small"),
+          f"{SMALL} under {SMALL_S} s"),
+         (cat("answer_latency_within_target", model="large"),
+          f"{LARGE} under {LARGE_S} s")],
         unit="percentunit", minimum=0, maximum=1,
     )  # fmt: skip
     text("Detection target",
@@ -444,21 +460,17 @@ def build() -> dict:
     # --- Quality ------------------------------------------------------------
     row("Reply quality")
     timeseries("Format check pass rate by model",
-               [(f'sum by (model) (rate(gateway_chat_requests_total{{'
-                 f'format_check="passed"}}[{R}])) / '
-                 f"sum by (model) (rate(gateway_chat_requests_total[{R}]))",
-                 "{{model}}")], unit="percentunit", minimum=0, maximum=1)  # fmt: skip
+               [(cat("format_check_pass_ratio"), "{{model}}")],
+               unit="percentunit", minimum=0, maximum=1,
+               desc=about("format_check_pass_ratio"))  # fmt: skip
     timeseries("Qwen vs Jev intent agreement by model",
-               [(f'sum by (model) (rate(gateway_semantic_samples_total{{'
-                 f'sample="agree"}}[{R}])) / '
-                 f'sum by (model) (rate(gateway_semantic_samples_total{{'
-                 f'sample=~"agree|disagree"}}[{R}]))', "{{model}}")],
+               [(cat("semantic_agreement_ratio"), "{{model}}")],
                unit="percentunit", minimum=0, maximum=1,
                desc="The model's intent label against Jev's intent answer for "
                     "the same message. There is one Jev call per request, made "
                     "before the model; Jev does not score the model's reply.")  # fmt: skip
     timeseries("Semantic window: disagreement and coverage",
-               [("gateway_semantic_disagreement_rate", "disagreement {{model}}"),
+               [(cat("semantic_disagreement_rate"), "disagreement {{model}}"),
                 ("gateway_semantic_coverage", "coverage {{model}}")],
                unit="percentunit", minimum=0, maximum=1,
                desc="From the semantic monitor window, as the controller sees it.")  # fmt: skip
@@ -501,7 +513,7 @@ def build() -> dict:
         6,
     )  # fmt: skip
     timeseries("Monitor failure rate and window size",
-               [("gateway_monitor_failure_rate", "failure rate {{model}}"),
+               [(cat("monitor_failure_rate"), "failure rate {{model}}"),
                 ("gateway_monitor_window_samples", "samples {{model}}")],
                w=12, h=6, minimum=0)  # fmt: skip
     timeseries("Controller interventions",
@@ -557,12 +569,22 @@ def build() -> dict:
                [(f"sum by (direction) (rate(gateway_jev_tokens_total[{R}]))",
                  "{{direction}}")], unit="short", stack=True, minimum=0,
                desc="Mock Jev reports 0 tokens.")  # fmt: skip
+    timeseries("Jev skipped share (rule router used)",
+               [(cat("jev_skipped_ratio"), "share of requests")],
+               unit="percentunit", minimum=0, maximum=1, w=8,
+               thresholds=_steps(("green", None),
+                                 ("red", CATALOG.target_value("jev_skipped_alert"))),
+               desc=about("jev_skipped_ratio"))  # fmt: skip
     stat("Jev tokens (range)",
          "sum(increase(gateway_jev_tokens_total[$__range]))", w=4, h=4, decimals=0)  # fmt: skip
     stat("Jev est. cost (range)",
-         "sum(increase(gateway_jev_estimated_cost_usd_total[$__range]))",
+         cat("jev_estimated_cost_usd", "$__range", "increase"),
          unit="currencyUSD", w=4, h=4, decimals=4,
          desc="Empty while APP_JEV_INPUT_PRICE_PER_MILLION_USD is unset.")  # fmt: skip
+    stat("Jev est. cost per request (range)",
+         cat("jev_cost_per_request_usd", "$__range", "increase"),
+         unit="currencyUSD", w=4, h=4, decimals=6,
+         desc=about("jev_cost_per_request_usd"))  # fmt: skip
     sql_series(
         "Jev route choice over time",
         "SELECT $__timeGroupAlias(finished_at, $__interval), choice AS metric, "

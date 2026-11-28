@@ -303,12 +303,12 @@ The `grafana` service (Grafana 12.3.0) shows the metrics as plots. Open the **Me
 
   Not run yet on a live stack. If you would rather put `/grafana` behind the operator token, say so.
 - Deploying on a host that starts with `--pull never` (the boot units): run `docker compose -p app-assignment-1 pull grafana` once first, or the next boot fails for lack of the Grafana image.
-- Rows: overview; latency percentiles (p50, p90, p95, p99) per model, route and for Qwen calls alone; traffic, errors and saturation (in-flight requests); SLOs and error budget; reply quality (format checks, Qwen vs Jev intent agreement); self-healing and releases; Jev latency, tokens, cost and route choices, with the primacy-bias split by option order; security (operator auth failures).
+- Rows: overview; latency percentiles (p50, p90, p95, p99) per model, route and for Qwen calls alone; traffic, errors and saturation (in-flight requests, escalation rate and large-model share); SLOs and error budget; reply quality (format checks, Qwen vs Jev intent agreement); self-healing and releases; Jev latency, tokens, cost, cost per request, skipped share and route choices, with the primacy-bias split by option order; security (operator auth failures).
 - Interventions from Postgres are drawn as annotations on every graph.
 - Prometheus keeps 30 days of data, so the SLO panels have a month to read. They use the dashboard's selected time range, not a fixed 30 days.
 - The latency targets (small under 2 s, large under 4 s at p95) are proposals chosen from the real-Qwen medians; p95 has not been measured. The availability target is 99% answered.
 - The gateway makes one Jev call per request, before the model answers. The agreement panels compare the model's intent label with Jev's intent answer; Jev does not score the model's reply. The standard-first vs complex-first panel shows one bar until requests are sent with both option orders (the order-swap run, PRs #89 and #90).
-- Edit panels in `scripts/build_grafana_dashboard.py` and run it; the JSON is generated and a test fails if it is stale.
+- Edit panels in `scripts/build_grafana_dashboard.py` and run it; the JSON is generated and a test fails if it is stale. The builder reads its targets, models and PromQL for the catalog's metrics from the catalog (below), so change a target or formula in `config/metrics.yaml` and regenerate.
 - Targets and metric definitions are in the metrics catalog, [`config/metrics.yaml`](config/metrics.yaml), with a generated page, [docs/METRICS.md](docs/METRICS.md). A test fails if the dashboard, the alert rules or these docs disagree with it. It defines the "answer latency" p95 (answered requests, per model, the 2 s and 4 s targets) and the "request latency" p95 (503s included, the alert's 10 s) as two different metrics.
 
 ### Alerts

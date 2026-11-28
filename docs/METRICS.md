@@ -177,11 +177,11 @@ Share of requests routed by the rule router because the Jev call failed, its rou
 - **Unit:** ratio; **kind:** ratio
 - **Status:** derived in PromQL
 - **Target:** at most `jev_skipped_alert`
-- **Used by:** alert:JevMostlySkipped
+- **Used by:** alert:JevMostlySkipped; grafana:Jev skipped share (rule router used)
 - **PromQL** over 5 minutes:
 
   ```promql
-  sum(rate(gateway_jev_fallbacks_total[5m])) / (((sum(rate(gateway_chat_requests_total[5m]))) or vector(0)) + sum(rate(gateway_chat_unavailable_total[5m])))
+  sum(rate(gateway_jev_fallbacks_total[5m])) / (((sum(rate(gateway_chat_requests_total[5m]))) or vector(0)) + ((sum(rate(gateway_chat_unavailable_total[5m]))) or vector(0)))
   ```
 
 ### `escalation_rate`
@@ -190,6 +190,7 @@ Share of answered requests the router sent down the complex route. This is the r
 
 - **Unit:** ratio; **kind:** ratio
 - **Status:** derived in PromQL
+- **Used by:** grafana:Escalation rate and large-model share
 - **PromQL** over 5 minutes:
 
   ```promql
@@ -202,6 +203,7 @@ Share of answered requests the large model answered, whatever the route. It incl
 
 - **Unit:** ratio; **kind:** ratio
 - **Status:** derived in PromQL
+- **Used by:** grafana:Escalation rate and large-model share
 - **PromQL** over 5 minutes:
 
   ```promql
@@ -229,6 +231,7 @@ Estimated Jev cost per chat request (answered plus 503; Jev is called before eit
 - **Unit:** usd; **kind:** cost
 - **Status:** derived in PromQL
 - **Related settings:** `APP_JEV_INPUT_PRICE_PER_MILLION_USD`
+- **Used by:** grafana:Jev est. cost per request (range)
 - **PromQL** over 5 minutes:
 
   ```promql
